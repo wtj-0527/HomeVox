@@ -1,4 +1,4 @@
-# 筑居（HomeVox）— 产品方案 v1.1
+# 筑居（HomeVox）— 产品方案 v1.2
 
 > **方案日期**：2025-07-06
 > **作者**：王.W + Hermes Agent（协作设计）
@@ -49,7 +49,7 @@
 
 ### 2.2 AI 直接调用，无需中间层
 
-Rust 后端通过 `reqwest` 直接调 OpenAI 兼容 API，天然支持多轮 `messages` 上下文对话。
+Go 后端直接请求 OpenAI-compatible API，天然支持多轮 `messages` 上下文对话；Rust 保留在体素/几何核心与 WASM 层。
 
 ---
 
@@ -61,32 +61,40 @@ Rust 后端通过 `reqwest` 直接调 OpenAI 兼容 API，天然支持多轮 `me
 ┌─────────────────────────────────────────────────┐
 │            前端 — React + TypeScript              │
 │                                                   │
-│  React 18 + Vite                                  │
+│  React + Vite                                     │
 │  React Three Fiber (3D 渲染)                      │
 │  @react-three/drei (3D 工具组件)                   │
 │  @react-three/postprocessing (后处理)              │
 │  Zustand (状态管理)                                │
 │  TailwindCSS + Radix UI (2D 面板)                 │
-│  Rust→WASM (体素处理模块)                          │
+│  Rust→WASM (体素/几何处理模块)                     │
 └──────────────────┬──────────────────────────────┘
                    │ REST API + WebSocket
 ┌──────────────────▼──────────────────────────────┐
-│           后端 — Rust + Axum                       │
+│              后端 API — Go                         │
 │                                                   │
-│  Axum (HTTP 框架) + Tower (中间件)                 │
-│  sqlx (PostgreSQL 异步驱动)                       │
-│  reqwest (AI API 直调 + S3 操作)                  │
-│  serde (JSON 序列化)                               │
-│  rust-s3 (S3/MinIO 客户端)                        │
-│  marchings-cubes crate (体素→网格)                │
+│  Gin / net/http (HTTP API)                        │
+│  pgx / sqlc (PostgreSQL)                          │
+│  AWS SDK for Go (S3/MinIO)                        │
+│  net/http (OpenAI-compatible API 直调)            │
+│  goroutine / worker pool (导出与异步任务)          │
+└──────────────────┬──────────────────────────────┘
+                   │
+┌──────────────────▼──────────────────────────────┐
+│          体素/几何核心 — Rust + WASM               │
+│                                                   │
+│  wasm-bindgen                                     │
+│  Marching Cubes / Dual Contouring                 │
+│  voxel operations / mesh generation               │
+│  collision / snapping                             │
 └──────────────────┬──────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────┐
 │              基础设施                              │
 │                                                   │
-│  PostgreSQL 16    — 用户/项目/组件元数据           │
-│  S3 / MinIO       — 图片/体素文件/导出文档        │
-│  Redis            — 会话/任务队列                  │
+│  PostgreSQL       — 用户/项目/组件元数据           │
+│  S3 / MinIO       — 图片/体素文件/导出文档          │
+│  Redis（可选）     — 会话/任务队列                  │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -94,13 +102,14 @@ Rust 后端通过 `reqwest` 直接调 OpenAI 兼容 API，天然支持多轮 `me
 
 | 层 | 选型 | 理由 |
 |----|------|------|
-| **后端** | Rust + Axum | 体素处理计算密集；编译 WASM 前后端复用；内存安全无 GC |
-| **框架** | Axum（非 Actix-web） | Tokio 官方出品，Tower 中间件体系，学习曲线平 |
-| **数据库** | PostgreSQL | 结构化数据天然适配，JSONB 存组件元数据，BYTEA 存小体素块 |
-| **文件存储** | S3（MinIO 本地） | 户型图、效果图、体素文件、导出 PDF 统一管理 |
-| **AI 调用** | reqwest 直调 | Rust 直接拼 JSON 调 OpenAI 兼容 API，省掉 sidecar |
-| **前端 3D** | React Three Fiber | 体素编辑器参考实现最多，drei 提供 100+ 预置组件 |
-| **渲染** | Marching Cubes → PBR | 体素数据提取光滑表面，高质量材质和光影渲染 |
+| **前端** | React + R3F | 体素编辑器、复杂 3D 交互、raycasting、controls 与社区案例最成熟 |
+| **体素/几何核心** | Rust + WASM | Marching Cubes、网格生成、碰撞/吸附属于计算密集型；Rust→WASM 生态成熟 |
+| **后端 API** | Go | 业务 API、PG、S3、AI 调用、WebSocket、任务队列开发效率高，单人+产研团队更稳 |
+| **数据库** | PostgreSQL | 结构化数据天然适配，JSONB 可存组件元数据 |
+| **文件存储** | S3 / MinIO | 户型图、效果图、体素文件、导出 PDF 统一管理 |
+| **AI 调用** | Go net/http 直调 | 直接拼 OpenAI-compatible JSON，支持多轮 messages，省掉 Python sidecar |
+
+**关键取舍**：Go 不负责几何核心，Rust 不负责业务 API。HomeVox 的工程边界是：**Go 管业务，Rust 管几何**。
 
 ### 3.3 核心数据流
 
@@ -293,7 +302,7 @@ Rust 后端通过 `reqwest` 直接调 OpenAI 兼容 API，天然支持多轮 `me
 |--------|------|----------|
 | 户型图 AI 解析验证 | 选 10 张不同风格户型图，测试 AI 识别准确率 | 墙体和门窗识别率 > 80% |
 | 3D 渲染 + Marching Cubes 验证 | Three.js 场景 + 体素→光滑网格 | 5000 体素实时 MC 提取不卡顿 |
-| Rust 后端骨架 | Axum 最小可运行服务 | API 可调通 |
+| Go 后端骨架 | Go API Server 最小可运行服务 | API 可调通 |
 | Rust→WASM 验证 | 体素处理逻辑编译为 WASM 在浏览器跑 | 性能满足要求 |
 
 ### Phase 1：MVP — 核心管线（4-6 周）
@@ -362,9 +371,9 @@ Rust 后端通过 `reqwest` 直接调 OpenAI 兼容 API，天然支持多轮 `me
 |------|------|------|
 | 产品经理 | 王.W | 需求定义、优先级、验收 |
 | 技术负责人 | 王.W + Hermes Agent | 架构决策、代码审查 |
-| Rust 后端 | Codex / Claude Code Agent | API、数据库、文件存储、AI 调用 |
+| Go 后端 | Codex / Claude Code Agent | API、数据库、文件存储、AI 调用 |
 | React 前端 | Codex / Claude Code Agent | 3D 渲染、体素编辑器、UI |
-| WASM 模块 | Codex / Claude Code Agent | Rust→WASM 体素处理逻辑 |
+| Rust/WASM 模块 | Codex / Claude Code Agent | 体素、几何、Marching Cubes、WASM 编译 |
 | QA | Codex / Claude Code Agent | 测试用例、自动化测试 |
 
 ### 9.2 项目仓库结构
@@ -379,7 +388,7 @@ HomeVox/
 │   │   ├── ai/             # AI 助手 UI + 对话
 │   │   └── export/         # 导出模块
 │   └── ...
-├── backend/                # Rust + Axum
+├── backend/                # Go API Server
 │   ├── src/
 │   │   ├── api/            # REST 路由
 │   │   ├── models/         # 数据模型
@@ -416,4 +425,5 @@ HomeVox/
 | 版本 | 日期 | 变更 |
 |------|------|------|
 | v1.0 | 2025-07-06 | 初始方案 |
-| v1.1 | 2025-07-06 | 新增关键设计决策：体素=内部引擎非视觉风格；技术栈定为 Rust+Axum / React+R3F / PG / S3；新增 Marching Cubes + PBR 渲染管线 |
+| v1.1 | 2025-07-06 | 新增关键设计决策：体素=内部引擎非视觉风格；初版技术栈记录；新增 Marching Cubes + PBR 渲染管线 |
+| v1.2 | 2025-07-06 | 技术栈调整为 Go 后端 API + Rust/WASM 几何核心：Go 管业务，Rust 管体素/几何，AI 由 Go 直接请求 OpenAI-compatible API |

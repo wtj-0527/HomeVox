@@ -1,0 +1,500 @@
+{
+  "rooms": [
+    {
+      "name": "主卧",
+      "type": "卧室",
+      "approximate_bounds": {
+        "x1": 147,
+        "y1": 154,
+        "x2": 353,
+        "y2": 447
+      },
+      "area_ratio": 0.12
+    },
+    {
+      "name": "次卧2",
+      "type": "卧室",
+      "approximate_bounds": {
+        "x1": 851,
+        "y1": 154,
+        "x2": 1141,
+        "y2": 447
+      },
+      "area_ratio": 0.17
+    },
+    {
+      "name": "次卧3",
+      "type": "卧室",
+      "approximate_bounds": {
+        "x1": 851,
+        "y1": 650,
+        "x2": 1141,
+        "y2": 842
+      },
+      "area_ratio": 0.11
+    },
+    {
+      "name": "客厅",
+      "type": "客厅",
+      "approximate_bounds": {
+        "x1": 353,
+        "y1": 447,
+        "x2": 851,
+        "y2": 650
+      },
+      "area_ratio": 0.19
+    },
+    {
+      "name": "厨房",
+      "type": "厨房",
+      "approximate_bounds": {
+        "x1": 649,
+        "y1": 154,
+        "x2": 851,
+        "y2": 447
+      },
+      "area_ratio": 0.1
+    },
+    {
+      "name": "卫生间",
+      "type": "卫生间",
+      "approximate_bounds": {
+        "x1": 649,
+        "y1": 650,
+        "x2": 851,
+        "y2": 842
+      },
+      "area_ratio": 0.08
+    },
+    {
+      "name": "中间房",
+      "type": "卧室",
+      "approximate_bounds": {
+        "x1": 353,
+        "y1": 154,
+        "x2": 649,
+        "y2": 447
+      },
+      "area_ratio": 0.14
+    },
+    {
+      "name": "左下房间",
+      "type": "卧室",
+      "approximate_bounds": {
+        "x1": 147,
+        "y1": 650,
+        "x2": 649,
+        "y2": 842
+      },
+      "area_ratio": 0.17
+    },
+    {
+      "name": "上方走廊",
+      "type": "走廊",
+      "approximate_bounds": {
+        "x1": 147,
+        "y1": 57,
+        "x2": 851,
+        "y2": 154
+      },
+      "area_ratio": 0.08
+    },
+    {
+      "name": "左上小空间",
+      "type": "走廊",
+      "approximate_bounds": {
+        "x1": 55,
+        "y1": 57,
+        "x2": 147,
+        "y2": 154
+      },
+      "area_ratio": 0.03
+    },
+    {
+      "name": "左侧过道",
+      "type": "走廊",
+      "approximate_bounds": {
+        "x1": 55,
+        "y1": 154,
+        "x2": 147,
+        "y2": 447
+      },
+      "area_ratio": 0.05
+    },
+    {
+      "name": "左下小空间",
+      "type": "走廊",
+      "approximate_bounds": {
+        "x1": 55,
+        "y1": 650,
+        "x2": 147,
+        "y2": 842
+      },
+      "area_ratio": 0.03
+    },
+    {
+      "name": "右上走廊",
+      "type": "走廊",
+      "approximate_bounds": {
+        "x1": 851,
+        "y1": 57,
+        "x2": 1141,
+        "y2": 154
+      },
+      "area_ratio": 0.06
+    },
+    {
+      "name": "右中厅",
+      "type": "走廊",
+      "approximate_bounds": {
+        "x1": 851,
+        "y1": 447,
+        "x2": 1141,
+        "y2": 650
+      },
+      "area_ratio": 0.09
+    }
+  ],
+  "walls": [
+    {
+      "orientation": "horizontal",
+      "position": 57,
+      "start": 55,
+      "end": 1141,
+      "thickness": 12
+    },
+    {
+      "orientation": "horizontal",
+      "position": 154,
+      "start": 55,
+      "end": 1141,
+      "thickness": 12
+    },
+    {
+      "orientation": "horizontal",
+      "position": 447,
+      "start": 55,
+      "end": 649,
+      "thickness": 12
+    },
+    {
+      "orientation": "horizontal",
+      "position": 447,
+      "start": 801,
+      "end": 1141,
+      "thickness": 12
+    },
+    {
+      "orientation": "horizontal",
+      "position": 650,
+      "start": 55,
+      "end": 1141,
+      "thickness": 12
+    },
+    {
+      "orientation": "horizontal",
+      "position": 842,
+      "start": 55,
+      "end": 1141,
+      "thickness": 12
+    },
+    {
+      "orientation": "vertical",
+      "position": 55,
+      "start": 57,
+      "end": 842,
+      "thickness": 12
+    },
+    {
+      "orientation": "vertical",
+      "position": 147,
+      "start": 57,
+      "end": 842,
+      "thickness": 12
+    },
+    {
+      "orientation": "vertical",
+      "position": 353,
+      "start": 154,
+      "end": 650,
+      "thickness": 12
+    },
+    {
+      "orientation": "vertical",
+      "position": 649,
+      "start": 57,
+      "end": 842,
+      "thickness": 12
+    },
+    {
+      "orientation": "vertical",
+      "position": 851,
+      "start": 57,
+      "end": 842,
+      "thickness": 12
+    },
+    {
+      "orientation": "vertical",
+      "position": 1141,
+      "start": 57,
+      "end": 842,
+      "thickness": 12
+    }
+  ],
+  "doors": [
+    {
+      "position": {
+        "x": 351,
+        "y": 100
+      },
+      "orientation": "horizontal",
+      "opens_to": "down",
+      "room_connected": [
+        "上方走廊",
+        "室外"
+      ]
+    },
+    {
+      "position": {
+        "x": 200,
+        "y": 447
+      },
+      "orientation": "horizontal",
+      "opens_to": "up",
+      "room_connected": [
+        "主卧",
+        "左下房间"
+      ]
+    },
+    {
+      "position": {
+        "x": 500,
+        "y": 250
+      },
+      "orientation": "vertical",
+      "opens_to": "right",
+      "room_connected": [
+        "中间房",
+        "上方走廊"
+      ]
+    },
+    {
+      "position": {
+        "x": 600,
+        "y": 350
+      },
+      "orientation": "vertical",
+      "opens_to": "right",
+      "room_connected": [
+        "中间房",
+        "厨房"
+      ]
+    },
+    {
+      "position": {
+        "x": 900,
+        "y": 447
+      },
+      "orientation": "horizontal",
+      "opens_to": "up",
+      "room_connected": [
+        "次卧2",
+        "右中厅"
+      ]
+    },
+    {
+      "position": {
+        "x": 650,
+        "y": 580
+      },
+      "orientation": "vertical",
+      "opens_to": "left",
+      "room_connected": [
+        "客厅",
+        "卫生间"
+      ]
+    },
+    {
+      "position": {
+        "x": 900,
+        "y": 650
+      },
+      "orientation": "horizontal",
+      "opens_to": "up",
+      "room_connected": [
+        "右中厅",
+        "次卧3"
+      ]
+    }
+  ],
+  "windows": [
+    {
+      "position": {
+        "x1": 401,
+        "y1": 45,
+        "x2": 600,
+        "y2": 70
+      },
+      "orientation": "horizontal",
+      "room": "上方走廊"
+    },
+    {
+      "position": {
+        "x1": 701,
+        "y1": 45,
+        "x2": 820,
+        "y2": 70
+      },
+      "orientation": "horizontal",
+      "room": "右上走廊"
+    },
+    {
+      "position": {
+        "x1": 67,
+        "y1": 201,
+        "x2": 92,
+        "y2": 351
+      },
+      "orientation": "vertical",
+      "room": "左侧过道"
+    },
+    {
+      "position": {
+        "x1": 1036,
+        "y1": 201,
+        "x2": 1061,
+        "y2": 351
+      },
+      "orientation": "vertical",
+      "room": "次卧2"
+    },
+    {
+      "position": {
+        "x1": 67,
+        "y1": 700,
+        "x2": 92,
+        "y2": 822
+      },
+      "orientation": "vertical",
+      "room": "左下小空间"
+    },
+    {
+      "position": {
+        "x1": 600,
+        "y1": 830,
+        "x2": 801,
+        "y2": 855
+      },
+      "orientation": "horizontal",
+      "room": "卫生间"
+    },
+    {
+      "position": {
+        "x1": 1036,
+        "y1": 700,
+        "x2": 1061,
+        "y2": 822
+      },
+      "orientation": "vertical",
+      "room": "次卧3"
+    }
+  ],
+  "orientation": {
+    "north_direction": "up",
+    "description": "上北下南"
+  },
+  "summary": {
+    "total_rooms": 14,
+    "total_bedrooms": 5,
+    "total_living_rooms": 1,
+    "total_bathrooms": 1,
+    "total_kitchens": 1,
+    "total_doors": 7,
+    "total_windows": 7,
+    "floor_area_estimate_sqm": 110
+  },
+  "_accuracy_analysis": {
+    "评估时间": "2026-07-06",
+    "模型": "gpt-5.4 (via axonhub.nasw.heiyu.space)",
+    "图片": "floorplan-sample.png (1200x900, 3室1厅1厨1卫)",
+    "准确率评估": {
+      "房间识别": {
+        "准确率": "60%",
+        "正确识别": [
+          "主卧",
+          "次卧2",
+          "次卧3",
+          "客厅",
+          "厨房",
+          "卫生间"
+        ],
+        "错误识别": [
+          "将未标注的空间'中间房'(x:350-650, y:150-450)误判为卧室（实际为过渡空间/走道）",
+          "将'左下房间'(x:150-650, y:650-850)误判为卧室（实际为未标注区域）",
+          "引入了6个不存在的走廊/小空间（上方走廊、左上小空间、左侧过道、左下小空间、右上走廊、右中厅），这些是墙体之间的空白区域，非独立功能房间"
+        ],
+        "漏识别": "无——6个标注房间全部被识别到",
+        "说明": "AI正确识别了图上所有文字标注的房间，但过度分割了墙体间隙为独立'房间'。实际标注房间6个，AI返回了14个房间，其中8个为误判。"
+      },
+      "墙体识别": {
+        "准确率": "75%",
+        "墙体数量": "AI识别12堵墙 vs 实际11堵墙（含外轮廓4+内横墙4+内竖墙6，但x=150和x=850有断点）",
+        "正确点": [
+          "外轮廓4堵墙坐标基本正确",
+          "内部横墙位置(y=150, 450, 650)正确",
+          "厚度估计(12px)完全准确"
+        ],
+        "错误点": [
+          "x=150处墙体被识别为贯穿全高(y:57-842)，实际中间有缺口(y=450-650)",
+          "x=850处墙体被识别为贯穿全高(y:57-842)，实际中间有缺口(y=450-650)",
+          "多识别了一堵墙(x=147, y:57-842)——与外轮廓过近"
+        ]
+      },
+      "门识别": {
+        "准确率": "60%",
+        "数量": "7扇全检测到 ✓",
+        "位置准确率": "7/7 位置坐标误差在±5px内 ✓",
+        "朝向准确率": "3/7 正确",
+        "错误": [
+          "入户门(350,100): 水平→正确",
+          "主卧门(200,450): 实际垂直，AI判断为水平",
+          "500,250和600,350门: 实际水平，AI判断为垂直",
+          "次卧门(900,450, 900,650): 实际垂直，AI判断为水平",
+          "只有卫生间门(650,580)和入户门(350,100)朝向判断正确"
+        ],
+        "连通关系": "门的房间归属判断混乱，将未标注空间作为连接目标"
+      },
+      "窗户识别": {
+        "准确率": "71%",
+        "数量": "7扇全检测到 ✓",
+        "位置准确率": "7/7 坐标大致正确（误差<20px）✓",
+        "房间归属": "3/7 正确（次卧2、次卧3各一扇正确；其余4扇被归到了不存在或错误的房间）"
+      },
+      "朝向识别": {
+        "准确率": "100%",
+        "说明": "正确识别指北针(N)箭头向上，上北下南"
+      },
+      "面积估算": {
+        "准确率": "无法验证（无实际尺寸标注在图上）",
+        "AI估计": "110㎡",
+        "评价": "3室1厅110㎡属于合理猜测范围"
+      }
+    },
+    "主要问题": [
+      "1. 过度分割：AI将墙体之间的空白区域（无文字标注）也识别为独立功能房间，产生大量虚假房间（14个 vs 实际6个）",
+      "2. 门朝向误判：7扇门中仅2扇朝向判断正确，门弧线解读能力不足",
+      "3. 窗户归属错误：窗户被分配给邻近的虚假房间而非真实房间（如主卧窗被归给'左侧过道'）",
+      "4. 墙体连续性误判：无法识别墙体的断点/开门处，将分段墙视为连续墙",
+      "5. 房间边界精度：边界坐标误差约10-20px，主要因墙体厚度（12px）被计入相邻空间"
+    ],
+    "是否建议继续": {
+      "结论": "谨慎继续，但需要显著优化",
+      "理由": [
+        "优点：文字标注的房间名和基本方位识别准确，朝向正确，门窗数量和大致位置能捕获",
+        "痛点：无文字标注的空白区域会被误判，门朝向、窗户归属等空间关系推理不可靠",
+        "改进方向：(1) 提示词中明确'仅识别有文字标注的区域为房间'；(2) 在图上用不同颜色/线型区分功能空间和走道；(3) 增加尺寸标注辅助AI判断；(4) 考虑用专业CAD解析工具替代纯视觉方案"
+      ],
+      "综合评分": "C+（及格线附近，不够可靠，需加强约束）"
+    }
+  }
+}
