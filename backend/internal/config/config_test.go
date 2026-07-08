@@ -21,3 +21,13 @@ func TestLoadRejectsListenAddrDrift(t *testing.T) {
 		t.Fatalf("ListenAddr = %q, want drift rejected to fixed 0.0.0.0:18088", cfg.ListenAddr)
 	}
 }
+
+func TestLoadReadsAIAPIKey(t *testing.T) {
+	t.Setenv("AI_API_KEY", "test-key")
+
+	cfg := Load()
+
+	if cfg.AIAPIKey != "test-key" {
+		t.Fatal("AIAPIKey was not loaded from AI_API_KEY")
+	}
+}

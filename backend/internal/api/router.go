@@ -30,12 +30,31 @@ func NewRouter(cfg config.Config) *gin.Engine {
 	router.GET("/api/config", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"aiModel":            cfg.AIModel,
-			"s3Configured":       cfg.S3Endpoint != "" && cfg.S3Bucket != "",
-			"databaseConfigured": cfg.DatabaseURL != "",
+			"s3Configured":       cfg.S3Endpoint != "" && cfg.S3Bucket != "" && cfg.S3AccessKey != "" && cfg.S3SecretKey != "",
+			"s3Status":           storageStatus(cfg),
+			"databaseConfigured": false,
+			"databaseStatus":     databaseStatus(cfg),
 		})
 	})
 
 	return router
+}
+
+func storageStatus(cfg config.Config) string {
+	if cfg.S3Endpoint == "" && cfg.S3Bucket == "" && cfg.S3AccessKey == "" && cfg.S3SecretKey == "" {
+		return "not_configured"
+	}
+	if cfg.S3Endpoint == "" || cfg.S3Bucket == "" || cfg.S3AccessKey == "" || cfg.S3SecretKey == "" {
+		return "incomplete_config"
+	}
+	return "configured_unverified"
+}
+
+func databaseStatus(cfg config.Config) string {
+	if cfg.DatabaseURL == "" {
+		return "not_configured"
+	}
+	return "phase0_placeholder_unverified"
 }
 
 func corsMiddleware() gin.HandlerFunc {

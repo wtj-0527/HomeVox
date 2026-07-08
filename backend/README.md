@@ -10,8 +10,4 @@ go run ./cmd/server
 
 Default listen address: `0.0.0.0:18088`.
 
-Override with:
-
-```bash
-HOMEVOX_LISTEN_ADDR=0.0.0.0:18088 go run ./cmd/server
-```
+The backend deliberately ignores `HOMEVOX_LISTEN_ADDR`; the Phase 0 service binds to the fixed address above.

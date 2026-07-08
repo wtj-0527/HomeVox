@@ -341,13 +341,7 @@ pub fn marching_cubes_3d(
     if data.len() < vertex_count {
         return vec![];
     }
-    let Some(cell_count) = (nx - 1)
-        .checked_mul(ny - 1)
-        .and_then(|n| n.checked_mul(nz - 1))
-    else {
-        return vec![];
-    };
-    let mut vertices: Vec<f32> = Vec::with_capacity(cell_count.saturating_mul(18));
+    let mut vertices: Vec<f32> = Vec::new();
     for z in 0..nz - 1 {
         for y in 0..ny - 1 {
             for x in 0..nx - 1 {
@@ -388,15 +382,19 @@ pub fn marching_cubes_3d(
                     }
                 }
                 let tri_entry = &TRI_TABLE[cube_index];
-                for edge_idx in tri_entry.iter() {
-                    let ei = *edge_idx;
-                    if ei < 0 {
+                for tri_edges in tri_entry.chunks(3) {
+                    if tri_edges.len() < 3 || tri_edges[0] < 0 {
                         break;
                     }
-                    let v = &edge_vertices[ei as usize];
-                    vertices.push(v.x);
-                    vertices.push(v.y);
-                    vertices.push(v.z);
+
+                    // TRI_TABLE winding is used with the positive-inside convention below
+                    // (`corner_value >= iso_level`); keep the table order so normals point outward.
+                    for &ei in [tri_edges[0], tri_edges[1], tri_edges[2]].iter() {
+                        let v = &edge_vertices[ei as usize];
+                        vertices.push(v.x);
+                        vertices.push(v.y);
+                        vertices.push(v.z);
+                    }
                 }
             }
         }
@@ -539,5 +537,47 @@ mod tests {
     fn test_get_mc_info_handles_zero_dimensions() {
         let info = get_mc_info(0, 0, 0);
         assert!(info.contains("0 cells"), "unexpected info: {}", info);
+    }
+
+    fn triangle_normal(vertices: &[f32]) -> Vec3 {
+        let a = Vec3::new(vertices[0], vertices[1], vertices[2]);
+        let b = Vec3::new(vertices[3], vertices[4], vertices[5]);
+        let c = Vec3::new(vertices[6], vertices[7], vertices[8]);
+        let ab = Vec3::new(b.x - a.x, b.y - a.y, b.z - a.z);
+        let ac = Vec3::new(c.x - a.x, c.y - a.y, c.z - a.z);
+        Vec3::new(
+            ab.y * ac.z - ab.z * ac.y,
+            ab.z * ac.x - ab.x * ac.z,
+            ab.x * ac.y - ab.y * ac.x,
+        )
+    }
+
+    #[test]
+    fn test_single_positive_corner_winds_outward() {
+        let mut field = vec![-1.0f32; 8];
+        field[0] = 1.0;
+        let v = marching_cubes_3d(&field, 2, 2, 2, 0.0);
+        assert_eq!(v.len(), 9, "single corner, got {}", v.len());
+
+        let normal = triangle_normal(&v);
+        assert!(
+            normal.x < 0.0 && normal.y < 0.0 && normal.z < 0.0,
+            "normal should point away from positive-inside corner, got {:?}",
+            normal
+        );
+    }
+
+    #[test]
+    fn test_large_sparse_grid_does_not_preallocate_for_all_cells() {
+        let nx = 80;
+        let ny = 80;
+        let nz = 80;
+        let field = vec![-1.0f32; nx * ny * nz];
+        let v = marching_cubes_3d(&field, nx, ny, nz, 0.0);
+        assert!(
+            v.capacity() < 1024,
+            "empty sparse grid overallocated capacity {}",
+            v.capacity()
+        );
     }
 }
