@@ -10,15 +10,30 @@
 
 | 层 | 选型 |
 |----|------|
-| 后端 | Rust + Axum |
 | 前端 | React + TypeScript + React Three Fiber |
+| 体素/几何核心 | Rust + WASM |
+| 后端 API | Go |
 | 数据库 | PostgreSQL |
-| 存储 | S3（MinIO 本地） |
-| AI | OpenAI 兼容 API 直调 |
+| 存储 | S3 / MinIO |
+| AI | Go 直接请求 OpenAI-compatible API |
+
+## 技术决策
+
+HomeVox 采用混合技术路线：**Go 管业务 API，Rust 管体素/几何核心**。
+
+- Go 后端负责用户、项目、PostgreSQL、S3/MinIO、AI 多轮对话、导出任务与 WebSocket
+- Rust + WASM 负责体素编辑、Marching Cubes、网格生成、碰撞/吸附等几何计算
+- 前端使用 React + R3F，调用 WASM 几何模块并完成高质量 3D 渲染
 
 ## 开发状态
 
-🚧 产品方案设计中 → 即将启动 Phase 0 技术验证
+🚧 Phase 0 技术验证收口中
+
+- ✅ 技术栈已切换为 React + R3F / Go API / Rust + WASM / PostgreSQL / S3-MinIO
+- ✅ Go 后端最小 API Server 已落地，默认监听 `0.0.0.0:18088`
+- ✅ Rust/WASM 几何核心已加入 Marching Cubes 验证代码
+- ✅ 前端脚手架可构建
+- ⏳ 下一步进入 MVP 核心管线：户型图上传、AI 解析、2D/3D 白模与基础导出
 
 ## 许可
 
@@ -33,4 +48,4 @@
 
 王.W ([@KingBoyAndGirl](https://github.com/KingBoyAndGirl))
 
-维护者：Hermes Agent (`wangw9475@agent.qq.com`)
+维护者：产研团队（`hermes` / `codex` / `claude`，邮箱 `wangw9475@agent.qq.com`）

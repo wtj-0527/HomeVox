@@ -1,0 +1,71 @@
+package api
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/KingBoyAndGirl/HomeVox/backend/internal/config"
+	"github.com/gin-gonic/gin"
+)
+
+type healthResponse struct {
+	Status  string `json:"status"`
+	Service string `json:"service"`
+	Time    string `json:"time"`
+}
+
+func NewRouter(cfg config.Config) *gin.Engine {
+	gin.SetMode(gin.ReleaseMode)
+	router := gin.New()
+	router.Use(gin.Logger(), gin.Recovery(), corsMiddleware())
+
+	router.GET("/api/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, healthResponse{
+			Status:  "ok",
+			Service: "homevox-backend",
+			Time:    time.Now().UTC().Format(time.RFC3339),
+		})
+	})
+
+	router.GET("/api/config", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"aiModel":            cfg.AIModel,
+			"s3Configured":       cfg.S3Endpoint != "" && cfg.S3Bucket != "" && cfg.S3AccessKey != "" && cfg.S3SecretKey != "",
+			"s3Status":           storageStatus(cfg),
+			"databaseConfigured": false,
+			"databaseStatus":     databaseStatus(cfg),
+		})
+	})
+
+	return router
+}
+
+func storageStatus(cfg config.Config) string {
+	if cfg.S3Endpoint == "" && cfg.S3Bucket == "" && cfg.S3AccessKey == "" && cfg.S3SecretKey == "" {
+		return "not_configured"
+	}
+	if cfg.S3Endpoint == "" || cfg.S3Bucket == "" || cfg.S3AccessKey == "" || cfg.S3SecretKey == "" {
+		return "incomplete_config"
+	}
+	return "configured_unverified"
+}
+
+func databaseStatus(cfg config.Config) string {
+	if cfg.DatabaseURL == "" {
+		return "not_configured"
+	}
+	return "phase0_placeholder_unverified"
+}
+
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization")
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
+}
