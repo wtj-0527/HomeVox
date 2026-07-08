@@ -1,21 +1,49 @@
 use wasm_bindgen::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Vec3 { x: f32, y: f32, z: f32 }
+struct Vec3 {
+    x: f32,
+    y: f32,
+    z: f32,
+}
 
 impl Vec3 {
-    fn new(x: f32, y: f32, z: f32) -> Self { Self { x, y, z } }
+    fn new(x: f32, y: f32, z: f32) -> Self {
+        Self { x, y, z }
+    }
     fn lerp(a: &Vec3, b: &Vec3, t: f32) -> Self {
-        Self { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y), z: a.z + t * (b.z - a.z) }
+        Self {
+            x: a.x + t * (b.x - a.x),
+            y: a.y + t * (b.y - a.y),
+            z: a.z + t * (b.z - a.z),
+        }
     }
 }
 
 const CORNER_OFFSETS: [(usize, usize, usize); 8] = [
-    (0,0,0),(1,0,0),(1,1,0),(0,1,0),(0,0,1),(1,0,1),(1,1,1),(0,1,1),
+    (0, 0, 0),
+    (1, 0, 0),
+    (1, 1, 0),
+    (0, 1, 0),
+    (0, 0, 1),
+    (1, 0, 1),
+    (1, 1, 1),
+    (0, 1, 1),
 ];
 
 const EDGE_ENDPOINTS: [(usize, usize); 12] = [
-    (0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),(0,4),(1,5),(2,6),(3,7),
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (7, 4),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
 ];
 
 const fn build_edge_table() -> [u16; 256] {
@@ -26,7 +54,9 @@ const fn build_edge_table() -> [u16; 256] {
         let mut e: usize = 0;
         while e < 12 {
             let (a, b) = EDGE_ENDPOINTS[e];
-            if ((config >> a) & 1) != ((config >> b) & 1) { mask |= 1 << e; }
+            if ((config >> a) & 1) != ((config >> b) & 1) {
+                mask |= 1 << e;
+            }
             e += 1;
         }
         table[config] = mask;
@@ -189,7 +219,7 @@ const TRI_TABLE: [[i8; 16]; 256] = [
     [1, 2, 10, 3, 0, 11, 0, 6, 11, 0, 4, 6, -1, -1, -1, -1],
     [4, 11, 8, 4, 6, 11, 0, 2, 9, 2, 10, 9, -1, -1, -1, -1],
     [10, 9, 3, 10, 3, 2, 9, 4, 3, 11, 3, 6, 4, 6, 3, -1],
-    [8, 2, 3, 8, 6, 2, 8, 4, 6, 6, 1, 2, -1, -1, -1, -1],
+    [2, 3, 8, 4, 2, 8, 6, 2, 4, -1, -1, -1, -1, -1, -1, -1],
     [0, 4, 2, 4, 6, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
     [1, 9, 0, 2, 3, 4, 2, 4, 6, 4, 3, 8, -1, -1, -1, -1],
     [1, 9, 4, 1, 4, 2, 2, 4, 6, -1, -1, -1, -1, -1, -1, -1],
@@ -256,50 +286,68 @@ const TRI_TABLE: [[i8; 16]; 256] = [
     [4, 5, 8, 5, 3, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
     [4, 5, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
     [5, 10, 2, 3, 8, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [2, 5, 10, 0, 4, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [1, 2, 10, 5, 3, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [0, 4, 8, 1, 2, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [3, 7, 5, 3, 5, 8, 7, 10, 5, 9, 5, 0, 10, 0, 5, -1],
-    [5, 10, 7, 8, 3, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [7, 5, 10, 7, 10, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [4, 5, 9, 7, 5, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [4, 9, 5, 3, 7, 10, 3, 10, 11, 10, 7, 5, -1, -1, -1, -1],
-    [5, 1, 8, 5, 8, 4, 1, 11, 8, 6, 8, 7, 11, 7, 8, -1],
-    [11, 7, 6, 1, 8, 5, 1, 5, 3, 5, 4, 8, -1, -1, -1, -1],
-    [8, 4, 9, 8, 9, 11, 9, 2, 10, 10, 2, 1, 11, 7, 6, -1],
-    [11, 7, 6, 8, 4, 9, 10, 1, 2, -1, -1, -1, -1, -1, -1, -1],
-    [6, 11, 7, 1, 2, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [0, 8, 3, 5, 10, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [5, 10, 11, 4, 9, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [9, 5, 4, 3, 0, 8, 11, 7, 6, -1, -1, -1, -1, -1, -1, -1],
-    [11, 7, 6, 9, 5, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [5, 10, 11, 5, 11, 4, 4, 11, 8, -1, -1, -1, -1, -1, -1, -1],
-    [5, 10, 11, 5, 11, 4, 0, 3, 11, 0, 4, 11, -1, -1, -1, -1],
-    [0, 1, 9, 8, 4, 5, 8, 5, 11, 5, 4, 10, -1, -1, -1, -1],
-    [10, 11, 1, 11, 9, 1, 4, 5, 11, 4, 11, 9, -1, -1, -1, -1],
-    [8, 5, 4, 8, 1, 5, 8, 11, 1, 1, 2, 5, -1, -1, -1, -1],
-    [0, 4, 11, 0, 11, 3, 4, 5, 11, 2, 11, 5, 5, 1, 2, -1],
-    [5, 4, 8, 5, 8, 10, 10, 8, 2, -1, -1, -1, -1, -1, -1, -1],
-    [2, 3, 10, 9, 5, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [4, 9, 5, 8, 2, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [0, 2, 3, 4, 9, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [0, 1, 8, 1, 4, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [9, 5, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [3, 0, 8, 7, 5, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [3, 7, 10, 3, 10, 2, 7, 5, 10, 9, 10, 0, 5, 0, 10, -1],
-    [0, 1, 9, 8, 4, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [1, 9, 4, 3, 1, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [7, 8, 4, 2, 3, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [4, 7, 8, 2, 3, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [0, 1, 9, 4, 7, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-    [1, 9, 4, 11, 1, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+    [10, 2, 1, 4, 5, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [4, 5, 8, 5, 3, 8, 5, 1, 3, -1, -1, -1, -1, -1, -1, -1],
+    [4, 5, 0, 0, 5, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [4, 5, 9, 3, 8, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [4, 5, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [11, 7, 4, 9, 11, 4, 10, 11, 9, -1, -1, -1, -1, -1, -1, -1],
+    [8, 7, 4, 11, 0, 9, 10, 11, 9, 3, 0, 11, -1, -1, -1, -1],
+    [10, 11, 1, 11, 4, 1, 4, 0, 1, 4, 11, 7, -1, -1, -1, -1],
+    [1, 10, 3, 10, 11, 3, 4, 8, 7, -1, -1, -1, -1, -1, -1, -1],
+    [11, 7, 4, 11, 4, 9, 2, 11, 9, 1, 2, 9, -1, -1, -1, -1],
+    [1, 0, 9, 7, 4, 8, 11, 3, 2, -1, -1, -1, -1, -1, -1, -1],
+    [7, 4, 11, 4, 2, 11, 4, 0, 2, -1, -1, -1, -1, -1, -1, -1],
+    [7, 4, 8, 2, 11, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [9, 10, 2, 7, 9, 2, 3, 7, 2, 4, 9, 7, -1, -1, -1, -1],
+    [10, 2, 9, 2, 0, 9, 7, 4, 8, -1, -1, -1, -1, -1, -1, -1],
+    [7, 4, 3, 4, 0, 3, 10, 2, 1, -1, -1, -1, -1, -1, -1, -1],
+    [10, 2, 1, 7, 4, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [9, 1, 4, 1, 7, 4, 1, 3, 7, -1, -1, -1, -1, -1, -1, -1],
+    [9, 1, 0, 7, 4, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 3, 4, 4, 3, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [8, 7, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [10, 8, 9, 11, 8, 10, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [0, 9, 3, 9, 11, 3, 9, 10, 11, -1, -1, -1, -1, -1, -1, -1],
+    [1, 10, 0, 10, 8, 0, 10, 11, 8, -1, -1, -1, -1, -1, -1, -1],
+    [1, 10, 3, 3, 10, 11, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [2, 11, 1, 11, 9, 1, 11, 8, 9, -1, -1, -1, -1, -1, -1, -1],
+    [0, 9, 1, 11, 3, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [2, 11, 0, 0, 11, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [2, 11, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [3, 8, 2, 8, 10, 2, 8, 9, 10, -1, -1, -1, -1, -1, -1, -1],
+    [10, 2, 9, 9, 2, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [3, 8, 0, 10, 2, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [10, 2, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [3, 8, 1, 1, 8, 9, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [9, 1, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [3, 8, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
 ];
 
-pub fn marching_cubes_3d(data: &[f32], nx: usize, ny: usize, nz: usize, iso_level: f32) -> Vec<f32> {
-    if nx < 2 || ny < 2 || nz < 2 { return vec![]; }
-    if data.len() < nx * ny * nz { return vec![]; }
-    let cell_count = (nx - 1) * (ny - 1) * (nz - 1);
-    let mut vertices: Vec<f32> = Vec::with_capacity(cell_count * 2 * 3 * 3);
+pub fn marching_cubes_3d(
+    data: &[f32],
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    iso_level: f32,
+) -> Vec<f32> {
+    if nx < 2 || ny < 2 || nz < 2 {
+        return vec![];
+    }
+    let Some(vertex_count) = nx.checked_mul(ny).and_then(|n| n.checked_mul(nz)) else {
+        return vec![];
+    };
+    if data.len() < vertex_count {
+        return vec![];
+    }
+    let Some(cell_count) = (nx - 1)
+        .checked_mul(ny - 1)
+        .and_then(|n| n.checked_mul(nz - 1))
+    else {
+        return vec![];
+    };
+    let mut vertices: Vec<f32> = Vec::with_capacity(cell_count.saturating_mul(18));
     for z in 0..nz - 1 {
         for y in 0..ny - 1 {
             for x in 0..nx - 1 {
@@ -307,33 +355,48 @@ pub fn marching_cubes_3d(data: &[f32], nx: usize, ny: usize, nz: usize, iso_leve
                 let mut corner_positions = [Vec3::new(0.0, 0.0, 0.0); 8];
                 for ci in 0..8 {
                     let (dx, dy, dz) = CORNER_OFFSETS[ci];
-                    let ix = x + dx; let iy = y + dy; let iz = z + dz;
+                    let ix = x + dx;
+                    let iy = y + dy;
+                    let iz = z + dz;
                     let idx = ix + iy * nx + iz * nx * ny;
                     corner_values[ci] = data[idx];
                     corner_positions[ci] = Vec3::new(ix as f32, iy as f32, iz as f32);
                 }
                 let mut cube_index: usize = 0;
                 for ci in 0..8 {
-                    if corner_values[ci] >= iso_level { cube_index |= 1 << ci; }
+                    if corner_values[ci] >= iso_level {
+                        cube_index |= 1 << ci;
+                    }
                 }
                 let edge_mask = EDGE_TABLE[cube_index];
-                if edge_mask == 0 { continue; }
+                if edge_mask == 0 {
+                    continue;
+                }
                 let mut edge_vertices = [Vec3::new(0.0, 0.0, 0.0); 12];
                 for e in 0..12 {
                     if (edge_mask >> e) & 1 != 0 {
                         let (c0, c1) = EDGE_ENDPOINTS[e];
                         let v0 = corner_values[c0];
                         let v1 = corner_values[c1];
-                        let t = if (v1 - v0).abs() < 1e-7 { 0.5 } else { (iso_level - v0) / (v1 - v0) };
-                        edge_vertices[e] = Vec3::lerp(&corner_positions[c0], &corner_positions[c1], t);
+                        let t = if (v1 - v0).abs() < 1e-7 {
+                            0.5
+                        } else {
+                            (iso_level - v0) / (v1 - v0)
+                        };
+                        edge_vertices[e] =
+                            Vec3::lerp(&corner_positions[c0], &corner_positions[c1], t);
                     }
                 }
                 let tri_entry = &TRI_TABLE[cube_index];
                 for edge_idx in tri_entry.iter() {
                     let ei = *edge_idx;
-                    if ei < 0 { break; }
+                    if ei < 0 {
+                        break;
+                    }
                     let v = &edge_vertices[ei as usize];
-                    vertices.push(v.x); vertices.push(v.y); vertices.push(v.z);
+                    vertices.push(v.x);
+                    vertices.push(v.y);
+                    vertices.push(v.z);
                 }
             }
         }
@@ -342,7 +405,9 @@ pub fn marching_cubes_3d(data: &[f32], nx: usize, ny: usize, nz: usize, iso_leve
 }
 
 #[wasm_bindgen]
-pub fn init() { console_error_panic_hook::set_once(); }
+pub fn init() {
+    console_error_panic_hook::set_once();
+}
 
 #[wasm_bindgen]
 pub fn marching_cubes(data: &[f32], nx: usize, ny: usize, nz: usize, iso_level: f32) -> Vec<f32> {
@@ -356,9 +421,27 @@ pub fn greet(name: &str) -> String {
 
 #[wasm_bindgen]
 pub fn get_mc_info(nx: usize, ny: usize, nz: usize) -> String {
-    let cells = (nx - 1) * (ny - 1) * (nz - 1);
-    format!("Grid: {}x{}x{} ({} vertices), {} cells, est. {} triangles",
-        nx, ny, nz, nx * ny * nz, cells, cells * 2)
+    let vertices = nx
+        .checked_mul(ny)
+        .and_then(|n| n.checked_mul(nz))
+        .unwrap_or(0);
+    let cells = if nx < 2 || ny < 2 || nz < 2 {
+        0
+    } else {
+        (nx - 1)
+            .checked_mul(ny - 1)
+            .and_then(|n| n.checked_mul(nz - 1))
+            .unwrap_or(0)
+    };
+    format!(
+        "Grid: {}x{}x{} ({} vertices), {} cells, est. {} triangles",
+        nx,
+        ny,
+        nz,
+        vertices,
+        cells,
+        cells.saturating_mul(2)
+    )
 }
 
 #[cfg(test)]
@@ -388,7 +471,11 @@ mod tests {
         assert!(!vertices.is_empty(), "should have triangles");
         assert_eq!(vertices.len() % 9, 0, "vertex count must be multiple of 9");
         let tri_count = vertices.len() / 9;
-        assert!(tri_count >= 4, "at least a few triangles, got {}", tri_count);
+        assert!(
+            tri_count >= 4,
+            "at least a few triangles, got {}",
+            tri_count
+        );
         assert!(tri_count <= 80, "under cell_count*2, got {}", tri_count);
         for chunk in vertices.chunks(3) {
             assert!(chunk[0] >= 0.0 && chunk[0] <= 3.0);
@@ -415,5 +502,42 @@ mod tests {
         field[0] = 1.0;
         let v = marching_cubes_3d(&field, 2, 2, 2, 0.5);
         assert_eq!(v.len(), 9, "single corner, got {}", v.len());
+    }
+
+    #[test]
+    fn test_tri_table_only_references_active_edges() {
+        for (cube_index, tri_entry) in TRI_TABLE.iter().enumerate() {
+            let edge_mask = EDGE_TABLE[cube_index];
+            for &edge_idx in tri_entry {
+                if edge_idx < 0 {
+                    break;
+                }
+                let edge_idx = edge_idx as usize;
+                assert!(
+                    edge_idx < 12,
+                    "cube {} references invalid edge {}",
+                    cube_index,
+                    edge_idx
+                );
+                assert!(
+                    ((edge_mask >> edge_idx) & 1) != 0,
+                    "cube {} references inactive edge {} with mask {:#x}",
+                    cube_index,
+                    edge_idx,
+                    edge_mask
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_marching_cubes_rejects_overflowing_dimensions() {
+        assert!(marching_cubes_3d(&[], usize::MAX, 2, 2, 0.0).is_empty());
+    }
+
+    #[test]
+    fn test_get_mc_info_handles_zero_dimensions() {
+        let info = get_mc_info(0, 0, 0);
+        assert!(info.contains("0 cells"), "unexpected info: {}", info);
     }
 }

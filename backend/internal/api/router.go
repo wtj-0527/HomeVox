@@ -9,31 +9,44 @@ import (
 )
 
 type healthResponse struct {
-	Status string `json:"status"`
+	Status  string `json:"status"`
 	Service string `json:"service"`
-	Time string `json:"time"`
+	Time    string `json:"time"`
 }
 
 func NewRouter(cfg config.Config) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
-	router.Use(gin.Logger(), gin.Recovery())
+	router.Use(gin.Logger(), gin.Recovery(), corsMiddleware())
 
 	router.GET("/api/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, healthResponse{
-			Status: "ok",
+			Status:  "ok",
 			Service: "homevox-backend",
-			Time: time.Now().UTC().Format(time.RFC3339),
+			Time:    time.Now().UTC().Format(time.RFC3339),
 		})
 	})
 
 	router.GET("/api/config", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"aiModel": cfg.AIModel,
-			"s3Configured": cfg.S3Endpoint != "" && cfg.S3Bucket != "",
+			"aiModel":            cfg.AIModel,
+			"s3Configured":       cfg.S3Endpoint != "" && cfg.S3Bucket != "",
 			"databaseConfigured": cfg.DatabaseURL != "",
 		})
 	})
 
 	return router
+}
+
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization")
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
 }
