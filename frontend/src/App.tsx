@@ -13,8 +13,18 @@ import {
   undo as undoEditor,
   type WallEditorState,
 } from './floorplanEditor'
+import {
+  canvasScale,
+  canvasUnitsForCssPixels,
+  isParseResponse,
+  openingLabel,
+  type ParseResponse,
+  type ParseResult,
+  type Viewport,
+} from './floorplanUi'
 
 const API_PARSE_URL = '/api/floorplans/parse'
+const EMPTY_WALLS: WallSegment[] = []
 
 function roomColor(type: string) {
   if (type.includes('卧')) return '#60a5fa'
@@ -24,44 +34,6 @@ function roomColor(type: string) {
   return '#94a3b8'
 }
 
-type Bounds = {
-  x1: number
-  y1: number
-  x2: number
-  y2: number
-}
-
-type Room = {
-  name: string
-  type: string
-  approximate_bounds: Bounds
-  area_ratio?: number
-}
-
-type ParsedOpening = {
-  type?: string
-  x?: number
-  y?: number
-  from?: string
-  to?: string
-}
-
-type ParseResult = {
-  rooms: Room[]
-  walls: WallSegment[]
-  doors: ParsedOpening[]
-  windows: ParsedOpening[]
-  scale: { unit: string; pixel_to_unit?: number }
-  metadata: { source: string; confidence?: number; image_width?: number; image_height?: number }
-}
-
-type ParseResponse = {
-  filename: string
-  contentType: string
-  size: number
-  result: ParseResult
-}
-
 type ParseState = 'idle' | 'uploading' | 'ready' | 'error'
 
 type ScenePoint = {
@@ -69,12 +41,6 @@ type ScenePoint = {
   y: number
 }
 
-type Viewport = {
-  minX: number
-  minY: number
-  width: number
-  height: number
-}
 
 function isFinitePositiveInteger(value: number | undefined | null): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -184,9 +150,9 @@ type FloorplanSceneProps = {
 }
 
 function Scene({ result }: FloorplanSceneProps) {
-  const rooms = result?.rooms ?? []
+  const rooms = result?.rooms
   const model = useMemo(() => {
-    if (rooms.length === 0) return []
+    if (!rooms || rooms.length === 0) return []
     const minX = Math.min(...rooms.map((room) => room.approximate_bounds.x1))
     const maxX = Math.max(...rooms.map((room) => room.approximate_bounds.x2))
     const minY = Math.min(...rooms.map((room) => room.approximate_bounds.y1))
@@ -317,13 +283,18 @@ export default function App() {
   const [hoveredEndpoint, setHoveredEndpoint] = useState<EndpointRef | null>(null)
   const [draggedEndpoint, setDraggedEndpoint] = useState<EndpointRef | null>(null)
   const [dragPreviewWalls, setDragPreviewWalls] = useState<WallSegment[] | null>(null)
+  const [selectedWallIndex, setSelectedWallIndex] = useState<number | null>(null)
+  const [showSourceImage, setShowSourceImage] = useState(true)
   const [imageDimFallback, setImageDimFallback] = useState<{ width: number; height: number } | null>(null)
+  const [editorSize, setEditorSize] = useState({ width: 0, height: 0 })
 
   const editorRef = useRef<SVGSVGElement | null>(null)
   const svgUrlRef = useRef('')
+  const parseRequestRef = useRef<{ id: number; controller: AbortController } | null>(null)
+  const requestSequenceRef = useRef(0)
 
   const result = parseResponse?.result ?? null
-  const walls = dragPreviewWalls ?? wallEditor?.walls ?? result?.walls ?? []
+  const walls = dragPreviewWalls ?? wallEditor?.walls ?? result?.walls ?? EMPTY_WALLS
 
   const editableResult = useMemo<ParseResult | null>(() => {
     if (!parseResponse) return null
@@ -334,6 +305,44 @@ export default function App() {
   }, [parseResponse, walls])
 
   const viewport = chooseViewport(result, imageDimFallback)
+  const editorScale = canvasScale(editorSize, viewport)
+  const hitRadius = canvasUnitsForCssPixels(16, editorScale)
+  const handleRadius = canvasUnitsForCssPixels(5, editorScale)
+  const activeHandleRadius = canvasUnitsForCssPixels(7, editorScale)
+  const wallHitStroke = canvasUnitsForCssPixels(16, editorScale)
+  const wallStroke = canvasUnitsForCssPixels(2, editorScale)
+  const activeWallStroke = canvasUnitsForCssPixels(4, editorScale)
+  const openingRadius = canvasUnitsForCssPixels(7, editorScale)
+  const openingStroke = canvasUnitsForCssPixels(2, editorScale)
+  const labelOffset = canvasUnitsForCssPixels(10, editorScale)
+  const labelSize = canvasUnitsForCssPixels(12, editorScale)
+
+  useEffect(() => {
+    const svg = editorRef.current
+    if (!svg) return
+
+    const updateSize = () => {
+      const rect = svg.getBoundingClientRect()
+      setEditorSize((current) =>
+        current.width === rect.width && current.height === rect.height
+          ? current
+          : { width: rect.width, height: rect.height },
+      )
+    }
+
+    updateSize()
+    const observer = new ResizeObserver(updateSize)
+    observer.observe(svg)
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => () => {
+    parseRequestRef.current?.controller.abort()
+  }, [])
+
+  useEffect(() => () => {
+    if (previewURL) URL.revokeObjectURL(previewURL)
+  }, [previewURL])
 
   useEffect(() => {
     if (!previewURL || svgUrlRef.current === previewURL) {
@@ -416,6 +425,12 @@ export default function App() {
       return
     }
 
+    parseRequestRef.current?.controller.abort()
+    const requestId = requestSequenceRef.current + 1
+    requestSequenceRef.current = requestId
+    const controller = new AbortController()
+    parseRequestRef.current = { id: requestId, controller }
+
     setStatus('uploading')
     setError('')
     const formData = new FormData()
@@ -425,6 +440,7 @@ export default function App() {
       const response = await fetch(API_PARSE_URL, {
         method: 'POST',
         body: formData,
+        signal: controller.signal,
       })
       const responseText = await response.text()
       let body: unknown = null
@@ -440,37 +456,48 @@ export default function App() {
             : responseText.trim() || response.statusText || '未知错误'
         throw new Error(`解析失败：HTTP ${response.status} ${message}`)
       }
-      if (!body || typeof body !== 'object') {
-        throw new Error('解析失败：服务返回了无效的 JSON 响应')
+      if (!isParseResponse(body)) {
+        throw new Error('解析失败：服务返回的数据结构不完整或包含无效坐标')
       }
-      setParseResponse(body as ParseResponse)
+      if (parseRequestRef.current?.id !== requestId) return
+
+      setParseResponse(body)
       setStatus('ready')
       setDraggedEndpoint(null)
       setDragPreviewWalls(null)
       setHoveredEndpoint(null)
+      setSelectedWallIndex(null)
     } catch (err) {
+      if (controller.signal.aborted || parseRequestRef.current?.id !== requestId) return
       setError(err instanceof Error ? err.message : '解析失败')
       setStatus('error')
+    } finally {
+      if (parseRequestRef.current?.id === requestId) {
+        parseRequestRef.current = null
+      }
     }
   }
 
   function handleFileChange(file: File | null) {
+    parseRequestRef.current?.controller.abort()
+    parseRequestRef.current = null
+    requestSequenceRef.current += 1
     setSelectedFile(file)
     setParseResponse(null)
     setWallEditor(null)
     setDragPreviewWalls(null)
     setHoveredEndpoint(null)
     setDraggedEndpoint(null)
+    setSelectedWallIndex(null)
+    setShowSourceImage(true)
     setError('')
     setStatus('idle')
-    if (svgUrlRef.current) {
-      setImageDimFallback(null)
-    }
+    setImageDimFallback(null)
 
-    if (previewURL) {
-      URL.revokeObjectURL(previewURL)
-    }
-    setPreviewURL(file ? URL.createObjectURL(file) : '')
+    setPreviewURL((currentURL) => {
+      if (currentURL) URL.revokeObjectURL(currentURL)
+      return file ? URL.createObjectURL(file) : ''
+    })
   }
 
   function handleUndo() {
@@ -516,6 +543,7 @@ export default function App() {
 
     const cursor = toCanvasPoint(event, svg, viewport)
     if (!hasFiniteCoordinate(cursor)) {
+      if (!draggedEndpoint) setHoveredEndpoint(null)
       return
     }
 
@@ -525,8 +553,14 @@ export default function App() {
       return
     }
 
-    const hit = pickEndpoint(walls, cursor, 12)
+    const hit = pickEndpoint(walls, cursor, hitRadius)
     setHoveredEndpoint(hit)
+  }
+
+  function handleWallPointerDown(event: PointerEvent<SVGLineElement>, wallIndex: number) {
+    event.preventDefault()
+    event.stopPropagation()
+    setSelectedWallIndex(wallIndex)
   }
 
   function commitDrag(pointerId?: number) {
@@ -689,22 +723,38 @@ export default function App() {
         )}
       </aside>
 
-      <div className="absolute left-[410px] top-20 bottom-4 right-4 rounded-2xl border border-white/10 bg-slate-950/60 p-2">
-        <div className="mb-2 flex items-center justify-between text-xs text-slate-300">
+      <div className="absolute bottom-4 left-[410px] right-4 top-20 grid grid-cols-[minmax(0,3fr)_minmax(280px,2fr)] gap-3">
+      <section
+        className="min-w-0 rounded-2xl border border-white/10 bg-slate-950/95 p-2 shadow-2xl"
+        aria-label="2D 墙体编辑器"
+      >
+        <div className="mb-2 flex items-center justify-between gap-3 text-xs text-slate-300">
           <span>2D 墙体端点校正（原图叠加）</span>
-          <span>
-            {draggedEndpoint
-              ? '拖拽中'
-              : hoveredEndpoint
-                ? '可拖拽端点（鼠标悬停）'
-                : '点击端点进行拖拽'}
-          </span>
+          <div className="flex items-center gap-3">
+            <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
+              <input
+                type="checkbox"
+                checked={showSourceImage}
+                onChange={(event) => setShowSourceImage(event.target.checked)}
+              />
+              显示底图
+            </label>
+            <span>
+              {draggedEndpoint
+                ? '拖拽中'
+                : selectedWallIndex !== null
+                  ? `已选择墙体 ${selectedWallIndex + 1}`
+                  : hoveredEndpoint
+                    ? '可拖拽端点（鼠标悬停）'
+                    : '选择墙体或拖拽端点'}
+            </span>
+          </div>
         </div>
 
-        <div className="h-[calc(100%-32px)] rounded-xl bg-black/70 border border-white/10 overflow-hidden">
+        <div className="h-[calc(100%-32px)] overflow-hidden rounded-xl border border-white/10 bg-black/70">
           <svg
             ref={editorRef}
-            className="w-full h-full touch-none"
+            className="h-full w-full touch-none"
             viewBox={`${viewport.minX} ${viewport.minY} ${viewport.width} ${viewport.height}`}
             role="img"
             aria-label="户型图墙体端点编辑区"
@@ -722,7 +772,7 @@ export default function App() {
               fill="#0f172a"
             />
 
-            {previewURL && (
+            {showSourceImage && previewURL && (
               <image
                 href={previewURL}
                 x={viewport.minX}
@@ -731,6 +781,7 @@ export default function App() {
                 height={viewport.height}
                 preserveAspectRatio="xMinYMin meet"
                 opacity="0.42"
+                pointerEvents="none"
               />
             )}
 
@@ -739,98 +790,144 @@ export default function App() {
                 if (!isFiniteCoordinate(opening.x) || !isFiniteCoordinate(opening.y)) {
                   return null
                 }
+                const label = openingLabel(opening)
                 return (
-                  <g key={`${opening.type ?? 'opening'}-${index}`}>
-                    <circle cx={opening.x} cy={opening.y} r={7} fill="none" stroke="#f97316" strokeWidth={2} />
-                    <text x={opening.x + 10} y={opening.y - 10} fill="#fbbf24" fontSize={10}>
-                      {opening.type ?? opening.from ?? 'open'}
-                    </text>
+                  <g key={`${opening.type ?? 'opening'}-${index}`} pointerEvents="none">
+                    <circle
+                      cx={opening.x}
+                      cy={opening.y}
+                      r={openingRadius}
+                      fill="none"
+                      stroke="#f97316"
+                      strokeWidth={openingStroke}
+                    />
+                    {label && (
+                      <text
+                        x={opening.x + labelOffset}
+                        y={opening.y - labelOffset}
+                        fill="#fbbf24"
+                        fontSize={labelSize}
+                      >
+                        {label}
+                      </text>
+                    )}
                   </g>
                 )
               })}
 
-            {walls.map((wall, wallIndex) => {
-              const active = hoveredEndpoint?.wallIndex === wallIndex || draggedEndpoint?.wallIndex === wallIndex
-              const width = active ? 3 : 2
-              const color = draggedEndpoint?.wallIndex === wallIndex
-                ? '#22d3ee'
-                : hoveredEndpoint?.wallIndex === wallIndex
-                  ? '#38bdf8'
-                  : '#e2e8f0'
+            <g aria-label="墙体可视层" pointerEvents="none">
+              {walls.map((wall, wallIndex) => {
+                const endpointActive =
+                  hoveredEndpoint?.wallIndex === wallIndex || draggedEndpoint?.wallIndex === wallIndex
+                const selected = selectedWallIndex === wallIndex
+                const active = endpointActive || selected
+                const color = draggedEndpoint?.wallIndex === wallIndex
+                  ? '#22d3ee'
+                  : selected
+                    ? '#fbbf24'
+                    : endpointActive
+                      ? '#38bdf8'
+                      : '#e2e8f0'
 
-              return (
+                return (
+                  <line
+                    key={`${wall.x1}-${wall.y1}-${wall.x2}-${wall.y2}-${wallIndex}`}
+                    x1={wall.x1}
+                    y1={wall.y1}
+                    x2={wall.x2}
+                    y2={wall.y2}
+                    stroke={color}
+                    strokeWidth={active ? activeWallStroke : wallStroke}
+                  />
+                )
+              })}
+            </g>
+
+            <g aria-label="墙体透明命中层" fill="none" stroke="transparent" strokeLinecap="round">
+              {walls.map((wall, wallIndex) => (
                 <line
-                  key={`${wall.x1}-${wall.y1}-${wall.x2}-${wall.y2}-${wallIndex}`}
+                  key={`hit-${wallIndex}`}
                   x1={wall.x1}
                   y1={wall.y1}
                   x2={wall.x2}
                   y2={wall.y2}
-                  stroke={color}
-                  strokeWidth={width}
+                  strokeWidth={wallHitStroke}
+                  onPointerDown={(event) => handleWallPointerDown(event, wallIndex)}
+                  style={{ cursor: 'pointer' }}
                 />
-              )
-            })}
+              ))}
+            </g>
 
-            {walls.flatMap((wall, wallIndex) => {
-              const startSelected =
-                hoveredEndpoint?.wallIndex === wallIndex && hoveredEndpoint?.endpoint === 'start'
-                  ? true
-                  : draggedEndpoint?.wallIndex === wallIndex && draggedEndpoint?.endpoint === 'start'
-                    ? true
-                    : false
-              const endSelected =
-                hoveredEndpoint?.wallIndex === wallIndex && hoveredEndpoint?.endpoint === 'end'
-                  ? true
-                  : draggedEndpoint?.wallIndex === wallIndex && draggedEndpoint?.endpoint === 'end'
-                    ? true
-                    : false
-              return [
-                {
-                  endpoint: 'start' as const,
-                  x: wall.x1,
-                  y: wall.y1,
-                  selected: startSelected,
-                },
-                {
-                  endpoint: 'end' as const,
-                  x: wall.x2,
-                  y: wall.y2,
-                  selected: endSelected,
-                },
-              ].map((handle) => (
-                <circle
-                  key={`${wallIndex}-${handle.endpoint}`}
-                  cx={handle.x}
-                  cy={handle.y}
-                  r={handle.selected ? 6 : 4}
-                  fill={handle.selected ? '#f8fafc' : '#38bdf8'}
-                  stroke={handle.selected ? '#0f172a' : '#7dd3fc'}
-                  strokeWidth={handle.selected ? 2 : 1}
-                  onPointerDown={(event) =>
-                    handleCanvasPointerDown(event, {
-                      wallIndex,
-                      endpoint: handle.endpoint,
-                    })
-                  }
-                  style={{ cursor: 'grab' }}
-                />
-              ))
-            })}
+            <g aria-label="端点可视层" pointerEvents="none">
+              {walls.flatMap((wall, wallIndex) => {
+                const startSelected =
+                  (hoveredEndpoint?.wallIndex === wallIndex && hoveredEndpoint.endpoint === 'start') ||
+                  (draggedEndpoint?.wallIndex === wallIndex && draggedEndpoint.endpoint === 'start')
+                const endSelected =
+                  (hoveredEndpoint?.wallIndex === wallIndex && hoveredEndpoint.endpoint === 'end') ||
+                  (draggedEndpoint?.wallIndex === wallIndex && draggedEndpoint.endpoint === 'end')
+                return [
+                  { endpoint: 'start' as const, x: wall.x1, y: wall.y1, selected: startSelected },
+                  { endpoint: 'end' as const, x: wall.x2, y: wall.y2, selected: endSelected },
+                ].map((handle) => (
+                  <circle
+                    key={`visible-${wallIndex}-${handle.endpoint}`}
+                    cx={handle.x}
+                    cy={handle.y}
+                    r={handle.selected ? activeHandleRadius : handleRadius}
+                    fill={handle.selected ? '#f8fafc' : '#38bdf8'}
+                    stroke={handle.selected ? '#0f172a' : '#7dd3fc'}
+                    strokeWidth={openingStroke}
+                  />
+                ))
+              })}
+            </g>
+
+            <g aria-label="端点透明命中层" fill="transparent" stroke="transparent">
+              {walls.flatMap((wall, wallIndex) =>
+                [
+                  { endpoint: 'start' as const, x: wall.x1, y: wall.y1 },
+                  { endpoint: 'end' as const, x: wall.x2, y: wall.y2 },
+                ].map((handle) => (
+                  <circle
+                    key={`hit-${wallIndex}-${handle.endpoint}`}
+                    cx={handle.x}
+                    cy={handle.y}
+                    r={hitRadius}
+                    onPointerDown={(event) =>
+                      handleCanvasPointerDown(event, {
+                        wallIndex,
+                        endpoint: handle.endpoint,
+                      })
+                    }
+                    style={{ cursor: 'grab' }}
+                  />
+                )),
+              )}
+            </g>
           </svg>
         </div>
-      </div>
+      </section>
 
-      <main className="h-full pl-[420px]">
-        <Canvas camera={{ position: [8, 7, 8], fov: 50 }} shadows gl={{ antialias: true }}>
-          <Suspense fallback={null}>
-            <Scene result={editableResult ?? undefined} />
-            <OrbitControls makeDefault />
-          </Suspense>
-        </Canvas>
+      <main
+        className="relative min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-slate-950 shadow-2xl"
+        aria-label="3D 户型预览"
+      >
+        <div className="absolute left-3 top-3 z-10 rounded-full bg-black/55 px-3 py-1.5 text-xs text-white/70">
+          3D room bounds 预览
+        </div>
+        <div className="h-full w-full">
+          <Canvas camera={{ position: [8, 7, 8], fov: 50 }} shadows gl={{ antialias: true }}>
+            <Suspense fallback={null}>
+              <Scene result={editableResult ?? undefined} />
+              <OrbitControls makeDefault />
+            </Suspense>
+          </Canvas>
+        </div>
+        <div className="pointer-events-none absolute bottom-3 left-3 right-3 rounded-xl bg-black/55 px-3 py-2 text-center text-xs text-white/50">
+          仅按 room bounds 渲染；墙体校正不会伪装成完整 3D 几何构建
+        </div>
       </main>
-
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-black/40 px-4 py-2 text-xs text-white/45">
-        3D 白模入口：解析后继续以 room bounds 渲染，仅作为预览；墙体编辑不影响真实几何构建
       </div>
     </div>
   )
