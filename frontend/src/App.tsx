@@ -22,17 +22,10 @@ import {
   type ParseResult,
   type Viewport,
 } from './floorplanUi'
+import { buildWallShellModel, type WallShellModel } from './wallShell'
 
 const API_PARSE_URL = '/api/floorplans/parse'
 const EMPTY_WALLS: WallSegment[] = []
-
-function roomColor(type: string) {
-  if (type.includes('卧')) return '#60a5fa'
-  if (type.includes('客')) return '#34d399'
-  if (type.includes('厨')) return '#f59e0b'
-  if (type.includes('卫')) return '#a78bfa'
-  return '#94a3b8'
-}
 
 type ParseState = 'idle' | 'uploading' | 'ready' | 'error'
 
@@ -146,40 +139,27 @@ function chooseViewport(result: ParseResult | null, fallbackImageSize: { width: 
 }
 
 type FloorplanSceneProps = {
-  result?: ParseResult
+  model: WallShellModel
 }
 
-function Scene({ result }: FloorplanSceneProps) {
-  const rooms = result?.rooms
-  const model = useMemo(() => {
-    if (!rooms || rooms.length === 0) return []
-    const minX = Math.min(...rooms.map((room) => room.approximate_bounds.x1))
-    const maxX = Math.max(...rooms.map((room) => room.approximate_bounds.x2))
-    const minY = Math.min(...rooms.map((room) => room.approximate_bounds.y1))
-    const maxY = Math.max(...rooms.map((room) => room.approximate_bounds.y2))
-    const span = Math.max(maxX - minX, maxY - minY, 1)
-    const scale = 10 / span
-
-    return rooms.map((room) => {
-      const bounds = room.approximate_bounds
-      const width = Math.max((bounds.x2 - bounds.x1) * scale, 0.12)
-      const depth = Math.max((bounds.y2 - bounds.y1) * scale, 0.12)
-      const x = (bounds.x1 + bounds.x2 - minX - maxX) * scale * 0.5
-      const z = (bounds.y1 + bounds.y2 - minY - maxY) * scale * 0.5
-      const height = room.type.includes('走廊') ? 0.22 : 0.42
-      return { ...room, width, depth, x, z, height }
-    })
-  }, [rooms])
+function Scene({ model }: FloorplanSceneProps) {
 
   return (
     <>
-      <ambientLight intensity={0.45} />
-      <directionalLight position={[10, 15, 10]} intensity={0.85} castShadow />
+      <ambientLight intensity={0.55} />
+      <directionalLight position={[10, 15, 10]} intensity={0.95} castShadow />
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]} receiveShadow>
-        <planeGeometry args={[18, 18]} />
-        <meshStandardMaterial color="#172033" />
-      </mesh>
+      {model.floor && (
+        <mesh
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[model.floor.x, 0, model.floor.z]}
+          receiveShadow
+          data-testid="wall-shell-floor"
+        >
+          <planeGeometry args={[model.floor.width, model.floor.depth]} />
+          <meshStandardMaterial color="#243047" roughness={0.82} />
+        </mesh>
+      )}
 
       <Grid
         args={[18, 18]}
@@ -193,19 +173,40 @@ function Scene({ result }: FloorplanSceneProps) {
         infiniteGrid
       />
 
-      {model.length === 0 ? (
-        <mesh position={[0, 0.45, 0]} castShadow>
-          <boxGeometry args={[1.8, 0.9, 1.8]} />
-          <meshStandardMaterial color="#4a90d9" wireframe />
+      {model.walls.map((wall) => (
+        <mesh
+          key={`wall-shell-${wall.sourceIndex}`}
+          position={[wall.x, wall.height / 2, wall.z]}
+          rotation={[0, wall.rotationY, 0]}
+          castShadow
+          receiveShadow
+          userData={{ sourceWallIndex: wall.sourceIndex }}
+        >
+          <boxGeometry args={[wall.length, wall.height, wall.thickness]} />
+          <meshStandardMaterial color="#e2e8f0" roughness={0.72} />
         </mesh>
-      ) : (
-        model.map((room) => (
-          <mesh key={`${room.name}-${room.x}-${room.z}`} position={[room.x, room.height / 2, room.z]} castShadow>
-            <boxGeometry args={[room.width, room.height, room.depth]} />
-            <meshStandardMaterial color={roomColor(room.type)} transparent opacity={0.72} />
+      ))}
+
+      {model.openings.map((opening) => {
+        const isDoor = opening.kind === 'door'
+        const markerHeight = isDoor ? 3.2 : 3.7
+        const markerRadius = isDoor ? 0.28 : 0.24
+        return (
+          <mesh
+            key={`${opening.kind}-${opening.sourceIndex}`}
+            position={[opening.x, markerHeight, opening.z]}
+            renderOrder={10}
+            userData={{ openingKind: opening.kind, label: opening.label }}
+          >
+            <sphereGeometry args={[markerRadius, 20, 14]} />
+            <meshBasicMaterial
+              color={isDoor ? '#f97316' : '#38bdf8'}
+              depthTest={false}
+              toneMapped={false}
+            />
           </mesh>
-        ))
-      )}
+        )
+      })}
     </>
   )
 }
@@ -273,6 +274,16 @@ function hasFiniteCoordinate(point: ScenePoint): boolean {
   return Number.isFinite(point.x) && Number.isFinite(point.y)
 }
 
+function hasWebGLSupport(): boolean {
+  if (typeof document === 'undefined') return false
+  const canvas = document.createElement('canvas')
+  return Boolean(
+    canvas.getContext('webgl2') ||
+      canvas.getContext('webgl') ||
+      canvas.getContext('experimental-webgl'),
+  )
+}
+
 export default function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [previewURL, setPreviewURL] = useState<string>('')
@@ -287,6 +298,7 @@ export default function App() {
   const [showSourceImage, setShowSourceImage] = useState(true)
   const [imageDimFallback, setImageDimFallback] = useState<{ width: number; height: number } | null>(null)
   const [editorSize, setEditorSize] = useState({ width: 0, height: 0 })
+  const webGLAvailable = useMemo(hasWebGLSupport, [])
 
   const editorRef = useRef<SVGSVGElement | null>(null)
   const svgUrlRef = useRef('')
@@ -303,6 +315,14 @@ export default function App() {
       walls,
     }
   }, [parseResponse, walls])
+  const wallShellModel = useMemo(
+    () => buildWallShellModel(walls, result?.doors ?? [], result?.windows ?? []),
+    [walls, result?.doors, result?.windows],
+  )
+  const wallShellTotalLength = useMemo(
+    () => wallShellModel.walls.reduce((total, wall) => total + wall.length, 0),
+    [wallShellModel],
+  )
 
   const viewport = chooseViewport(result, imageDimFallback)
   const editorScale = canvasScale(editorSize, viewport)
@@ -603,7 +623,7 @@ export default function App() {
   return (
     <div className="w-full h-full bg-slate-950 text-slate-100">
       <div className="absolute top-0 left-0 right-0 z-10 bg-black/50 backdrop-blur-sm px-5 py-3 flex items-center justify-between border-b border-white/10">
-        <span className="text-sm font-medium text-white/85">筑居 HomeVox — 2D 墙体闭环编辑（Issue #5）</span>
+        <span className="text-sm font-medium text-white/85">筑居 HomeVox — 2D 校正与 3D 墙体白模（Issue #7）</span>
         <span className="text-xs text-white/50">0.0.0.0:18088 API · React/R3F Viewport</span>
       </div>
 
@@ -913,19 +933,36 @@ export default function App() {
         className="relative min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-slate-950 shadow-2xl"
         aria-label="3D 户型预览"
       >
-        <div className="absolute left-3 top-3 z-10 rounded-full bg-black/55 px-3 py-1.5 text-xs text-white/70">
-          3D room bounds 预览
+        <div className="absolute left-3 top-3 z-10 rounded-xl bg-black/60 px-3 py-2 text-xs text-white/75">
+          <div className="font-medium text-white/90">3D 墙体白模 v1</div>
+          <div className="mt-1 flex gap-3 text-[11px] text-white/60" aria-label="3D 白模实时指标">
+            <span>墙体 {wallShellModel.walls.length}</span>
+            <span>Marker {wallShellModel.openings.length}</span>
+            <span>总长 {wallShellTotalLength.toFixed(2)}</span>
+          </div>
         </div>
         <div className="h-full w-full">
-          <Canvas camera={{ position: [8, 7, 8], fov: 50 }} shadows gl={{ antialias: true }}>
-            <Suspense fallback={null}>
-              <Scene result={editableResult ?? undefined} />
-              <OrbitControls makeDefault />
-            </Suspense>
-          </Canvas>
+          {webGLAvailable ? (
+            <Canvas camera={{ position: [8, 7, 8], fov: 50 }} shadows gl={{ antialias: true }}>
+              <Suspense fallback={null}>
+                <Scene model={wallShellModel} />
+                <OrbitControls makeDefault />
+              </Suspense>
+            </Canvas>
+          ) : (
+            <div
+              className="flex h-full w-full items-center justify-center px-8 text-center"
+              role="status"
+              aria-label="3D 渲染不可用"
+            >
+              <div className="max-w-sm rounded-2xl border border-amber-400/25 bg-amber-950/30 px-5 py-4 text-sm leading-6 text-amber-100">
+                当前浏览器未提供 WebGL，无法显示 3D 墙体白模。请在启用 WebGL 的浏览器中打开；2D 编辑和白模几何指标仍可使用。
+              </div>
+            </div>
+          )}
         </div>
         <div className="pointer-events-none absolute bottom-3 left-3 right-3 rounded-xl bg-black/55 px-3 py-2 text-center text-xs text-white/50">
-          仅按 room bounds 渲染；墙体校正不会伪装成完整 3D 几何构建
+          白模实时跟随当前墙段；橙色/蓝色仅为门窗 marker，本版本尚未进行布尔开洞
         </div>
       </main>
       </div>

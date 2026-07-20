@@ -32,9 +32,11 @@ HomeVox 采用混合技术路线：**Go 管业务 API，Rust 管体素/几何核
 - ✅ Go 单进程固定监听 `0.0.0.0:18088`，同源提供 `/api/*` 与 `frontend/dist`，并支持 SPA fallback
 - ✅ 户型图上传与 OpenAI-compatible AI 解析接口已落地；正向解析运行需要配置 `AI_API_KEY`、`AI_BASE_URL`、`AI_MODEL`
 - ✅ 2D 户型校正编辑器支持墙体选择、共享端点拖拽、Undo/Redo 与底图显隐
-- ✅ 当前 3D 视图仅展示 room bounds 基础体块，不等同于真实墙体白模
+- ✅ 3D 墙体白模 v1 由当前可编辑墙段实时生成墙体与基础地面，2D 拖拽、Undo/Redo 会同步更新白模几何指标
+- ✅ 门窗以真实坐标生成橙色/蓝色定位 marker；当前尚未进行布尔开洞，墙高与墙厚为 v1 展示常量而非建筑实测尺寸
+- ✅ WebGL 不可用时显示明确降级提示，不再留下空黑 3D 视口
 - ✅ Rust/WASM 几何核心已加入 Marching Cubes 功能验证
-- ⏳ 下一步：完成真实 AI 样本验收、3D 墙体白模、基础 2D/3D 导出
+- ⏳ 下一步：基础 2D/3D 导出、项目保存/加载、Rust/WASM 浏览器业务接入；真实 AI 样本验收暂缓
 
 ## 许可
 
