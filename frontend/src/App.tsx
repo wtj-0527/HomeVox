@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
-import { Canvas } from '@react-three/fiber'
+import { Canvas, type RootState } from '@react-three/fiber'
 import { Grid, OrbitControls } from '@react-three/drei'
 import {
   type EndpointRef,
@@ -23,6 +23,13 @@ import {
   type Viewport,
 } from './floorplanUi'
 import { buildWallShellModel, type WallShellModel } from './wallShell'
+import {
+  buildExportFileName,
+  downloadBlobAsPng,
+  exportSvgElementToPng,
+  exportWebGLCanvasToPng,
+  validateCanvasSize,
+} from './export'
 
 const API_PARSE_URL = '/api/floorplans/parse'
 const EMPTY_WALLS: WallSegment[] = []
@@ -290,6 +297,8 @@ export default function App() {
   const [parseResponse, setParseResponse] = useState<ParseResponse | null>(null)
   const [status, setStatus] = useState<ParseState>('idle')
   const [error, setError] = useState<string>('')
+  const [exportError, setExportError] = useState<string>('')
+  const [exportingScope, setExportingScope] = useState<null | '2d' | '3d'>(null)
   const [wallEditor, setWallEditor] = useState<WallEditorState | null>(null)
   const [hoveredEndpoint, setHoveredEndpoint] = useState<EndpointRef | null>(null)
   const [draggedEndpoint, setDraggedEndpoint] = useState<EndpointRef | null>(null)
@@ -298,7 +307,9 @@ export default function App() {
   const [showSourceImage, setShowSourceImage] = useState(true)
   const [imageDimFallback, setImageDimFallback] = useState<{ width: number; height: number } | null>(null)
   const [editorSize, setEditorSize] = useState({ width: 0, height: 0 })
+  const [threeRenderer, setThreeRenderer] = useState<RootState | null>(null)
   const webGLAvailable = useMemo(hasWebGLSupport, [])
+  const exportSequenceRef = useRef(0)
 
   const editorRef = useRef<SVGSVGElement | null>(null)
   const svgUrlRef = useRef('')
@@ -336,6 +347,20 @@ export default function App() {
   const openingStroke = canvasUnitsForCssPixels(2, editorScale)
   const labelOffset = canvasUnitsForCssPixels(10, editorScale)
   const labelSize = canvasUnitsForCssPixels(12, editorScale)
+
+  const canExportModel = walls.length > 0
+  const isExporting = exportingScope !== null
+  const canExport2D = canExportModel && status === 'ready' && !isExporting
+  const canExport3D =
+    canExportModel &&
+    webGLAvailable &&
+    Boolean(threeRenderer?.gl) &&
+    !isExporting
+
+  function buildScopeFileName(scope: '2d' | '3d'): string {
+    exportSequenceRef.current += 1
+    return buildExportFileName(scope, new Date(), exportSequenceRef.current)
+  }
 
   useEffect(() => {
     const svg = editorRef.current
@@ -487,6 +512,7 @@ export default function App() {
       setDragPreviewWalls(null)
       setHoveredEndpoint(null)
       setSelectedWallIndex(null)
+      setExportError('')
     } catch (err) {
       if (controller.signal.aborted || parseRequestRef.current?.id !== requestId) return
       setError(err instanceof Error ? err.message : '解析失败')
@@ -511,6 +537,7 @@ export default function App() {
     setSelectedWallIndex(null)
     setShowSourceImage(true)
     setError('')
+    setExportError('')
     setStatus('idle')
     setImageDimFallback(null)
 
@@ -620,10 +647,66 @@ export default function App() {
     }
   }
 
+  async function handleExport2D() {
+    if (!canExport2D || !editorRef.current) {
+      return
+    }
+
+    setExportingScope('2d')
+    setExportError('')
+
+    try {
+      const fileName = buildScopeFileName('2d')
+      const size = validateCanvasSize(viewport.width, viewport.height)
+      if (!size.ok) {
+        setExportError(size.error.message)
+        return
+      }
+
+      const exportResult = await exportSvgElementToPng(editorRef.current, size.value.width, size.value.height, fileName)
+      if (!exportResult.ok) {
+        setExportError(exportResult.error.message)
+        return
+      }
+
+      downloadBlobAsPng(exportResult.value)
+    } catch (error) {
+      setExportError(`2D 导出失败：${error instanceof Error ? error.message : '未知错误'}`)
+    } finally {
+      setExportingScope(null)
+    }
+  }
+
+  async function handleExport3D() {
+    if (!canExport3D || !threeRenderer) {
+      return
+    }
+
+    setExportingScope('3d')
+    setExportError('')
+
+    try {
+      const rendererState = threeRenderer
+      rendererState.gl.render(rendererState.scene, rendererState.camera)
+      const fileName = buildScopeFileName('3d')
+      const exportResult = await exportWebGLCanvasToPng(rendererState.gl, fileName)
+      if (!exportResult.ok) {
+        setExportError(exportResult.error.message)
+        return
+      }
+
+      downloadBlobAsPng(exportResult.value)
+    } catch (error) {
+      setExportError(`3D 导出失败：${error instanceof Error ? error.message : '未知错误'}`)
+    } finally {
+      setExportingScope(null)
+    }
+  }
+
   return (
     <div className="w-full h-full bg-slate-950 text-slate-100">
       <div className="absolute top-0 left-0 right-0 z-10 bg-black/50 backdrop-blur-sm px-5 py-3 flex items-center justify-between border-b border-white/10">
-        <span className="text-sm font-medium text-white/85">筑居 HomeVox — 2D 校正与 3D 墙体白模（Issue #7）</span>
+        <span className="text-sm font-medium text-white/85">筑居 HomeVox — 2D 校正、3D 墙体白模与 PNG 导出</span>
         <span className="text-xs text-white/50">0.0.0.0:18088 API · React/R3F Viewport</span>
       </div>
 
@@ -678,7 +761,36 @@ export default function App() {
               </span>
             </div>
             {error && <p className="mt-2 leading-5 text-red-300">{error}</p>}
+            {exportError && <p className="mt-2 leading-5 text-amber-300">{exportError}</p>}
           </div>
+        </section>
+
+        <section className="space-y-2 rounded-xl bg-slate-950/70 p-3 text-xs">
+          <h2 className="text-slate-400">导出</h2>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              aria-label="导出2D平面图PNG"
+              className="rounded-lg bg-emerald-600 px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50"
+              type="button"
+              disabled={!canExport2D}
+              onClick={handleExport2D}
+            >
+              {exportingScope === '2d' ? '导出中…' : '导出2D PNG'}
+            </button>
+            <button
+              aria-label="导出3D白模PNG"
+              className="rounded-lg bg-sky-600 px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50"
+              type="button"
+              disabled={!canExport3D}
+              onClick={handleExport3D}
+              title={webGLAvailable ? undefined : 'WebGL 不可用，无法导出 3D'}
+            >
+              {exportingScope === '3d' ? '导出中…' : webGLAvailable ? '导出3D PNG' : 'WebGL 不可用'}
+            </button>
+          </div>
+          <p className="text-slate-500 leading-5">
+            {canExportModel ? '基于当前编辑后的墙体、门窗 marker 与当前视口/镜头生成。' : '请先完成解析后再导出。'}
+          </p>
         </section>
 
         <section className="mt-4 space-y-2 text-xs">
@@ -943,7 +1055,14 @@ export default function App() {
         </div>
         <div className="h-full w-full">
           {webGLAvailable ? (
-            <Canvas camera={{ position: [8, 7, 8], fov: 50 }} shadows gl={{ antialias: true }}>
+            <Canvas
+              camera={{ position: [8, 7, 8], fov: 50 }}
+              shadows
+              gl={{ antialias: true, preserveDrawingBuffer: true }}
+              onCreated={(state) => {
+                setThreeRenderer(state)
+              }}
+            >
               <Suspense fallback={null}>
                 <Scene model={wallShellModel} />
                 <OrbitControls makeDefault />

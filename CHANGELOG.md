@@ -17,3 +17,4 @@
 - Go 服务改为在唯一的 `0.0.0.0:18088` 入口同时提供 `/api/*` 和 `frontend/dist`，支持前端 SPA fallback，并对未知 API 与缺失静态资源保持 404。
 - 服务启动时校验 `frontend/dist/index.html`，避免后端存活但前端构建缺失的半可用状态。
 - 在真实懒猫浏览器中验证同源 `/api/health`、AI 缺配置的 503 失败关闭，以及 fixture 下的墙体选择、共享端点拖拽、Undo/Redo、底图显隐和 2D/3D 分区；真实 AI 正向解析仍待提供运行时 AI 配置后验收。
+- 完成 Issue #9：增加 2D SVG 与当前 R3F WebGL 画布的 PNG 导出入口，包含导出尺寸/序列化/空白检测/Canvas WebGL 不可用等失败闭环，支持一键单次下载；3D 导出采用 R3F 渲染器即时渲染后抓帧并避免重复申请 WebGL 上下文。
