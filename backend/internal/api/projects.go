@@ -234,7 +234,13 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 			Document         json.RawMessage `json:"document"`
 			ExpectedRevision int             `json:"expectedRevision"`
 		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, project.MaxUpdateRequestBytes)
 		if err := c.ShouldBindJSON(&payload); err != nil {
+			var maxBytesError *http.MaxBytesError
+			if errors.As(err, &maxBytesError) {
+				writeProjectError(c, http.StatusRequestEntityTooLarge, "request_too_large", "project update request is too large")
+				return
+			}
 			writeProjectError(c, http.StatusBadRequest, "invalid_request", "invalid JSON payload")
 			return
 		}

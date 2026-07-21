@@ -17,6 +17,7 @@ const (
 	MaxSourceImageBytes      = 10 * 1024 * 1024
 	MaxCreateRequestOverhead = 1 * 1024 * 1024
 	MaxCreateRequestBytes    = MaxDocumentBytes + MaxSourceImageBytes + MaxCreateRequestOverhead
+	MaxUpdateRequestBytes    = MaxDocumentBytes + MaxCreateRequestOverhead
 	MinNameLength            = 1
 )
 

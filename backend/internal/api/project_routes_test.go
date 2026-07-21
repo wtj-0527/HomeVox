@@ -25,6 +25,7 @@ type fakeProjectRepo struct {
 	lastCreatedKey string
 	createErr      error
 	initializeErr  error
+	getCalls       int
 }
 
 const validProjectDocument = `{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px"},"metadata":{"source":"fixture","image_width":100,"image_height":80}}}`
@@ -61,6 +62,7 @@ func (f *fakeProjectRepo) Create(_ context.Context, id, name, sourceImageKey, so
 }
 
 func (f *fakeProjectRepo) Get(_ context.Context, id string) (db.Project, error) {
+	f.getCalls++
 	project, ok := f.projects[id]
 	if !ok {
 		return db.Project{}, db.ErrProjectNotFound
@@ -376,6 +378,33 @@ func TestProjectUpdateConflict(t *testing.T) {
 	router.ServeHTTP(updateW, updateReq)
 	if updateW.Code != http.StatusConflict {
 		t.Fatalf("update status = %d, want %d", updateW.Code, http.StatusConflict)
+	}
+}
+
+func TestProjectUpdateRejectsOversizedJSONBodyBeforeBinding(t *testing.T) {
+	repo := newFakeProjectRepo()
+	router := newProjectRouter(repo, newFakeObjectStore())
+	id := "00000000-0000-0000-0000-000000000001"
+	payload := `{"name":"Plan","document":` + validProjectDocument +
+		strings.Repeat(" ", project.MaxUpdateRequestBytes) + `,"expectedRevision":1}`
+
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/"+id, strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusRequestEntityTooLarge, w.Body.String())
+	}
+	var response projectErrorEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if response.Error.Code != "request_too_large" {
+		t.Fatalf("error code = %q, want request_too_large", response.Error.Code)
+	}
+	if repo.getCalls != 0 {
+		t.Fatalf("repository Get calls = %d, want 0 because oversized request must fail before binding and persistence reads", repo.getCalls)
 	}
 }
 
