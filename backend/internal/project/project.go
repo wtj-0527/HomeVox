@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	MaxNameLength       = 120
-	MaxDocumentBytes    = 2 * 1024 * 1024
-	MaxSourceImageBytes = 10 * 1024 * 1024
-	MinNameLength       = 1
+	MaxNameLength            = 120
+	MaxDocumentBytes         = 2 * 1024 * 1024
+	MaxSourceImageBytes      = 10 * 1024 * 1024
+	MaxCreateRequestOverhead = 1 * 1024 * 1024
+	MaxCreateRequestBytes    = MaxDocumentBytes + MaxSourceImageBytes + MaxCreateRequestOverhead
+	MinNameLength            = 1
 )
 
 var SupportedImageContentTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
@@ -154,4 +156,19 @@ func ValidateName(raw string) (string, error) {
 func IsSupportedContentType(contentType string) bool {
 	_, ok := imageContentTypeSet[contentType]
 	return ok
+}
+
+// ValidateSourceImageMetadata makes the durable document's source-image
+// metadata agree with the immutable object bytes stored for the project.
+func ValidateSourceImageMetadata(doc floorplan.ParseResponse, filename, contentType string, size int64) error {
+	if doc.Filename != filename {
+		return errors.New("document filename must match source_image filename")
+	}
+	if doc.ContentType != contentType {
+		return errors.New("document contentType must match source_image content type")
+	}
+	if int64(doc.Size) != size {
+		return errors.New("document size must match source_image size")
+	}
+	return nil
 }

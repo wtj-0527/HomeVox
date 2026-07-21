@@ -76,9 +76,9 @@ func TestNormalizeDocumentRejectsInvalidDurableFields(t *testing.T) {
 	tests := map[string]string{
 		"missing filename": `{"contentType":"image/png","size":12,"result":{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px"},"metadata":{"source":"fixture"}}}`,
 		"unsupported mime": `{"filename":"a.bmp","contentType":"image/bmp","size":12,"result":{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px"},"metadata":{"source":"fixture"}}}`,
-		"zero size": `{"filename":"a.png","contentType":"image/png","size":0,"result":{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px"},"metadata":{"source":"fixture"}}}`,
-		"invalid opening": `{"filename":"a.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[],"doors":[{"x":1e309}],"windows":[],"scale":{"unit":"px"},"metadata":{"source":"fixture"}}}`,
-		"invalid scale": `{"filename":"a.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":""},"metadata":{"source":"fixture"}}}`,
+		"zero size":        `{"filename":"a.png","contentType":"image/png","size":0,"result":{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px"},"metadata":{"source":"fixture"}}}`,
+		"invalid opening":  `{"filename":"a.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[],"doors":[{"x":1e309}],"windows":[],"scale":{"unit":"px"},"metadata":{"source":"fixture"}}}`,
+		"invalid scale":    `{"filename":"a.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":""},"metadata":{"source":"fixture"}}}`,
 		"invalid metadata": `{"filename":"a.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px"},"metadata":{"source":"","image_width":-1}}}`,
 	}
 	for name, raw := range tests {
@@ -94,5 +94,24 @@ func TestNormalizeDocumentRejectsOversizedJSON(t *testing.T) {
 	raw := append(validDocumentJSON(), []byte(strings.Repeat(" ", MaxDocumentBytes))...)
 	if _, err := NormalizeDocument(raw); err == nil {
 		t.Fatal("expected oversized document error")
+	}
+}
+
+func TestValidateSourceImageMetadata(t *testing.T) {
+	doc, err := NormalizeDocument(validDocumentJSON())
+	if err != nil {
+		t.Fatalf("NormalizeDocument returned error: %v", err)
+	}
+	if err := ValidateSourceImageMetadata(doc, "plan.png", "image/png", 12); err != nil {
+		t.Fatalf("valid source-image metadata rejected: %v", err)
+	}
+	if err := ValidateSourceImageMetadata(doc, "other.png", "image/png", 12); err == nil {
+		t.Fatal("expected filename mismatch error")
+	}
+	if err := ValidateSourceImageMetadata(doc, "plan.png", "image/jpeg", 12); err == nil {
+		t.Fatal("expected content type mismatch error")
+	}
+	if err := ValidateSourceImageMetadata(doc, "plan.png", "image/png", 13); err == nil {
+		t.Fatal("expected size mismatch error")
 	}
 }

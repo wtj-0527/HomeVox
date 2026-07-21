@@ -294,6 +294,53 @@ func TestProjectCreateGetsListAndSourceImage(t *testing.T) {
 	}
 }
 
+func TestProjectCreateRejectsOversizedMultipartBodyBeforeParsing(t *testing.T) {
+	router := newProjectRouter(newFakeProjectRepo(), newFakeObjectStore())
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	if err := writer.WriteField("oversized", strings.Repeat("x", project.MaxCreateRequestBytes+1)); err != nil {
+		t.Fatalf("write oversized form field: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusRequestEntityTooLarge, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "request_too_large") {
+		t.Fatalf("expected stable oversized-request error, body=%s", w.Body.String())
+	}
+}
+
+func TestProjectCreateRejectsSourceImageMetadataMismatch(t *testing.T) {
+	router := newProjectRouter(newFakeProjectRepo(), newFakeObjectStore())
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	_ = writer.WriteField("name", "My Plan")
+	_ = writer.WriteField("document", strings.Replace(validProjectDocument, `"size":12`, `"size":13`, 1))
+	part, err := writer.CreateFormFile("source_image", "plan.png")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	_, _ = part.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0})
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "source_image_metadata_mismatch") {
+		t.Fatalf("expected metadata mismatch; status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestProjectListRejectsLimitAbove100(t *testing.T) {
 	router := newProjectRouter(newFakeProjectRepo(), newFakeObjectStore())
 	req := httptest.NewRequest(http.MethodGet, "/api/projects?limit=101", nil)
@@ -341,6 +388,24 @@ func TestProjectUpdateReturnsNotFoundForUnknownID(t *testing.T) {
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestProjectUpdateRejectsSourceImageMetadataMutation(t *testing.T) {
+	repo := newFakeProjectRepo()
+	_, err := repo.Create(context.Background(), "00000000-0000-0000-0000-000000000001", "Plan", "source", "image/png", 12, []byte(validProjectDocument))
+	if err != nil {
+		t.Fatalf("create fixture: %v", err)
+	}
+	router := newProjectRouter(repo, newFakeObjectStore())
+	payload := `{"name":"Plan","document":` + strings.Replace(validProjectDocument, `"contentType":"image/png"`, `"contentType":"image/jpeg"`, 1) + `,"expectedRevision":1}`
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/00000000-0000-0000-0000-000000000001", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "source_image_metadata_mismatch") {
+		t.Fatalf("expected metadata mismatch; status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 

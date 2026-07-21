@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -129,14 +130,25 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 			return
 		}
 
-		name := c.PostForm("name")
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, project.MaxCreateRequestBytes)
+		if err := c.Request.ParseMultipartForm(project.MaxCreateRequestBytes); err != nil {
+			var maxBytesError *http.MaxBytesError
+			if errors.As(err, &maxBytesError) {
+				writeProjectError(c, http.StatusRequestEntityTooLarge, "request_too_large", "project create request is too large")
+				return
+			}
+			writeProjectError(c, http.StatusBadRequest, "invalid_multipart_request", "request must be valid multipart form data")
+			return
+		}
+
+		name := c.Request.Form.Get("name")
 		name, err := project.ValidateName(name)
 		if err != nil {
 			writeProjectError(c, http.StatusBadRequest, "invalid_name", err.Error())
 			return
 		}
 
-		rawDocument := c.PostForm("document")
+		rawDocument := c.Request.Form.Get("document")
 		doc, err := project.NormalizeDocument([]byte(rawDocument))
 		if err != nil {
 			writeProjectError(c, http.StatusBadRequest, "invalid_document", err.Error())
@@ -167,6 +179,10 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 		contentType := http.DetectContentType(data)
 		if !project.IsSupportedContentType(contentType) {
 			writeProjectError(c, http.StatusBadRequest, "unsupported_source_image", "source_image must be a PNG, JPEG, GIF, or WebP image")
+			return
+		}
+		if err := project.ValidateSourceImageMetadata(doc, header.Filename, contentType, int64(len(data))); err != nil {
+			writeProjectError(c, http.StatusBadRequest, "source_image_metadata_mismatch", err.Error())
 			return
 		}
 
@@ -235,6 +251,25 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 		}
 		if payload.ExpectedRevision <= 0 {
 			writeProjectError(c, http.StatusBadRequest, "invalid_expected_revision", "expectedRevision is required")
+			return
+		}
+
+		current, err := deps.repo.Get(c.Request.Context(), id)
+		if err != nil {
+			if err == db.ErrProjectNotFound {
+				writeProjectError(c, http.StatusNotFound, "project_not_found", "project not found")
+				return
+			}
+			writeProjectError(c, http.StatusServiceUnavailable, "database_unavailable", "failed to get project")
+			return
+		}
+		currentDocument, err := project.NormalizeDocument(current.Document)
+		if err != nil {
+			writeProjectError(c, http.StatusInternalServerError, "corrupt_project_document", "failed to decode project document")
+			return
+		}
+		if err := project.ValidateSourceImageMetadata(doc, currentDocument.Filename, current.SourceImageContentType, current.SourceImageSize); err != nil {
+			writeProjectError(c, http.StatusBadRequest, "source_image_metadata_mismatch", err.Error())
 			return
 		}
 
