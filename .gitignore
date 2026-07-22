@@ -21,3 +21,4 @@ Thumbs.db
 .env.local
 
 wasm/target/
+wasm/pkg/

@@ -185,12 +185,17 @@ func TestRouterServesFrontendAndSPAFallback(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(frontendDir, "assets", "app.js"), []byte("window.homevox = true"), 0o644); err != nil {
 		t.Fatalf("write asset: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(frontendDir, "assets", "homevox.wasm"), []byte("\x00asm"), 0o644); err != nil {
+		t.Fatalf("write wasm asset: %v", err)
+	}
 
 	router := NewRouter(config.Config{}, frontendDir)
 
 	for _, tc := range []routerTestCase{
 		{name: "root", method: http.MethodGet, path: "/", wantStatus: http.StatusOK, wantBody: "HomeVox shell", contentType: "text/html"},
 		{name: "asset", method: http.MethodGet, path: "/assets/app.js", wantStatus: http.StatusOK, wantBody: "window.homevox = true", contentType: "text/javascript"},
+		{name: "wasm asset", method: http.MethodGet, path: "/assets/homevox.wasm", wantStatus: http.StatusOK, wantBody: "\x00asm", contentType: "application/wasm"},
+		{name: "wasm asset head", method: http.MethodHead, path: "/assets/homevox.wasm", wantStatus: http.StatusOK, contentType: "application/wasm"},
 		{name: "client route", method: http.MethodGet, path: "/projects/demo", wantStatus: http.StatusOK, wantBody: "HomeVox shell", contentType: "text/html"},
 		{name: "post client route", method: http.MethodPost, path: "/projects/demo", wantStatus: http.StatusNotFound},
 		{name: "missing asset", method: http.MethodGet, path: "/assets/missing.js", wantStatus: http.StatusNotFound},

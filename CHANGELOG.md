@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 完成 Issue #13：将 Rust/wasm-bindgen Marching Cubes 通过可复现 `wasm-pack --target web` 构建、受限 TypeScript adapter 和 R3F `BufferGeometry` 生命周期接入真实浏览器墙体渲染链路。
+- 增加 17³ 标量场、有限数值/资源/50ms 主线程预算验证、过期异步结果保护，以及 WASM 失败时互斥的 wall-shell fallback 和可观察运行指标。
+- 固定 Rust `1.96.1`、`wasm32-unknown-unknown` 与 `wasm-pack 0.13.1` bootstrap；新增 production Playwright 验收和 Go `.wasm` GET/HEAD MIME 回归，覆盖真实 `.wasm`、有限几何、拖拽/Undo/Redo、PNG 下载与 reload 重建。
+
+## Unreleased
+
 ### Added
 
 - 完成 Issue #11 项目持久化：前端支持创建、保存、列表和加载项目；后端提供项目 create/get/list/source-image/update API、稳定嵌套错误 envelope 与 revision conflict 409。
