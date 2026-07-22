@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP_ROOT="/home/agent/.hermes/workspace/.tmp"
+TMP_ROOT="${TMPDIR:-/tmp}"
 SUFFIX="browser-$(date +%s)-$$"
 NET="homevox-e2e-${SUFFIX}-net"
 PG="homevox-e2e-${SUFFIX}-pg"
@@ -10,16 +10,41 @@ MINIO="homevox-e2e-${SUFFIX}-minio"
 MC="homevox-e2e-${SUFFIX}-mc"
 RUN="homevox-e2e-${SUFFIX}-runner"
 BROWSER="homevox-e2e-${SUFFIX}-browser"
-OUT="$TMP_ROOT/homevox-browser-e2e-${SUFFIX}"
+test -d "$TMP_ROOT" && test -w "$TMP_ROOT" || {
+  echo "temporary directory is not writable: $TMP_ROOT" >&2
+  exit 1
+}
+OUT="$(mktemp -d "${TMP_ROOT%/}/homevox-browser-e2e-${SUFFIX}.XXXXXX")"
 
 cleanup() {
+  local cleanup_status=0
   docker rm -f "$BROWSER" "$RUN" "$MC" "$MINIO" "$PG" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
-  if docker container inspect "$BROWSER" "$RUN" "$MC" "$MINIO" "$PG" >/dev/null 2>&1 || docker network inspect "$NET" >/dev/null 2>&1; then
+  for resource in "$BROWSER" "$RUN" "$MC" "$MINIO" "$PG"; do
+    if docker container inspect "$resource" >/dev/null 2>&1; then
+      echo "cleanup=FAIL container remains: $resource" >&2
+      cleanup_status=1
+    fi
+  done
+  if docker network inspect "$NET" >/dev/null 2>&1; then
     echo "cleanup=FAIL resources remain for $SUFFIX" >&2
-    return 1
+    cleanup_status=1
   fi
-  echo "cleanup=PASS suffix=$SUFFIX"
+  if [[ "${HOMEVOX_KEEP_E2E_ARTIFACTS:-0}" == "1" ]]; then
+    echo "artifacts=KEPT path=$OUT"
+  else
+    rm -rf -- "$OUT" || cleanup_status=1
+    if test -e "$OUT"; then
+      echo "artifacts_cleanup=FAIL path=$OUT" >&2
+      cleanup_status=1
+    else
+      echo "artifacts_cleanup=PASS"
+    fi
+  fi
+  if (( cleanup_status == 0 )); then
+    echo "cleanup=PASS suffix=$SUFFIX"
+  fi
+  return "$cleanup_status"
 }
 trap cleanup EXIT
 
@@ -27,7 +52,6 @@ for resource in "$PG" "$MINIO" "$MC" "$RUN" "$BROWSER"; do
   ! docker container inspect "$resource" >/dev/null 2>&1 || { echo "refusing existing container $resource" >&2; exit 1; }
 done
 ! docker network inspect "$NET" >/dev/null 2>&1 || { echo "refusing existing network $NET" >&2; exit 1; }
-mkdir -p "$OUT"
 
 npm --prefix "$ROOT/frontend" run build
 (
