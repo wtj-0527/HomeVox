@@ -5,12 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build:wasm": "cd ../wasm && wasm-pack build --target web --out-dir pkg",
+    "build:wasm": "../scripts/build-wasm.sh",
     "prebuild": "npm run build:wasm",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "../scripts/run-production-browser-e2e.sh"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
@@ -24,6 +25,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@playwright/test": "1.61.1",
     "@types/node": "^24.13.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

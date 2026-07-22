@@ -195,6 +195,7 @@ func TestRouterServesFrontendAndSPAFallback(t *testing.T) {
 		{name: "root", method: http.MethodGet, path: "/", wantStatus: http.StatusOK, wantBody: "HomeVox shell", contentType: "text/html"},
 		{name: "asset", method: http.MethodGet, path: "/assets/app.js", wantStatus: http.StatusOK, wantBody: "window.homevox = true", contentType: "text/javascript"},
 		{name: "wasm asset", method: http.MethodGet, path: "/assets/homevox.wasm", wantStatus: http.StatusOK, wantBody: "\x00asm", contentType: "application/wasm"},
+		{name: "wasm asset head", method: http.MethodHead, path: "/assets/homevox.wasm", wantStatus: http.StatusOK, contentType: "application/wasm"},
 		{name: "client route", method: http.MethodGet, path: "/projects/demo", wantStatus: http.StatusOK, wantBody: "HomeVox shell", contentType: "text/html"},
 		{name: "post client route", method: http.MethodPost, path: "/projects/demo", wantStatus: http.StatusNotFound},
 		{name: "missing asset", method: http.MethodGet, path: "/assets/missing.js", wantStatus: http.StatusNotFound},

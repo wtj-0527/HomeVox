@@ -45,12 +45,49 @@ import {
 
 const API_PARSE_URL = '/api/floorplans/parse'
 const EMPTY_WALLS: WallSegment[] = []
+const E2E_WALL_FIXTURE: ParseResponse = {
+  filename: 'e2e-wall-fixture.png',
+  contentType: 'image/png',
+  size: 1,
+  result: {
+    rooms: [],
+    walls: [
+      { x1: 80, y1: 80, x2: 520, y2: 80 },
+      { x1: 520, y1: 80, x2: 520, y2: 360 },
+      { x1: 520, y1: 360, x2: 80, y2: 360 },
+      { x1: 80, y1: 360, x2: 80, y2: 80 },
+    ],
+    doors: [],
+    windows: [],
+    scale: { unit: 'px' },
+    metadata: { source: 'production-e2e-fixture', image_width: 600, image_height: 440 },
+  },
+}
 
 type ParseState = 'idle' | 'uploading' | 'ready' | 'error'
 
 type ScenePoint = {
   x: number
   y: number
+}
+
+declare global {
+  interface Window {
+    __homevoxE2E?: {
+      generation: number
+      wasmCalls: number
+      metrics: MarchingCubesMetrics | null
+      geometry: { positionCount: number; normalCount: number; finite: boolean }
+    }
+  }
+}
+
+function isE2EFixtureEnabled(): boolean {
+  return typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('e2e') === 'wall-fixture'
+}
+
+function isE2EFallbackForced(): boolean {
+  return typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('wasm') === 'fallback'
 }
 
 
@@ -348,6 +385,7 @@ export default function App() {
   const projectSequenceRef = useRef(0)
   const wasmGenerationRef = useRef(0)
   const wasmGeometryRef = useRef<BufferGeometry | null>(null)
+  const wasmCallsRef = useRef(0)
 
   const result = parseResponse?.result ?? null
   const walls = dragPreviewWalls ?? wallEditor?.walls ?? result?.walls ?? EMPTY_WALLS
@@ -393,6 +431,35 @@ export default function App() {
     webGLAvailable &&
     Boolean(threeRenderer?.gl) &&
     !isExporting
+
+  useEffect(() => {
+    if (!isE2EFixtureEnabled()) return
+    setParseResponse(E2E_WALL_FIXTURE)
+    setStatus('ready')
+    setProjectName('Production E2E wall fixture')
+  }, [])
+
+  useEffect(() => {
+    if (!isE2EFixtureEnabled()) return
+    const positions = wasmGeometry?.getAttribute('position')
+    const normals = wasmGeometry?.getAttribute('normal')
+    const finite = Boolean(
+      positions &&
+      normals &&
+      Array.from(positions.array).every(Number.isFinite) &&
+      Array.from(normals.array).every(Number.isFinite),
+    )
+    window.__homevoxE2E = {
+      generation: wasmGenerationRef.current,
+      wasmCalls: wasmCallsRef.current,
+      metrics: wasmMetrics,
+      geometry: {
+        positionCount: positions?.count ?? 0,
+        normalCount: normals?.count ?? 0,
+        finite,
+      },
+    }
+  }, [wasmGeometry, wasmMetrics, wasmState])
 
   function buildScopeFileName(scope: '2d' | '3d'): string {
     exportSequenceRef.current += 1
@@ -444,12 +511,20 @@ export default function App() {
       setWasmState('fallback')
       return
     }
+    if (isE2EFallbackForced()) {
+      replaceGeometry(null)
+      setWasmMetrics(null)
+      setWasmFallback('load-failed')
+      setWasmState('fallback')
+      return
+    }
 
     let disposed = false
     setWasmState('loading')
     setWasmFallback(null)
     setWasmMetrics(null)
     void (async (model: WallVoxelModel) => {
+      wasmCallsRef.current += 1
       const result = await runMarchingCubes({
         data: model.data,
         dimensions: model.dimensions,
@@ -1267,6 +1342,7 @@ export default function App() {
                 ].map((handle) => (
                   <circle
                     key={`hit-${wallIndex}-${handle.endpoint}`}
+                    data-testid={`endpoint-handle-${wallIndex}-${handle.endpoint}`}
                     cx={handle.x}
                     cy={handle.y}
                     r={hitRadius}
