@@ -6,6 +6,7 @@ import {
   redo,
   undo,
 } from './floorplanEditor'
+import { validateOpenings } from './floorplanUi'
 
 describe('wall edit core', () => {
   it('moves only one endpoint when detached', () => {
@@ -186,5 +187,23 @@ describe('opening-aware history', () => {
     expect(updateOpening(state, 'door-a', { position: 0.75 }).error).toContain('overlap')
     expect(updateOpening(state, 'door-a', { width: 100 }).error).toContain('exceeds')
     expect(updateOpening(state, 'door-a', { position: 0.01 }).error).toContain('endpoint')
+  })
+
+  it('rejects endpoint drag candidates that make an opening cross a wall endpoint', () => {
+    const state = createWallEditorState(walls, [{ ...door, position: 0.25 }])
+
+    const shortened = moveEndpoint(state, { wallIndex: 0, endpoint: 'end' }, { x: 30, y: 0 })
+
+    expect(shortened.changed).toBe(true)
+    expect(validateOpenings(shortened.walls, state.openings)).toContain('endpoint')
+  })
+
+  it('rejects endpoint drag candidates that make an opening as wide as its wall', () => {
+    const state = createWallEditorState(walls, [door])
+
+    const shortened = moveEndpoint(state, { wallIndex: 0, endpoint: 'end' }, { x: 20, y: 0 })
+
+    expect(shortened.changed).toBe(true)
+    expect(validateOpenings(shortened.walls, state.openings)).toContain('exceeds')
   })
 })

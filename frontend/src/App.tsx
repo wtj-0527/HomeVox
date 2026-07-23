@@ -23,6 +23,7 @@ import {
   isParseResponse,
   openingLabel,
   openingPoint,
+  validateOpenings,
   MIN_OPENING_WIDTH,
   type ParsedOpening,
   type ParseResponse,
@@ -918,7 +919,16 @@ export default function App() {
 
     if (draggedEndpoint) {
       const moveResult = moveEndpoint(wallEditor, draggedEndpoint, cursor)
+      const openingValidationError = moveResult.changed
+        ? validateOpenings(moveResult.walls, wallEditor.openings)
+        : null
+      if (openingValidationError) {
+        setDragPreviewWalls(null)
+        setOpeningError(openingValidationError)
+        return
+      }
       setDragPreviewWalls(moveResult.changed ? moveResult.walls : null)
+      setOpeningError('')
       return
     }
 
@@ -1013,7 +1023,15 @@ export default function App() {
       setDragPreviewOpenings(null)
       return
     }
-    if (draggedEndpoint && dragPreviewWalls) setWallEditor(pushWallSnapshot(wallEditor, dragPreviewWalls, wallEditor.openings))
+    if (draggedEndpoint && dragPreviewWalls) {
+      const openingValidationError = validateOpenings(dragPreviewWalls, wallEditor.openings)
+      if (openingValidationError) {
+        setOpeningError(openingValidationError)
+      } else {
+        setWallEditor(pushWallSnapshot(wallEditor, dragPreviewWalls, wallEditor.openings))
+        setOpeningError('')
+      }
+    }
     if (draggedOpeningID && dragPreviewOpenings) setWallEditor(pushWallSnapshot(wallEditor, wallEditor.walls, dragPreviewOpenings))
     setDraggedEndpoint(null)
     setDraggedOpeningID(null)
