@@ -32,7 +32,7 @@ import {
 } from './floorplanUi'
 import { buildWallShellModel, type WallShellModel } from './wallShell'
 import { buildWallVoxelModel, type WallVoxelModel } from './wallVoxel'
-import { runMarchingCubes, type MarchingCubesMetrics, type WasmBindings, type WasmFallbackReason } from './wasmMarchingCubes'
+import { runMarchingCubes, type MarchingCubesMetrics, type WasmFallbackReason } from './wasmMarchingCubes'
 import { buildWasmWallGeometry, disposeWasmWallGeometry } from './wasmGeometry'
 import {
   buildExportFileName,
@@ -49,49 +49,13 @@ import {
   type ProjectDetail,
   type ProjectSummary,
 } from './projects'
+import { PRODUCT_STEPS, canOpenStep, type ProductStep } from './productFlow'
+import { e2EProjectID, e2EWasmLoader, isE2EInstrumentationEnabled, publishE2EState } from '@homevox-e2e'
+import './App.css'
 
 const API_PARSE_URL = '/api/floorplans/parse'
 const EMPTY_WALLS: WallSegment[] = []
-const E2E_WALL_FIXTURE: ParseResponse = {
-  filename: 'e2e-wall-fixture.png',
-  contentType: 'image/png',
-  size: 80,
-  result: {
-    rooms: [],
-    walls: [
-      { id: 'wall-1', x1: 80, y1: 80, x2: 520, y2: 80 },
-      { id: 'wall-2', x1: 520, y1: 80, x2: 520, y2: 360 },
-      { id: 'wall-3', x1: 520, y1: 360, x2: 80, y2: 360 },
-      { id: 'wall-4', x1: 80, y1: 360, x2: 80, y2: 80 },
-    ],
-    doors: [{ id: 'door-1', kind: 'door', wallId: 'wall-1', position: 0.5, width: 72, source: 'fixture', confirmed: false }],
-    windows: [{ id: 'window-1', kind: 'window', wallId: 'wall-2', position: 0.5, width: 64, source: 'fixture', confirmed: false }],
-    scale: { unit: 'px' },
-    metadata: { source: 'production-e2e-fixture', image_width: 600, image_height: 440 },
-  },
-}
 
-const E2E_INVALID_OPENING_FIXTURE: ParseResponse = {
-  ...E2E_WALL_FIXTURE,
-  result: {
-    ...E2E_WALL_FIXTURE.result,
-    doors: [{ id: 'door-invalid', kind: 'door', wallId: 'missing-wall', position: 0.5, width: 72, source: 'fixture', confirmed: false }],
-    windows: [],
-  },
-}
-
-const E2E_DUPLICATE_WALL_ID_FIXTURE: ParseResponse = {
-  ...E2E_WALL_FIXTURE,
-  result: {
-    ...E2E_WALL_FIXTURE.result,
-    walls: [
-      { id: 'wall-duplicate', x1: 80, y1: 80, x2: 520, y2: 80 },
-      { id: 'wall-duplicate', x1: 520, y1: 80, x2: 520, y2: 360 },
-    ],
-    doors: [{ id: 'door-duplicate', kind: 'door', wallId: 'wall-duplicate', position: 0.5, width: 72, source: 'fixture', confirmed: false }],
-    windows: [],
-  },
-}
 
 type ParseState = 'idle' | 'uploading' | 'ready' | 'error'
 
@@ -99,48 +63,6 @@ type ScenePoint = {
   x: number
   y: number
 }
-
-declare global {
-  interface Window {
-    __homevoxE2E?: {
-      generation: number
-      wasmCalls: number
-      metrics: MarchingCubesMetrics | null
-      geometry: { positionCount: number; normalCount: number; finite: boolean; fingerprint: number }
-      currentProjectId: string | null
-      selectedOpeningId: string | null
-    }
-  }
-}
-
-function e2EFixture(): ParseResponse | null {
-  if (typeof window === 'undefined') return null
-  switch (new URLSearchParams(window.location.search).get('e2e')) {
-    case 'wall-fixture': return E2E_WALL_FIXTURE
-    case 'invalid-opening': return E2E_INVALID_OPENING_FIXTURE
-    case 'duplicate-wall-id': return E2E_DUPLICATE_WALL_ID_FIXTURE
-    default: return null
-  }
-}
-
-function isE2EFixtureEnabled(): boolean {
-  return e2EFixture() !== null
-}
-
-function e2EProjectID(): string | null {
-  if (typeof window === 'undefined') return null
-  const value = new URLSearchParams(window.location.search).get('project')
-  return value && /^[0-9a-f-]{36}$/i.test(value) ? value : null
-}
-
-function e2EWasmFailureEnabled(): boolean {
-  return typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('wasm') === 'load-failure'
-}
-
-const failingE2EWasmLoader = async (): Promise<WasmBindings> => {
-  throw new Error('E2E fixture rejected WASM loader')
-}
-
 
 function isFinitePositiveInteger(value: number | undefined | null): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -249,11 +171,13 @@ type FloorplanSceneProps = {
   model: WallShellModel
   wasmGeometry: BufferGeometry | null
   wasmActive: boolean
+  selectedWallID: string | null
   selectedOpeningID: string | null
+  onSelectWall: (wallID: string) => void
   onSelectOpening: (openingID: string) => void
 }
 
-function Scene({ model, wasmGeometry, wasmActive, selectedOpeningID, onSelectOpening }: FloorplanSceneProps) {
+function Scene({ model, wasmGeometry, wasmActive, selectedWallID, selectedOpeningID, onSelectWall, onSelectOpening }: FloorplanSceneProps) {
 
   return (
     <>
@@ -290,18 +214,37 @@ function Scene({ model, wasmGeometry, wasmActive, selectedOpeningID, onSelectOpe
         </mesh>
       )}
 
-      {!wasmActive && model.walls.map((wall) => (
-        <mesh
-          key={`wall-shell-${wall.sourceIndex}`}
-          position={[wall.x, wall.height / 2, wall.z]}
-          rotation={[0, wall.rotationY, 0]}
-          castShadow
-          receiveShadow
-          userData={{ sourceWallIndex: wall.sourceIndex }}
-        >
-          <boxGeometry args={[wall.length, wall.height, wall.thickness]} />
-          <meshStandardMaterial color="#e2e8f0" roughness={0.72} />
-        </mesh>
+      {model.walls.map((wall) => (
+        <group key={`wall-shell-${wall.id}`}>
+          <mesh
+            position={[wall.x, wall.height / 2, wall.z]}
+            rotation={[0, wall.rotationY, 0]}
+            castShadow
+            receiveShadow
+            userData={{ wallId: wall.id }}
+            onPointerDown={(event) => { event.stopPropagation(); onSelectWall(wall.id) }}
+            onClick={(event) => { event.stopPropagation(); onSelectWall(wall.id) }}
+          >
+            <boxGeometry args={[wall.length, wall.height, wall.thickness]} />
+            <meshStandardMaterial
+              color={selectedWallID === wall.id ? '#7c3aed' : '#e2e8f0'}
+              roughness={0.72}
+              transparent={wasmActive && selectedWallID !== wall.id}
+              opacity={wasmActive && selectedWallID !== wall.id ? 0.08 : 1}
+            />
+          </mesh>
+          <Html position={[wall.x, wall.height + 0.32, wall.z]} center>
+            <button
+              type="button"
+              data-testid={`three-wall-${wall.id}`}
+              aria-label={`3D 选择墙体 ${wall.id}`}
+              aria-pressed={selectedWallID === wall.id}
+              data-selected={selectedWallID === wall.id ? 'true' : 'false'}
+              className="h-4 w-4 rounded border border-white bg-slate-950/45 p-0 shadow"
+              onClick={() => onSelectWall(wall.id)}
+            />
+          </Html>
+        </group>
       ))}
 
       {model.openings.map((opening) => {
@@ -320,7 +263,7 @@ function Scene({ model, wasmGeometry, wasmActive, selectedOpeningID, onSelectOpe
             >
               <sphereGeometry args={[markerRadius, 20, 14]} />
               <meshBasicMaterial
-                color={selectedOpeningID === opening.id ? '#facc15' : isDoor ? '#f97316' : '#38bdf8'}
+                color={selectedOpeningID === opening.id ? '#7c3aed' : isDoor ? '#f97316' : '#38bdf8'}
                 depthTest={false}
                 toneMapped={false}
               />
@@ -420,6 +363,7 @@ function hasWebGLSupport(): boolean {
 }
 
 export default function App() {
+  const [activeStep, setActiveStep] = useState<ProductStep>(1)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [previewURL, setPreviewURL] = useState<string>('')
   const [parseResponse, setParseResponse] = useState<ParseResponse | null>(null)
@@ -435,7 +379,7 @@ export default function App() {
   const [draggedOpeningID, setDraggedOpeningID] = useState<string | null>(null)
   const [dragPreviewOpenings, setDragPreviewOpenings] = useState<ParsedOpening[] | null>(null)
   const [openingError, setOpeningError] = useState('')
-  const [selectedWallIndex, setSelectedWallIndex] = useState<number | null>(null)
+  const [selectedWallID, setSelectedWallID] = useState<string | null>(null)
   const [showSourceImage, setShowSourceImage] = useState(true)
   const [imageDimFallback, setImageDimFallback] = useState<{ width: number; height: number } | null>(null)
   const [editorSize, setEditorSize] = useState({ width: 0, height: 0 })
@@ -448,7 +392,7 @@ export default function App() {
   const [wasmGeometry, setWasmGeometry] = useState<BufferGeometry | null>(null)
   const [wasmState, setWasmState] = useState<'idle' | 'loading' | 'active' | 'fallback'>('idle')
   const [wasmMetrics, setWasmMetrics] = useState<MarchingCubesMetrics | null>(null)
-  const [wasmFallback, setWasmFallback] = useState<WasmFallbackReason | null>(null)
+  const [, setWasmFallback] = useState<WasmFallbackReason | null>(null)
   const webGLAvailable = useMemo(hasWebGLSupport, [])
   const exportSequenceRef = useRef(0)
 
@@ -467,16 +411,8 @@ export default function App() {
   const openings = useMemo(() => dragPreviewOpenings ?? wallEditor?.openings ?? (result ? [...result.doors, ...result.windows] : []), [dragPreviewOpenings, result, wallEditor])
   const [doors, windows] = useMemo(() => [openings.filter((opening) => opening.kind === 'door'), openings.filter((opening) => opening.kind === 'window')], [openings])
   const selectedOpening = openings.find((opening) => opening.id === selectedOpeningID) ?? null
+  const selectedWall = walls.find((wall) => wall.id === selectedWallID) ?? null
 
-  const editableResult = useMemo<ParseResult | null>(() => {
-    if (!parseResponse) return null
-    return {
-      ...parseResponse.result,
-      walls,
-      doors,
-      windows,
-    }
-  }, [parseResponse, walls, doors, windows])
   const durableDocument = useMemo<ParseResponse | null>(() => (
     parseResponse ? { ...parseResponse, result: { ...parseResponse.result, walls, doors, windows } } : null
   ), [parseResponse, walls, doors, windows])
@@ -484,13 +420,12 @@ export default function App() {
     () => validateOpenings(walls, openings),
     [walls, openings],
   )
+  const hasCanonicalGeometry = Boolean(durableDocument) && !geometryValidationError
+  const hasRealThreeDGeometry = wasmState === 'active' && wasmGeometry !== null
+  const canOpenLinkedWorkspace = hasCanonicalGeometry && webGLAvailable && hasRealThreeDGeometry
   const wallShellModel = useMemo(
     () => buildWallShellModel(walls, doors, windows),
     [walls, doors, windows],
-  )
-  const wallShellTotalLength = useMemo(
-    () => wallShellModel.walls.reduce((total, wall) => total + wall.length, 0),
-    [wallShellModel],
   )
   const wallVoxelModel = useMemo(() => buildWallVoxelModel(walls, doors, windows), [walls, doors, windows])
 
@@ -517,15 +452,7 @@ export default function App() {
     !isExporting
 
   useEffect(() => {
-    if (!isE2EFixtureEnabled() || e2EProjectID()) return
-    setSelectedFile(new File([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAF0lEQVR4nGL6////fwZkwARjAAIAAP//YgEEAT/f/TcAAAAASUVORK5CYII='), (value) => value.charCodeAt(0))], 'e2e-wall-fixture.png', { type: 'image/png' }))
-    setParseResponse(e2EFixture())
-    setStatus('ready')
-    setProjectName('Production E2E wall fixture')
-  }, [])
-
-  useEffect(() => {
-    if (!isE2EFixtureEnabled()) return
+    if (!isE2EInstrumentationEnabled()) return
     const positions = wasmGeometry?.getAttribute('position')
     const normals = wasmGeometry?.getAttribute('normal')
     const finite = Boolean(
@@ -537,7 +464,7 @@ export default function App() {
     const fingerprint = positions
       ? Array.from(positions.array).reduce((total, value, index) => total + value * (index + 1), 0)
       : 0
-    window.__homevoxE2E = {
+    publishE2EState({
       generation: wasmGenerationRef.current,
       wasmCalls: wasmCallsRef.current,
       metrics: wasmMetrics,
@@ -549,8 +476,21 @@ export default function App() {
       },
       currentProjectId: currentProject?.id ?? null,
       selectedOpeningId: selectedOpeningID,
-    }
-  }, [currentProject, selectedOpeningID, wasmGeometry, wasmMetrics, wasmState])
+      walls: walls.map((wall) => ({
+        id: wall.id ?? null,
+        x1: wall.x1,
+        y1: wall.y1,
+        x2: wall.x2,
+        y2: wall.y2,
+      })),
+      openings: openings.map((opening) => ({
+        id: opening.id ?? null,
+        wallId: opening.wallId ?? null,
+        position: opening.position ?? null,
+        width: opening.width ?? null,
+      })),
+    })
+  }, [currentProject, openings, selectedOpeningID, walls, wasmGeometry, wasmMetrics, wasmState])
 
   function buildScopeFileName(scope: '2d' | '3d'): string {
     exportSequenceRef.current += 1
@@ -614,7 +554,7 @@ export default function App() {
           dimensions: model.dimensions,
           isoLevel: model.isoLevel,
         },
-        e2EWasmFailureEnabled() ? failingE2EWasmLoader : undefined,
+        e2EWasmLoader(),
       )
       if (disposed || wasmGenerationRef.current !== generation) return
       if (!result.ok) {
@@ -777,13 +717,14 @@ export default function App() {
       if (parseRequestRef.current?.id !== requestId) return
 
       setParseResponse(body)
+      setActiveStep(3)
       setCurrentProject(null)
       setProjectName((current) => current || body.filename)
       setStatus('ready')
       setDraggedEndpoint(null)
       setDragPreviewWalls(null)
       setHoveredEndpoint(null)
-      setSelectedWallIndex(null)
+      setSelectedWallID(null)
       setSelectedOpeningID(null)
       setDraggedOpeningID(null)
       setDragPreviewOpenings(null)
@@ -810,7 +751,7 @@ export default function App() {
     setDragPreviewWalls(null)
     setHoveredEndpoint(null)
     setDraggedEndpoint(null)
-    setSelectedWallIndex(null)
+    setSelectedWallID(null)
     setSelectedOpeningID(null)
     setDraggedOpeningID(null)
     setDragPreviewOpenings(null)
@@ -821,6 +762,7 @@ export default function App() {
     setStatus('idle')
     setImageDimFallback(null)
     setCurrentProject(null)
+    setActiveStep(file ? 2 : 1)
 
     setPreviewURL((currentURL) => {
       if (currentURL) URL.revokeObjectURL(currentURL)
@@ -910,7 +852,7 @@ export default function App() {
       setDraggedEndpoint(null)
       setDragPreviewWalls(null)
       setHoveredEndpoint(null)
-      setSelectedWallIndex(null)
+      setSelectedWallID(null)
       setSelectedOpeningID(null)
       setDraggedOpeningID(null)
       setDragPreviewOpenings(null)
@@ -1007,11 +949,23 @@ export default function App() {
     setHoveredEndpoint(hit)
   }
 
-  function handleWallPointerDown(event: PointerEvent<SVGLineElement>, wallIndex: number) {
+  function selectWall(wallID: string) {
+    setSelectedWallID(wallID)
+    setSelectedOpeningID(null)
+    setOpeningError('')
+  }
+
+  function selectOpening(openingID: string) {
+    const opening = openings.find((item) => item.id === openingID)
+    setSelectedOpeningID(openingID)
+    setSelectedWallID(opening?.wallId ?? null)
+    setOpeningError('')
+  }
+
+  function handleWallPointerDown(event: PointerEvent<SVGLineElement>, wallID: string) {
     event.preventDefault()
     event.stopPropagation()
-    setSelectedWallIndex(wallIndex)
-    setSelectedOpeningID(null)
+    selectWall(wallID)
   }
 
   function commitOpeningPatch(openingID: string, patch: Partial<ParsedOpening>) {
@@ -1026,11 +980,11 @@ export default function App() {
   }
 
   function handleAddOpening(kind: 'door' | 'window') {
-    if (!wallEditor || selectedWallIndex === null) {
+    if (!wallEditor || !selectedWallID) {
       setOpeningError('请先选择一面墙再添加开口')
       return
     }
-    const wall = wallEditor.walls[selectedWallIndex]
+    const wall = wallEditor.walls.find((item) => item.id === selectedWallID)
     if (!wall?.id) {
       setOpeningError('所选墙体没有稳定 ID，无法添加开口')
       return
@@ -1166,475 +1120,132 @@ export default function App() {
     }
   }
 
-  return (
-    <div className="w-full h-full bg-slate-950 text-slate-100">
-      <div className="absolute top-0 left-0 right-0 z-10 bg-black/50 backdrop-blur-sm px-5 py-3 flex items-center justify-between border-b border-white/10">
-        <span className="text-sm font-medium text-white/85">筑居 HomeVox — 2D 校正、3D 墙体白模与 PNG 导出</span>
-        <span className="text-xs text-white/50">0.0.0.0:18088 API · React/R3F Viewport</span>
-      </div>
-
-      <aside className="absolute left-4 top-20 bottom-4 z-10 w-[380px] overflow-y-auto rounded-2xl border border-white/10 bg-slate-900/90 p-4 shadow-2xl backdrop-blur">
-        <section className="space-y-3">
-          <div>
-            <h1 className="text-lg font-semibold">户型图上传与 AI 解析</h1>
-            <p className="mt-1 text-xs leading-5 text-slate-400">
-              上传图片后由 Go API 解析出 rooms / walls / doors / windows，后续 2D 端点可拖拽修正。
-            </p>
-          </div>
-
-          <label className="block rounded-xl border border-dashed border-slate-600 bg-slate-950/60 p-4 text-sm cursor-pointer hover:border-sky-400">
-            <span className="block font-medium text-slate-200">选择户型图</span>
-            <span className="mt-1 block text-xs text-slate-500">支持 PNG、JPEG、GIF、WebP；后端限制 10 MiB</span>
-            <input
-              className="mt-3 block w-full text-xs text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-sky-500 file:px-3 file:py-2 file:text-white"
-              type="file"
-              accept="image/png,image/jpeg,image/gif,image/webp"
-              onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)}
-            />
-          </label>
-
-          {previewURL && (
-            <img className="max-h-52 w-full rounded-xl object-contain bg-white" src={previewURL} alt="上传户型图预览" />
-          )}
-
-          <button
-            className="w-full rounded-xl bg-sky-500 px-4 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-700"
-            type="button"
-            disabled={status === 'uploading' || !selectedFile}
-            onClick={handleParse}
-          >
-            {status === 'uploading' ? '上传并解析中…' : '上传并解析'}
-          </button>
-
-          <div className="rounded-xl bg-slate-950/70 p-3 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-slate-400">状态</span>
-              <span
-                className={
-                  status === 'error' ? 'text-red-300' : status === 'ready' ? 'text-emerald-300' : 'text-slate-200'
-                }
-              >
-                {status === 'ready'
-                  ? '解析完成'
-                  : status === 'uploading'
-                    ? '解析中'
-                    : status === 'error'
-                      ? '失败'
-                      : '等待上传'}
-              </span>
-            </div>
-            {error && <p className="mt-2 leading-5 text-red-300">{error}</p>}
-            {exportError && <p className="mt-2 leading-5 text-amber-300">{exportError}</p>}
-          </div>
-        </section>
-
-        <section className="mt-4 space-y-3 rounded-xl border border-white/10 bg-slate-950/70 p-3 text-xs">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold">项目保存与加载</h2>
-            <button
-              className="rounded-md bg-slate-800 px-2 py-1 text-slate-200 disabled:opacity-50"
-              type="button"
-              disabled={projectBusy !== null}
-              onClick={() => void refreshProjects()}
-            >
-              {projectBusy === 'list' ? '刷新中…' : '刷新'}
-            </button>
-          </div>
-          <input
-            aria-label="项目名称"
-            className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100"
-            value={projectName}
-            maxLength={120}
-            placeholder="项目名称"
-            onChange={(event) => setProjectName(event.target.value)}
-          />
-          <button
-            className="w-full rounded-lg bg-violet-600 px-3 py-2 font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
-            type="button"
-            disabled={!durableDocument || projectBusy !== null}
-            onClick={() => void handleProjectSave()}
-          >
-            {projectBusy === 'save' ? '保存中…' : currentProject ? `保存项目（r${currentProject.revision}）` : '创建项目'}
-          </button>
-          {projectMessage && <p className="leading-5 text-slate-300">{projectMessage}</p>}
-          <ul className="max-h-44 space-y-2 overflow-y-auto" aria-label="已保存项目">
-            {projects.map((item) => (
-              <li key={item.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-900 p-2">
-                <span className="min-w-0 truncate text-slate-200">{item.name} <span className="text-slate-500">r{item.revision}</span></span>
-                <button
-                  className="shrink-0 rounded-md bg-sky-700 px-2 py-1 text-white disabled:opacity-50"
-                  type="button"
-                  disabled={projectBusy !== null}
-                  onClick={() => void handleLoadProject(item.id)}
-                >
-                  {projectBusy === 'load' ? '加载中…' : '加载'}
-                </button>
-              </li>
-            ))}
-            {projects.length === 0 && <li className="text-slate-500">暂无已保存项目</li>}
-          </ul>
-        </section>
-
-        <section className="space-y-2 rounded-xl bg-slate-950/70 p-3 text-xs">
-          <h2 className="text-slate-400">导出</h2>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              aria-label="导出2D平面图PNG"
-              className="rounded-lg bg-emerald-600 px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50"
-              type="button"
-              disabled={!canExport2D}
-              onClick={handleExport2D}
-            >
-              {exportingScope === '2d' ? '导出中…' : '导出2D PNG'}
-            </button>
-            <button
-              aria-label="导出3D白模PNG"
-              className="rounded-lg bg-sky-600 px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50"
-              type="button"
-              disabled={!canExport3D}
-              onClick={handleExport3D}
-              title={webGLAvailable ? undefined : 'WebGL 不可用，无法导出 3D'}
-            >
-              {exportingScope === '3d' ? '导出中…' : webGLAvailable ? '导出3D PNG' : 'WebGL 不可用'}
-            </button>
-          </div>
-          <p className="text-slate-500 leading-5">
-            {canExportModel ? '基于当前编辑后的墙体、门窗 marker 与当前视口/镜头生成。' : '请先完成解析后再导出。'}
-          </p>
-        </section>
-
-        <section className="mt-4 space-y-2 text-xs">
-          <div className="rounded-xl bg-slate-950/70 p-3" aria-label="开口编辑器">
-            <p className="text-slate-500 mb-2">门窗开口（选择墙体后添加；拖拽移动）</p>
-            <div className="grid grid-cols-2 gap-2">
-              <button type="button" className="rounded-lg bg-orange-600 px-3 py-2 disabled:opacity-50" disabled={selectedWallIndex === null} onClick={() => handleAddOpening('door')}>添加门</button>
-              <button type="button" className="rounded-lg bg-sky-600 px-3 py-2 disabled:opacity-50" disabled={selectedWallIndex === null} onClick={() => handleAddOpening('window')}>添加窗</button>
-            </div>
-            {selectedOpening && (
-              <div className="mt-2 grid grid-cols-[1fr_auto] gap-2">
-                <label className="text-slate-400">宽度
-                  <input aria-label="开口宽度" data-testid="opening-width" className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100" type="number" min={MIN_OPENING_WIDTH} step="1" value={selectedOpening.width ?? ''} onChange={(event) => { const width = Number(event.target.value); if (Number.isFinite(width)) commitOpeningPatch(selectedOpening.id!, { width }) }} />
-                </label>
-                <button type="button" className="self-end rounded-lg bg-red-700 px-3 py-2" onClick={handleDeleteOpening}>删除</button>
-                {selectedOpening.kind === 'window' && (
-                  <p className="col-span-2 rounded-md border border-amber-600/60 bg-amber-950/40 p-2 text-amber-200" data-testid="window-preview-disclosure" role="status">
-                    窗台高和窗高：confirmed={selectedOpening.confirmed === true ? 'true' : 'false（未知）'}。3D 预览使用非持久化默认值；这些尺寸不会保存为建筑参数。
-                  </p>
-                )}
-                {selectedOpening.kind === 'door' && selectedOpening.confirmed !== true && (
-                  <p className="col-span-2 rounded-md border border-amber-600/60 bg-amber-950/40 p-2 text-amber-200" data-testid="door-preview-disclosure" role="status">
-                    门高：confirmed=false（未知）。3D 全高门洞仅为非持久化预览假设；不会保存为建筑参数。
-                  </p>
-                )}
-              </div>
-            )}
-            {openingError && <p role="alert" className="mt-2 text-amber-300">{openingError}</p>}
-          </div>
-          <div className="rounded-xl bg-slate-950/70 p-3">
-            <p className="text-slate-500 mb-2">历史与历史同步</p>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                aria-label="撤销（Ctrl/Cmd + Z）"
-                className="rounded-lg bg-slate-800 px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50"
-                type="button"
-                disabled={!canUndo(wallEditor)}
-                onClick={handleUndo}
-              >
-                Undo
-              </button>
-              <button
-                aria-label="重做（Ctrl/Cmd + Shift+Z 或 Ctrl/Cmd + Y）"
-                className="rounded-lg bg-slate-800 px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50"
-                type="button"
-                disabled={!canRedo(wallEditor)}
-                onClick={handleRedo}
-              >
-                Redo
-              </button>
-            </div>
-            <p className="mt-2 text-slate-500">快捷键：Ctrl/Cmd + Z（Undo），Ctrl/Cmd + Shift+Z / Ctrl/Cmd + Y（Redo）</p>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="rounded-xl bg-slate-950/70 p-3">
-              <p className="text-slate-500">Rooms</p>
-              <p className="mt-1 text-xl font-semibold">{editableResult?.rooms.length ?? 0}</p>
-            </div>
-            <div className="rounded-xl bg-slate-950/70 p-3">
-              <p className="text-slate-500">Walls</p>
-              <p className="mt-1 text-xl font-semibold">{walls.length}</p>
-            </div>
-          </div>
-        </section>
-
-        {editableResult && (
-          <section className="mt-4 space-y-3">
-            <div>
-              <h2 className="text-sm font-semibold">解析摘要</h2>
-              <div className="mt-2 space-y-2">
-                {editableResult.rooms.slice(0, 6).map((room) => (
-                  <div key={`${room.name}-${room.type}`} className="rounded-lg bg-slate-950/70 px-3 py-2 text-xs">
-                    <span className="font-medium text-slate-200">{room.name}</span>
-                    <span className="ml-2 text-slate-500">{room.type}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <h2 className="text-sm font-semibold">结构化 JSON</h2>
-              <pre className="mt-2 max-h-72 overflow-auto rounded-xl bg-black/60 p-3 text-[11px] leading-5 text-slate-300">
-                {JSON.stringify(editableResult, null, 2)}
-              </pre>
-            </div>
-          </section>
-        )}
-      </aside>
-
-      <div className="absolute bottom-4 left-[410px] right-4 top-20 grid grid-cols-[minmax(0,3fr)_minmax(280px,2fr)] gap-3">
-      <section
-        className="min-w-0 rounded-2xl border border-white/10 bg-slate-950/95 p-2 shadow-2xl"
-        aria-label="2D 墙体编辑器"
-      >
-        <div className="mb-2 flex items-center justify-between gap-3 text-xs text-slate-300">
-          <span>2D 墙体端点校正（原图叠加）</span>
-          <div className="flex items-center gap-3">
-            <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
-              <input
-                type="checkbox"
-                checked={showSourceImage}
-                onChange={(event) => setShowSourceImage(event.target.checked)}
-              />
-              显示底图
-            </label>
-            <span>
-              {draggedEndpoint
-                ? '拖拽中'
-                : selectedWallIndex !== null
-                  ? `已选择墙体 ${selectedWallIndex + 1}`
-                  : hoveredEndpoint
-                    ? '可拖拽端点（鼠标悬停）'
-                    : '选择墙体或拖拽端点'}
-            </span>
-          </div>
+  const twoDPanel = (
+    <section className="workspace-card canvas-card min-w-0 p-3" aria-label="2D 墙体编辑器">
+      <div className="mb-3 flex items-center justify-between gap-3 text-xs text-slate-600">
+        <span className="font-semibold text-slate-800">2D 结构 · 原图叠加校正</span>
+        <div className="flex items-center gap-3">
+          <label className="flex cursor-pointer items-center gap-1.5 text-slate-600"><input type="checkbox" checked={showSourceImage} onChange={(event) => setShowSourceImage(event.target.checked)} />显示底图</label>
+          <span>{draggedEndpoint ? '拖拽中' : selectedWall ? `已选择 ${selectedWall.id}` : hoveredEndpoint ? '可拖拽端点（鼠标悬停）' : '选择墙体或拖拽端点'}</span>
         </div>
-
-        <div className="h-[calc(100%-32px)] overflow-hidden rounded-xl border border-white/10 bg-black/70">
-          <svg
-            ref={editorRef}
-            className="h-full w-full touch-none"
-            viewBox={`${viewport.minX} ${viewport.minY} ${viewport.width} ${viewport.height}`}
-            role="img"
-            aria-label="户型图墙体端点编辑区"
-            onPointerMove={handleCanvasPointerMove}
-            onPointerUp={handleCanvasPointerUp}
-            onPointerCancel={handleCanvasPointerCancel}
-            onPointerLeave={handleCanvasPointerCancel}
-            preserveAspectRatio="xMinYMin meet"
-          >
-            <rect
-              x={viewport.minX}
-              y={viewport.minY}
-              width={viewport.width}
-              height={viewport.height}
-              fill="#0f172a"
-            />
-
-            {showSourceImage && previewURL && (
-              <image
-                href={previewURL}
-                x={viewport.minX}
-                y={viewport.minY}
-                width={viewport.width}
-                height={viewport.height}
-                preserveAspectRatio="xMinYMin meet"
-                opacity="0.42"
-                pointerEvents="none"
-              />
-            )}
-
-            <g aria-label="墙体可视层" pointerEvents="none">
-              {walls.map((wall, wallIndex) => {
-                const endpointActive =
-                  hoveredEndpoint?.wallIndex === wallIndex || draggedEndpoint?.wallIndex === wallIndex
-                const selected = selectedWallIndex === wallIndex
-                const active = endpointActive || selected
-                const color = draggedEndpoint?.wallIndex === wallIndex
-                  ? '#22d3ee'
-                  : selected
-                    ? '#fbbf24'
-                    : endpointActive
-                      ? '#38bdf8'
-                      : '#e2e8f0'
-
-                return (
-                  <line
-                    key={`${wall.x1}-${wall.y1}-${wall.x2}-${wall.y2}-${wallIndex}`}
-                    x1={wall.x1}
-                    y1={wall.y1}
-                    x2={wall.x2}
-                    y2={wall.y2}
-                    stroke={color}
-                    strokeWidth={active ? activeWallStroke : wallStroke}
-                  />
-                )
-              })}
-            </g>
-
-            <g aria-label="墙体透明命中层" fill="none" stroke="transparent" strokeLinecap="round">
-              {walls.map((wall, wallIndex) => (
-                <line
-                  key={`hit-${wallIndex}`}
-                  x1={wall.x1}
-                  y1={wall.y1}
-                  x2={wall.x2}
-                  y2={wall.y2}
-                  strokeWidth={wallHitStroke}
-                  onPointerDown={(event) => handleWallPointerDown(event, wallIndex)}
-                  style={{ cursor: 'pointer' }}
-                />
-              ))}
-            </g>
-
-            <g aria-label="端点可视层" pointerEvents="none">
-              {walls.flatMap((wall, wallIndex) => {
-                const startSelected =
-                  (hoveredEndpoint?.wallIndex === wallIndex && hoveredEndpoint.endpoint === 'start') ||
-                  (draggedEndpoint?.wallIndex === wallIndex && draggedEndpoint.endpoint === 'start')
-                const endSelected =
-                  (hoveredEndpoint?.wallIndex === wallIndex && hoveredEndpoint.endpoint === 'end') ||
-                  (draggedEndpoint?.wallIndex === wallIndex && draggedEndpoint.endpoint === 'end')
-                return [
-                  { endpoint: 'start' as const, x: wall.x1, y: wall.y1, selected: startSelected },
-                  { endpoint: 'end' as const, x: wall.x2, y: wall.y2, selected: endSelected },
-                ].map((handle) => (
-                  <circle
-                    key={`visible-${wallIndex}-${handle.endpoint}`}
-                    cx={handle.x}
-                    cy={handle.y}
-                    r={handle.selected ? activeHandleRadius : handleRadius}
-                    fill={handle.selected ? '#f8fafc' : '#38bdf8'}
-                    stroke={handle.selected ? '#0f172a' : '#7dd3fc'}
-                    strokeWidth={openingStroke}
-                  />
-                ))
-              })}
-            </g>
-
-            <g aria-label="端点透明命中层" fill="transparent" stroke="transparent">
-              {walls.flatMap((wall, wallIndex) =>
-                [
-                  { endpoint: 'start' as const, x: wall.x1, y: wall.y1 },
-                  { endpoint: 'end' as const, x: wall.x2, y: wall.y2 },
-                ].map((handle) => (
-                  <circle
-                    key={`hit-${wallIndex}-${handle.endpoint}`}
-                    data-testid={`endpoint-handle-${wallIndex}-${handle.endpoint}`}
-                    cx={handle.x}
-                    cy={handle.y}
-                    r={hitRadius}
-                    onPointerDown={(event) =>
-                      handleCanvasPointerDown(event, {
-                        wallIndex,
-                        endpoint: handle.endpoint,
-                      })
-                    }
-                    style={{ cursor: 'grab' }}
-                  />
-                )),
-              )}
-            </g>
-
-            {openings.map((opening) => {
-              const wall = opening.wallId ? walls.find((item) => item.id === opening.wallId) : undefined
-              const point = wall ? openingPoint(wall, opening) : null
-              if (!point || !opening.id) return null
-              const selected = selectedOpeningID === opening.id
-              const label = openingLabel(opening)
-              const color = selected ? '#facc15' : opening.kind === 'door' ? '#f97316' : '#38bdf8'
-              return (
-                <g key={opening.id} data-testid={`opening-${opening.id}`}>
-                  <circle
-                    data-testid={`opening-handle-${opening.id}`}
-                    cx={point.x}
-                    cy={point.y}
-                    r={selected ? openingRadius * 1.3 : openingRadius}
-                    fill={color}
-                    fillOpacity={selected ? 0.95 : 0.75}
-                    stroke="#f8fafc"
-                    strokeWidth={openingStroke}
-                    onPointerDown={(event) => handleOpeningPointerDown(event, opening.id!)}
-                    style={{ cursor: 'grab' }}
-                  />
-                  {label && (
-                    <text x={point.x + labelOffset} y={point.y - labelOffset} fill={color} fontSize={labelSize} pointerEvents="none">
-                      {label}
-                    </text>
-                  )}
-                </g>
-              )
+      </div>
+      <div className="h-[calc(100%-32px)] overflow-hidden rounded-xl border border-slate-200 bg-slate-950">
+        <svg ref={editorRef} className="h-full w-full touch-none" viewBox={`${viewport.minX} ${viewport.minY} ${viewport.width} ${viewport.height}`} role="img" aria-label="户型图墙体端点编辑区" onPointerMove={handleCanvasPointerMove} onPointerUp={handleCanvasPointerUp} onPointerCancel={handleCanvasPointerCancel} onPointerLeave={handleCanvasPointerCancel} preserveAspectRatio="xMinYMin meet">
+          <rect x={viewport.minX} y={viewport.minY} width={viewport.width} height={viewport.height} fill="#0f172a" />
+          {showSourceImage && previewURL && <image href={previewURL} x={viewport.minX} y={viewport.minY} width={viewport.width} height={viewport.height} preserveAspectRatio="xMinYMin meet" opacity="0.42" pointerEvents="none" />}
+          <g aria-label="墙体可视层" pointerEvents="none">
+            {walls.map((wall, wallIndex) => {
+              const endpointActive = hoveredEndpoint?.wallIndex === wallIndex || draggedEndpoint?.wallIndex === wallIndex
+              const selected = selectedWallID === wall.id
+              const active = endpointActive || selected
+              const color = draggedEndpoint?.wallIndex === wallIndex ? '#22d3ee' : selected ? '#7c3aed' : endpointActive ? '#38bdf8' : '#e2e8f0'
+              return <line key={wall.id ?? `wall-${wallIndex}`} x1={wall.x1} y1={wall.y1} x2={wall.x2} y2={wall.y2} stroke={color} strokeWidth={active ? activeWallStroke : wallStroke} />
             })}
-          </svg>
-        </div>
-      </section>
-
-      <main
-        className="relative min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-slate-950 shadow-2xl"
-        aria-label="3D 户型预览"
-      >
-        <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-xl bg-black/60 px-3 py-2 text-xs text-white/75">
-          <div className="font-medium text-white/90">3D 墙体 WASM Marching Cubes</div>
-          <div className="mt-1 flex gap-3 text-[11px] text-white/60" aria-label="3D 白模实时指标">
-            <span data-testid="wasm-engine-state">引擎 {wasmState}</span>
-            <span data-testid="wasm-grid">Grid {wasmMetrics ? wasmMetrics.grid.join('×') : '—'}</span>
-            <span data-testid="wasm-triangles">三角 {wasmMetrics?.triangleCount ?? 0}</span>
-            <span>墙体 {wallShellModel.walls.length}</span>
-          </div>
-          {geometryValidationError && (
-            <p className="mt-1 max-w-xs text-[11px] text-amber-200" data-testid="geometry-validation-error" role="alert">
-              开口校验失败，已阻止体素和 WASM 开洞：{geometryValidationError}。2D 编辑与保存仍可用。
-            </p>
-          )}
-          <div className="mt-1 text-[11px] text-white/60" data-testid="wasm-resource-metrics">
-            {wasmMetrics
-              ? `顶点 ${wasmMetrics.vertexCount} · ${wasmMetrics.elapsedMs.toFixed(1)}ms · 输入 ${wasmMetrics.inputBytes}B · 输出 ${wasmMetrics.outputBytes}B`
-              : wasmFallback
-                ? `fallback: ${wasmFallback} · wall-shell ${wallShellTotalLength.toFixed(2)}`
-                : '正在准备受控 17³ 标量场'}
-          </div>
-        </div>
-        <div className="h-full w-full">
-          {webGLAvailable ? (
-            <Canvas
-              camera={{ position: [8, 7, 8], fov: 50 }}
-              shadows
-              gl={{ antialias: true, preserveDrawingBuffer: true }}
-              onCreated={(state) => {
-                setThreeRenderer(state)
-              }}
-            >
-              <Suspense fallback={null}>
-                <Scene model={wallShellModel} wasmGeometry={wasmGeometry} wasmActive={wasmState === 'active'} selectedOpeningID={selectedOpeningID} onSelectOpening={(openingID) => { setSelectedOpeningID(openingID); setOpeningError('') }} />
-                <OrbitControls makeDefault />
-              </Suspense>
-            </Canvas>
-          ) : (
-            <div
-              className="flex h-full w-full items-center justify-center px-8 text-center"
-              role="status"
-              aria-label="3D 渲染不可用"
-            >
-              <div className="max-w-sm rounded-2xl border border-amber-400/25 bg-amber-950/30 px-5 py-4 text-sm leading-6 text-amber-100">
-                当前浏览器未提供 WebGL，无法显示 3D 墙体白模。请在启用 WebGL 的浏览器中打开；2D 编辑和白模几何指标仍可使用。
-              </div>
-            </div>
-          )}
-        </div>
-        <div className="pointer-events-none absolute bottom-3 left-3 right-3 rounded-xl bg-black/55 px-3 py-2 text-center text-xs text-white/50">
-          WASM 网格实时跟随墙体及其局部开口；仅在引擎 active 时声明真实开洞。失败时显示 wall-shell 降级与可观察错误。
-        </div>
-      </main>
+          </g>
+          <g aria-label="墙体透明命中层" fill="none" stroke="transparent" strokeLinecap="round">
+            {walls.map((wall, wallIndex) => <line key={`hit-${wall.id ?? wallIndex}`} data-testid={`wall-hit-${wall.id ?? wallIndex}`} data-selected={selectedWallID === wall.id ? 'true' : 'false'} x1={wall.x1} y1={wall.y1} x2={wall.x2} y2={wall.y2} strokeWidth={wallHitStroke} onPointerDown={(event) => wall.id && handleWallPointerDown(event, wall.id)} style={{ cursor: 'pointer' }} />)}
+          </g>
+          <g aria-label="端点可视层" pointerEvents="none">
+            {walls.flatMap((wall, wallIndex) => ([{ endpoint: 'start' as const, x: wall.x1, y: wall.y1 }, { endpoint: 'end' as const, x: wall.x2, y: wall.y2 }].map((handle) => {
+              const highlighted = hoveredEndpoint?.wallIndex === wallIndex && hoveredEndpoint.endpoint === handle.endpoint || draggedEndpoint?.wallIndex === wallIndex && draggedEndpoint.endpoint === handle.endpoint
+              return <circle key={`visible-${wallIndex}-${handle.endpoint}`} cx={handle.x} cy={handle.y} r={highlighted ? activeHandleRadius : handleRadius} fill={highlighted ? '#f8fafc' : selectedWallID === wall.id ? '#7c3aed' : '#38bdf8'} stroke={highlighted ? '#0f172a' : selectedWallID === wall.id ? '#ddd6fe' : '#7dd3fc'} strokeWidth={openingStroke} />
+            })))}
+          </g>
+          <g aria-label="端点透明命中层" fill="transparent" stroke="transparent">
+            {walls.flatMap((wall, wallIndex) => ([{ endpoint: 'start' as const, x: wall.x1, y: wall.y1 }, { endpoint: 'end' as const, x: wall.x2, y: wall.y2 }].map((handle) => <circle key={`hit-${wallIndex}-${handle.endpoint}`} data-testid={`endpoint-handle-${wallIndex}-${handle.endpoint}`} cx={handle.x} cy={handle.y} r={hitRadius} onPointerDown={(event) => handleCanvasPointerDown(event, { wallIndex, endpoint: handle.endpoint })} style={{ cursor: 'grab' }} />)))}
+          </g>
+          {openings.map((opening) => {
+            const wall = opening.wallId ? walls.find((item) => item.id === opening.wallId) : undefined
+            const point = wall ? openingPoint(wall, opening) : null
+            if (!point || !opening.id) return null
+            const selected = selectedOpeningID === opening.id
+            const color = selected ? '#7c3aed' : opening.kind === 'door' ? '#f97316' : '#38bdf8'
+            return <g key={opening.id} data-testid={`opening-${opening.id}`}><circle data-testid={`opening-handle-${opening.id}`} cx={point.x} cy={point.y} r={selected ? openingRadius * 1.3 : openingRadius} fill={color} fillOpacity={selected ? 0.95 : 0.75} stroke="#f8fafc" strokeWidth={openingStroke} onPointerDown={(event) => handleOpeningPointerDown(event, opening.id!)} style={{ cursor: 'grab' }} />{openingLabel(opening) && <text x={point.x + labelOffset} y={point.y - labelOffset} fill={color} fontSize={labelSize} pointerEvents="none">{openingLabel(opening)}</text>}</g>
+          })}
+        </svg>
       </div>
+    </section>
+  )
+
+  const threeDPanel = (
+    <main className="three-card relative min-h-[520px] min-w-0 overflow-hidden" aria-label="3D 户型预览">
+      <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-xl bg-black/60 px-3 py-2 text-xs text-white/75">
+        <div className="font-medium text-white/90">3D 空间 · 同源可编辑预览</div><p className="mt-1 inline-flex rounded-full bg-violet-500/25 px-2 py-0.5 text-[11px] font-medium text-violet-100">已生成可审阅的同源 3D 几何</p>
+        <p className="mt-1 text-[11px] text-white/65">选择墙体、门窗可在两个视图中保持一致。</p>
+        {geometryValidationError && <p className="mt-1 max-w-xs text-[11px] text-amber-200" role="alert">当前开口数据无法生成 3D，请返回 2D 校正后重试。</p>}
+      </div>
+      <div className="h-full w-full">
+        {webGLAvailable ? <Canvas camera={{ position: [8, 7, 8], fov: 50 }} shadows gl={{ antialias: true, preserveDrawingBuffer: true }} onCreated={setThreeRenderer}>
+          <Suspense fallback={null}><Scene model={wallShellModel} wasmGeometry={wasmGeometry} wasmActive={wasmState === 'active'} selectedWallID={selectedWallID} selectedOpeningID={selectedOpeningID} onSelectWall={selectWall} onSelectOpening={selectOpening} /><OrbitControls makeDefault /></Suspense>
+        </Canvas> : <div className="flex h-full w-full items-center justify-center px-8 text-center" role="status" aria-label="3D 渲染不可用"><div className="max-w-sm rounded-2xl border border-amber-400/25 bg-amber-950/30 px-5 py-4 text-sm leading-6 text-amber-100">当前浏览器无法显示 3D 预览。请在启用 WebGL 的浏览器中打开；2D 校正仍可继续。</div></div>}
+      </div>
+      <div className="pointer-events-none absolute bottom-3 left-3 right-3 rounded-xl bg-black/55 px-3 py-2 text-center text-xs text-white/50">墙体高度为示意；精确高度、承重属性、墙厚与窗台高度需实测。</div>
+    </main>
+  )
+
+  const threeDUnavailablePanel = (
+    <div className="workspace-card p-6 text-slate-800" role={wasmState === 'loading' ? 'status' : 'alert'}>
+      {geometryValidationError ? (
+        <>
+          <h4 className="text-lg font-semibold">当前开口数据无法生成 3D</h4>
+          <p className="mt-2 text-sm text-slate-600">请返回 2D 校正后修复数据，再重新生成 3D。</p>
+        </>
+      ) : wasmState === 'loading' ? (
+        <>
+          <h4 className="text-lg font-semibold">正在准备 3D 预览</h4>
+          <p className="mt-2 text-sm text-slate-600">3D 几何准备完成后，才能打开联动工作台。</p>
+        </>
+      ) : (
+        <>
+          <h4 className="text-lg font-semibold">当前 3D 预览不可用</h4>
+          <p className="mt-2 text-sm text-slate-600">无法生成可靠的 3D 几何。请返回 2D 校正后重试，或在支持 WebGL 的浏览器中打开。</p>
+        </>
+      )}
+      <button type="button" className="mt-4 rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => setActiveStep(3)}>返回 2D 校正</button>
     </div>
+  )
+
+  const editorInspector = (
+    <aside className="workspace-card inspector-card min-w-0 p-4 text-slate-800">
+      <section className="space-y-3 text-xs">
+        <div><h3 className="text-base font-semibold">对象检查器</h3><p className="mt-1 text-slate-500">选择 2D 或 3D 中的对象以查看同一个稳定标识。</p></div>
+        <div className="rounded-xl bg-slate-50 p-3" aria-label="墙体对象上下文"><p className="text-slate-500">当前墙体</p><p data-testid="selected-wall-id" className="mt-1 font-semibold text-slate-900">{selectedWall?.id ?? '未选择'}</p>{selectedOpening && <p data-testid="selected-opening-id" className="mt-2 text-slate-600">开口：{selectedOpening.id} · 归属：{selectedOpening.wallId ?? '未知'}</p>}</div>
+        <div className="rounded-xl bg-slate-50 p-3" aria-label="开口编辑器"><p className="mb-2 text-slate-500">门窗开口</p><div className="grid grid-cols-2 gap-2"><button type="button" className="rounded-lg bg-orange-600 px-3 py-2 text-white disabled:opacity-50" disabled={!selectedWallID} onClick={() => handleAddOpening('door')}>添加门</button><button type="button" className="rounded-lg bg-sky-600 px-3 py-2 text-white disabled:opacity-50" disabled={!selectedWallID} onClick={() => handleAddOpening('window')}>添加窗</button></div>{selectedOpening && <div className="mt-2 grid grid-cols-[1fr_auto] gap-2"><label className="text-slate-600">宽度<input aria-label="开口宽度" data-testid="opening-width" className="mt-1 w-full rounded border border-slate-300 bg-white px-2 py-1 text-slate-900" type="number" min={MIN_OPENING_WIDTH} step="1" value={selectedOpening.width ?? ''} onChange={(event) => { const width = Number(event.target.value); if (Number.isFinite(width)) commitOpeningPatch(selectedOpening.id!, { width }) }} /></label><button type="button" className="self-end rounded-lg bg-red-700 px-3 py-2 text-white" onClick={handleDeleteOpening}>删除</button>{selectedOpening.kind === 'window' && <p className="unknown-note col-span-2 p-2" data-testid="window-preview-disclosure" role="status">窗台高和窗高未知。3D 预览使用未持久化的示意值，不会保存为建筑参数。</p>}{selectedOpening.kind === 'door' && selectedOpening.confirmed !== true && <p className="unknown-note col-span-2 p-2" data-testid="door-preview-disclosure" role="status">门高未知。3D 全高门洞仅为预览示意，不会保存为建筑参数。</p>}</div>}{openingError && <p role="alert" className="mt-2 text-amber-700">{openingError}</p>}</div>
+        <div className="rounded-xl bg-slate-50 p-3"><p className="mb-2 text-slate-500">导出当前视图</p><div className="grid grid-cols-2 gap-2"><button aria-label="导出2D平面图PNG" className="rounded-lg bg-emerald-600 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!canExport2D} onClick={handleExport2D}>{exportingScope === '2d' ? '导出中…' : '导出2D PNG'}</button><button aria-label="导出3D白模PNG" className="rounded-lg bg-sky-600 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!canExport3D} onClick={handleExport3D}>{exportingScope === '3d' ? '导出中…' : '导出3D PNG'}</button></div>{exportError && <p role="alert" className="mt-2 text-amber-700">{exportError}</p>}</div>
+        <div className="rounded-xl bg-slate-50 p-3"><p className="mb-2 text-slate-500">编辑历史</p><div className="grid grid-cols-2 gap-2"><button aria-label="撤销（Ctrl/Cmd + Z）" className="rounded-lg bg-slate-800 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!canUndo(wallEditor)} onClick={handleUndo}>Undo</button><button aria-label="重做（Ctrl/Cmd + Shift+Z 或 Ctrl/Cmd + Y）" className="rounded-lg bg-slate-800 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!canRedo(wallEditor)} onClick={handleRedo}>Redo</button></div></div>
+      </section>
+    </aside>
+  )
+
+  const sourcePreview = previewURL && selectedFile && (
+    <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-3" aria-label="已选择的户型图">
+      <div className="flex items-start justify-between gap-3"><div><p className="font-medium text-slate-800">原图预览</p><p className="mt-1 text-xs text-slate-500">{selectedFile.name} · {selectedFile.type || '未知类型'} · {selectedFile.size.toLocaleString()} bytes</p></div><label className="cursor-pointer rounded-lg border border-violet-300 px-3 py-1.5 text-xs font-medium text-violet-700">重新选择<input className="sr-only" type="file" accept="image/png,image/jpeg,image/gif,image/webp" onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)} /></label></div>
+      <img className="mt-3 max-h-72 w-full rounded-lg object-contain bg-white" src={previewURL} alt="上传户型图预览" />
+    </section>
+  )
+
+  const savePanel = (
+    <section className="workspace-card mx-auto w-full max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">保存项目</h3><p className="mt-2 text-sm text-slate-500">手动保存当前同源 2D 与 3D 数据。保存不可用时会保留当前编辑，不会假装成功。</p><div className="mt-6 space-y-3"><input aria-label="项目名称" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900" value={projectName} maxLength={120} placeholder="项目名称" onChange={(event) => setProjectName(event.target.value)} /><button className="w-full rounded-lg bg-violet-600 px-3 py-2 font-medium text-white disabled:opacity-50" type="button" disabled={!durableDocument || projectBusy !== null} onClick={() => void handleProjectSave()}>{projectBusy === 'save' ? '保存中…' : currentProject ? `保存项目（r${currentProject.revision}）` : '创建项目'}</button>{projectMessage && <p role="status" className="text-sm text-slate-700">{projectMessage}</p>}<div className="border-t border-slate-200 pt-4"><div className="mb-2 flex items-center justify-between"><h4 className="font-semibold">已保存项目</h4><button className="rounded-md border border-slate-300 px-2 py-1 text-xs" type="button" disabled={projectBusy !== null} onClick={() => void refreshProjects()}>{projectBusy === 'list' ? '刷新中…' : '刷新'}</button></div><ul className="space-y-2" aria-label="已保存项目">{projects.map((item) => <li key={item.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 p-2"><span>{item.name} <span className="text-slate-500">r{item.revision}</span></span><button className="rounded-md bg-sky-700 px-2 py-1 text-xs text-white" type="button" disabled={projectBusy !== null} onClick={() => void handleLoadProject(item.id)}>加载</button></li>)}{projects.length === 0 && <li className="text-sm text-slate-500">暂无已保存项目</li>}</ul></div></div></section>
+  )
+
+  const goNext = () => {
+    if (activeStep === 1 && selectedFile) setActiveStep(2)
+    else if (activeStep === 3) setActiveStep(4)
+    else if (activeStep === 5) setActiveStep(6)
+  }
+
+  return (
+    <div className="homevox-app"><div className="homevox-layout min-h-screen lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
+      <aside className="product-sidebar flex flex-col px-4 py-6"><div className="mb-8 px-2"><p className="text-xs font-semibold tracking-[0.22em] text-indigo-200">HOMEVOX</p><h1 className="mt-2 text-xl font-bold">筑居</h1><p className="mt-2 text-xs leading-5 text-indigo-100/75">从真实户型图到可编辑空间</p></div><nav className="space-y-2" aria-label="产品步骤">{PRODUCT_STEPS.map((step) => { const unlocked = canOpenStep(step.id, Boolean(durableDocument)) && (step.id !== 5 || canOpenLinkedWorkspace); return <button key={step.id} className="product-step flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium disabled:cursor-not-allowed" type="button" data-active={activeStep === step.id} data-locked={!unlocked} aria-current={activeStep === step.id ? 'step' : undefined} disabled={!unlocked} onClick={() => setActiveStep(step.id)}><span className="step-dot">{step.id}</span><span>{step.label}</span></button> })}</nav><div className="mt-auto rounded-xl border border-white/10 bg-white/8 p-3 text-xs leading-5 text-indigo-100/80">空间设计沟通工具，不是施工 CAD。未知建筑属性会保持未知，需现场实测。</div></aside>
+      <div className="flex min-h-screen min-w-0 flex-col"><header className="product-topbar flex min-h-[72px] items-center justify-between border-b border-slate-200 bg-white px-5 lg:px-8"><div><p className="text-xs font-medium text-violet-600">步骤 {activeStep} / 6</p><h2 className="mt-1 text-lg font-bold text-slate-900">{PRODUCT_STEPS[activeStep - 1].label}</h2></div><div className="flex items-center gap-2">{durableDocument && <span className="status-chip px-3 py-1.5 text-xs font-medium">同一份空间数据</span>}{(activeStep === 1 || activeStep === 3 || activeStep === 5) && <button className="rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50" type="button" disabled={activeStep === 1 ? !selectedFile : !durableDocument} onClick={goNext}>{activeStep === 1 ? '继续到 AI 识别' : '继续'}</button>}</div></header>
+      <div className="min-h-0 flex-1 p-4">
+        {activeStep === 1 && <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">导入真实户型图</h3><p className="mt-2 text-sm text-slate-500">从你的图纸开始，不套用示意户型。</p><label className="mt-6 block cursor-pointer rounded-xl border border-dashed border-slate-400 bg-slate-50 p-5 text-sm hover:border-violet-500"><span className="block font-medium">选择户型图</span><span className="mt-1 block text-xs text-slate-500">支持 PNG、JPEG、GIF、WebP；后端限制 10 MiB</span><input className="mt-3 block w-full text-xs" type="file" accept="image/png,image/jpeg,image/gif,image/webp" onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)} /></label>{sourcePreview}</section>}
+        {activeStep === 2 && <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">AI 识别</h3><p className="mt-2 text-sm text-slate-500">识别前请核对这张原图；识别完成后才会打开可校正的同源 2D 数据。</p>{sourcePreview}<button className="mt-6 w-full rounded-xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50" type="button" disabled={status === 'uploading' || !selectedFile} onClick={handleParse}>{status === 'uploading' ? 'AI 识别中…' : '开始 AI 识别'}</button><div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm"><span className="text-slate-500">识别状态：</span>{status === 'ready' ? '解析完成' : status === 'uploading' ? '解析中' : status === 'error' ? '失败' : '等待开始'}{error && <p role="alert" className="mt-2 text-red-700">{error}</p>}</div>{status === 'error' && selectedFile && <button type="button" className="mt-3 rounded-lg border border-violet-300 px-3 py-2 text-sm text-violet-700" onClick={handleParse}>重试 AI 识别</button>}</section>}
+        {activeStep === 3 && <div className="workspace-grid product-workspace">{twoDPanel}{editorInspector}</div>}
+        {activeStep === 4 && <section className="mx-auto max-w-5xl"><div className="mb-4 flex items-center justify-between rounded-xl bg-white p-4 shadow-sm"><div><h3 className="font-semibold text-slate-900">确认 3D 空间</h3><p className="mt-1 text-sm text-slate-500">这是同一份已校正 2D 数据生成的真实 3D 预览。</p></div><div className="flex gap-2"><button type="button" className="rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => setActiveStep(3)}>返回 2D 校正</button>{canOpenLinkedWorkspace && <button type="button" className="rounded-lg bg-violet-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => setActiveStep(5)}>完成并打开 3D</button>}</div></div>{canOpenLinkedWorkspace ? threeDPanel : threeDUnavailablePanel}</section>}
+        {activeStep === 5 && (canOpenLinkedWorkspace ? <div className="workspace-grid product-workspace product-workspace-linked">{twoDPanel}{threeDPanel}{editorInspector}</div> : <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800" role="alert"><h3 className="text-lg font-semibold">当前 3D 预览不可用</h3><p className="mt-2 text-sm text-slate-600">联动工作台已关闭，请先返回 2D 校正。</p><button type="button" className="mt-4 rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => setActiveStep(3)}>返回 2D 校正</button></section>)}
+        {activeStep === 6 && savePanel}
+      </div></div>
+    </div></div>
   )
 }

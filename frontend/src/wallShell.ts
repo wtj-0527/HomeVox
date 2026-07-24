@@ -7,6 +7,7 @@ export const WALL_SHELL_TARGET_SPAN = 10
 export const WALL_SHELL_FLOOR_MARGIN = 1
 
 export type WallShellWall = {
+  id: string
   sourceIndex: number
   x: number
   z: number
@@ -105,6 +106,7 @@ export function buildWallShellModel(
     const dy = wall.y2 - wall.y1
     const rawRotationY = -Math.atan2(dy, dx)
     return {
+      id: wall.id ?? `wall-${wall.sourceIndex + 1}`,
       sourceIndex: wall.sourceIndex,
       x: ((wall.x1 + wall.x2) / 2 - centerX) * scale,
       z: ((wall.y1 + wall.y2) / 2 - centerY) * scale,

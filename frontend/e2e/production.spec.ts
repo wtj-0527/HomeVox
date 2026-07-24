@@ -1,225 +1,267 @@
-import { Buffer } from 'node:buffer'
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page, type TestInfo } from '@playwright/test'
+import { readFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 
 const baseURL = process.env.HOMEVOX_E2E_BASE_URL ?? 'http://127.0.0.1:18088'
 const restartURL = process.env.HOMEVOX_E2E_RESTART_URL
-
+const fixturePNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAF0lEQVR4nGL6////fwZkwARjAAIAAP//YgEEAT/f/TcAAAAASUVORK5CYII=',
+  'base64',
+)
 test.use({ baseURL, viewport: { width: 1440, height: 960 } })
 
-test('loads production Rust/WASM mesh, persists a fixture project, keeps the latest drag generation, exports PNG, and rebuilds from storage', async ({ page }) => {
-  const wasmResponses: string[] = []
-  page.on('response', (response) => {
-    if (response.url().endsWith('.wasm')) wasmResponses.push(response.headers()['content-type'] ?? '')
+type E2EState = {
+  geometry: { positionCount: number; normalCount: number; finite: boolean; fingerprint: number }
+  walls: Array<{ id: string | null; x1: number; y1: number; x2: number; y2: number }>
+  openings: Array<{ id: string | null; wallId: string | null; position: number | null; width: number | null }>
+}
+
+type ParseFixture = {
+  filename: string
+  contentType: string
+  size: number
+  result: {
+    rooms: unknown[]
+    walls: Array<{ id: string; x1: number; y1: number; x2: number; y2: number }>
+    doors: Array<{ id: string; kind: 'door'; wallId: string; position: number; width: number; source: string; confirmed: boolean }>
+    windows: Array<{ id: string; kind: 'window'; wallId: string; position: number; width: number; source: string; confirmed: boolean }>
+    scale: { unit: string }
+    metadata: { source: string; image_width: number; image_height: number }
+  }
+}
+
+const canonicalFixture: ParseFixture = {
+  filename: 'controlled-production-floorplan.png', contentType: 'image/png', size: fixturePNG.length,
+  result: {
+    rooms: [],
+    walls: [
+      { id: 'wall-1', x1: 80, y1: 80, x2: 520, y2: 80 },
+      { id: 'wall-2', x1: 520, y1: 80, x2: 520, y2: 360 },
+      { id: 'wall-3', x1: 520, y1: 360, x2: 80, y2: 360 },
+      { id: 'wall-4', x1: 80, y1: 360, x2: 80, y2: 80 },
+    ],
+    doors: [{ id: 'door-1', kind: 'door', wallId: 'wall-1', position: 0.5, width: 72, source: 'test-route', confirmed: false }],
+    windows: [{ id: 'window-1', kind: 'window', wallId: 'wall-2', position: 0.5, width: 64, source: 'test-route', confirmed: false }],
+    scale: { unit: 'px' }, metadata: { source: 'test-route', image_width: 600, image_height: 440 },
+  },
+}
+
+async function screenshot(page: Page, testInfo: TestInfo, name: string): Promise<string> {
+  const path = testInfo.outputPath(name)
+  await page.screenshot({ path })
+  const image = await readFile(path)
+  expect(image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))).toBe(true)
+  expect(image.readUInt32BE(16)).toBe(1440)
+  expect(image.readUInt32BE(20)).toBe(960)
+  return path
+}
+
+async function e2eState(page: Page): Promise<E2EState> {
+  return page.evaluate(() => window.__homevoxE2E as E2EState)
+}
+
+async function selectFile(page: Page): Promise<void> {
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'controlled-production-floorplan.png', mimeType: 'image/png', buffer: fixturePNG,
   })
+  await expect(page.getByRole('heading', { name: 'AI 识别', level: 3 })).toBeVisible()
+  await expect(page.getByLabel('已选择的户型图')).toBeVisible()
+  await expect(page.getByAltText('上传户型图预览')).toBeVisible()
+  await expect(page.getByText('controlled-production-floorplan.png')).toBeVisible()
+}
 
-  await page.goto('/?e2e=wall-fixture')
-  await expect(page.getByTestId('wasm-engine-state')).toHaveText(/active/)
-  await expect(page.getByTestId('wasm-grid')).toHaveText(/17×17×17/)
+async function parseSelectedFile(page: Page): Promise<void> {
+  const parse = page.waitForResponse((response) =>
+    response.url().endsWith('/api/floorplans/parse') && response.request().method() === 'POST',
+  )
+  await page.getByRole('button', { name: '开始 AI 识别' }).click()
+  expect((await parse).status()).toBe(200)
+  await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
+}
 
-  const initial = await page.evaluate(() => window.__homevoxE2E)
-  expect(initial?.wasmCalls).toBeGreaterThan(0)
-  expect(initial?.geometry.positionCount).toBeGreaterThan(0)
-  expect(initial?.geometry.normalCount).toBeGreaterThan(0)
-  expect(initial?.geometry.finite).toBe(true)
-  expect(initial?.metrics.triangleCount).toBeGreaterThan(0)
-  expect(initial?.metrics.vertexCount).toBeGreaterThan(0)
-  expect(initial?.metrics.inputBytes).toBe(17 ** 3 * 4)
-  expect(initial?.metrics.outputBytes).toBeGreaterThan(0)
+async function uploadAndParse(page: Page): Promise<void> {
+  await selectFile(page)
+  await parseSelectedFile(page)
+}
 
-  await page.getByRole('button', { name: '创建项目' }).click()
-  await expect(page.getByText('项目已创建')).toBeVisible()
-  const persistedProjectID = await page.evaluate(() => window.__homevoxE2E?.currentProjectId)
-  expect(persistedProjectID).toMatch(/^[0-9a-f-]{36}$/i)
-
-  const endpoint = page.getByTestId('endpoint-handle-0-start')
-  const box = await endpoint.boundingBox()
+async function dragEndpoint(page: Page, testID: string, deltaX: number, deltaY: number): Promise<void> {
+  const handle = page.getByTestId(testID)
+  const box = await handle.boundingBox()
   expect(box).not.toBeNull()
-  const x = (box?.x ?? 0) + (box?.width ?? 0) / 2
-  const y = (box?.y ?? 0) + (box?.height ?? 0) / 2
+  if (!box) throw new Error(`missing endpoint handle ${testID}`)
+  const x = box.x + box.width / 2
+  const y = box.y + box.height / 2
   await page.mouse.move(x, y)
   await page.mouse.down()
-  await expect(page.getByText('拖拽中')).toBeVisible()
-  await page.mouse.move(x + 80, y + 50, { steps: 4 })
-  await page.mouse.move(x + 120, y + 70, { steps: 4 })
+  await page.mouse.move(x + deltaX, y + deltaY, { steps: 4 })
   await page.mouse.up()
-  await expect.poll(() => page.evaluate(() => window.__homevoxE2E?.generation ?? 0))
-    .toBeGreaterThan(initial?.generation ?? 0)
-  await expect(page.getByTestId('wasm-engine-state')).toHaveText(/active/)
-  const dragged = await page.evaluate(() => window.__homevoxE2E)
-  expect(dragged?.geometry.finite).toBe(true)
-
-  await page.getByRole('button', { name: /撤销/ }).click()
-  await expect.poll(() => page.evaluate(() => window.__homevoxE2E?.generation ?? 0))
-    .toBeGreaterThan(dragged?.generation ?? 0)
-  await expect(page.getByTestId('wasm-engine-state')).toHaveText(/active/)
-  const undone = await page.evaluate(() => window.__homevoxE2E)
-  await page.getByRole('button', { name: /重做/ }).click()
-  await expect.poll(() => page.evaluate(() => window.__homevoxE2E?.generation ?? 0))
-    .toBeGreaterThan(undone?.generation ?? 0)
-  await expect(page.getByTestId('wasm-engine-state')).toHaveText(/active/)
-  const redone = await page.evaluate(() => window.__homevoxE2E)
-  expect(redone?.generation).toBeGreaterThan(dragged?.generation ?? 0)
-  expect(redone?.geometry.finite).toBe(true)
-
-  const download = page.waitForEvent('download')
-  await page.getByRole('button', { name: '导出3D白模PNG' }).click()
-  expect((await download).suggestedFilename()).toMatch(/\.png$/)
-
-  await page.goto(`/?e2e=wall-fixture&project=${persistedProjectID}`)
-  await expect(page.getByText('项目已加载')).toBeVisible()
-  await expect(page.getByTestId('wasm-engine-state')).toHaveText(/active/)
-  const reloaded = await page.evaluate(() => window.__homevoxE2E)
-  expect(reloaded?.currentProjectId).toBe(persistedProjectID)
-  expect(reloaded?.wasmCalls).toBeGreaterThan(0)
-  expect(reloaded?.geometry.finite).toBe(true)
-  expect(wasmResponses.some((contentType) => contentType.includes('application/wasm'))).toBe(true)
-})
-
-test('uses the adapter load failure branch to fall back while retaining the wall shell and 2D editor', async ({ page }) => {
-  await page.goto('/?e2e=wall-fixture&wasm=load-failure')
-  await expect(page.getByTestId('wasm-engine-state')).toHaveText(/fallback/)
-  await expect(page.getByTestId('wasm-resource-metrics')).toHaveText(/fallback: load-failed/)
-  await expect(page.getByTestId('wasm-resource-metrics')).toContainText(/wall-shell [1-9]/)
-  await expect(page.getByRole('img', { name: '户型图墙体端点编辑区' })).toBeVisible()
-})
-
-test('edits wall-local openings atomically and preserves stable opening identity through project reload', async ({ page }) => {
-  await page.goto('/?e2e=wall-fixture')
-  await expect(page.getByTestId('wasm-engine-state')).toHaveText(/active/)
-
-  await page.getByTestId('three-opening-button-window-1').click()
-  await expect.poll(() => page.evaluate(() => window.__homevoxE2E?.selectedOpeningId)).toBe('window-1')
-  await expect(page.getByTestId('window-preview-disclosure')).toHaveText(/confirmed=false（未知）/)
-  await expect(page.getByTestId('window-preview-disclosure')).toHaveText(/非持久化默认值/)
-
-  // A 2D selection must highlight the same opening in the live R3F scene.
-  await page.getByTestId('opening-handle-window-1').click()
-  await expect(page.getByTestId('three-opening-button-window-1')).toHaveAttribute('aria-pressed', 'true')
-
-  await page.getByTestId('opening-handle-door-1').click()
-  await expect.poll(() => page.evaluate(() => window.__homevoxE2E?.selectedOpeningId)).toBe('door-1')
-  await expect(page.getByTestId('door-preview-disclosure')).toHaveText(/confirmed=false（未知）/)
-  await expect(page.getByTestId('door-preview-disclosure')).toHaveText(/全高门洞仅为非持久化预览假设/)
-  const beforeOpeningEdit = await page.evaluate(() => window.__homevoxE2E?.generation ?? 0)
-  await page.getByTestId('opening-width').fill('80')
-  await expect(page.locator('pre')).toContainText('"width": 80')
-  await expect.poll(() => page.evaluate(() => window.__homevoxE2E?.generation ?? 0))
-    .toBeGreaterThan(beforeOpeningEdit)
-  expect((await page.evaluate(() => window.__homevoxE2E?.geometry.finite))).toBe(true)
-
-  const editor = page.getByRole('img', { name: '户型图墙体端点编辑区' })
-  const editorBox = await editor.boundingBox()
-  expect(editorBox).not.toBeNull()
-  const scale = Math.min((editorBox?.width ?? 0) / 600, (editorBox?.height ?? 0) / 440)
-  await page.mouse.click((editorBox?.x ?? 0) + 150 * scale, (editorBox?.y ?? 0) + 80 * scale)
-  await page.getByRole('button', { name: '添加门' }).click()
-  await expect(page.getByTestId('opening-handle-door-manual-1')).toBeVisible()
-  await page.getByRole('button', { name: '删除' }).click()
-  await expect(page.getByTestId('opening-handle-door-manual-1')).toHaveCount(0)
-  await page.getByRole('button', { name: /撤销/ }).click()
-  await expect(page.getByTestId('opening-handle-door-manual-1')).toBeVisible()
-  await page.getByRole('button', { name: /重做/ }).click()
-  await expect(page.getByTestId('opening-handle-door-manual-1')).toHaveCount(0)
-
-  const export2D = page.waitForEvent('download')
-  await page.getByRole('button', { name: '导出2D平面图PNG' }).click()
-  expect((await export2D).suggestedFilename()).toMatch(/\.png$/)
-  const export3D = page.waitForEvent('download')
-  await page.getByRole('button', { name: '导出3D白模PNG' }).click()
-  expect((await export3D).suggestedFilename()).toMatch(/\.png$/)
-
-  await page.getByRole('button', { name: '创建项目' }).click()
-  await expect(page.getByText('项目已创建')).toBeVisible()
-  const projectID = await page.evaluate(() => window.__homevoxE2E?.currentProjectId)
-  expect(projectID).toMatch(/^[0-9a-f-]{36}$/i)
-  const persistedOpeningGeometry = await page.evaluate(() => window.__homevoxE2E?.geometry.fingerprint)
-  await page.goto(`/?e2e=wall-fixture&project=${projectID}`)
-  await expect(page.getByText('项目已加载')).toBeVisible()
-  await page.getByTestId('opening-handle-door-1').click()
-  await expect(page.getByTestId('opening-width')).toHaveValue('80')
-  await expect.poll(() => page.evaluate(() => window.__homevoxE2E?.geometry.fingerprint))
-    .toBe(persistedOpeningGeometry)
-  await page.getByTestId('opening-handle-door-1').click()
-  await expect(page.getByTestId('door-preview-disclosure')).toHaveText(/confirmed=false（未知）/)
-  await expect(page.getByTestId('door-preview-disclosure')).toHaveText(/不会保存为建筑参数/)
-  await page.getByTestId('opening-handle-window-1').click()
-  await expect(page.getByTestId('window-preview-disclosure')).toHaveText(/confirmed=false（未知）/)
-  await expect(page.getByTestId('window-preview-disclosure')).toHaveText(/非持久化默认值/)
-})
-
-test('runs the real browser image-selection to Vision parse to persisted workspace loop', async ({ page }) => {
-  expect(restartURL, 'production runner must provide its test-only restart checkpoint').toBeTruthy()
-  await page.goto('/')
-  await page.locator('input[type="file"]').setInputFiles({
-    name: 'controlled-plan.png',
-    mimeType: 'image/png',
-    buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAF0lEQVR4nGL6////fwZkwARjAAIAAP//YgEEAT/f/TcAAAAASUVORK5CYII=', 'base64'),
-  })
-  await expect(page.getByAltText('上传户型图预览')).toBeVisible()
-  await page.getByRole('button', { name: '上传并解析' }).click()
-  await expect(page.getByText('解析完成')).toBeVisible()
-  await expect(page.getByRole('img', { name: '户型图墙体端点编辑区' })).toBeVisible()
-  await page.getByLabel('项目名称').fill('controlled Vision loop')
-  await page.getByRole('button', { name: '创建项目' }).click()
-  await expect(page.getByText('项目已创建')).toBeVisible()
-  const projects = await page.request.get('/api/projects')
-  expect(projects.ok()).toBe(true)
-  const listed = await projects.json() as Array<{ id: string; name: string }>
-  const projectID = listed.find((project) => project.name === 'controlled Vision loop')?.id
-  expect(projectID).toMatch(/^[0-9a-f-]{36}$/i)
-  const detailBefore = await page.request.get(`/api/projects/${projectID}`)
-  expect(detailBefore.ok()).toBe(true)
-  const beforeDocument = (await detailBefore.json() as { document: { result: { walls: unknown; doors: unknown; windows: unknown } } }).document
-  const image = await page.request.get(`/api/projects/${projectID}/source-image`)
-  expect(image.ok()).toBe(true)
-  expect(image.headers()['content-type']).toContain('image/png')
-  const imageBytes = await image.body()
-  const beforeFingerprint = await page.evaluate(() => window.__homevoxE2E?.geometry.fingerprint)
-  const restart = await page.request.post(restartURL!)
-  expect(restart.ok()).toBe(true)
-  const restartResult = await restart.json() as { oldPid: number; newPid: number }
-  expect(restartResult.oldPid).toBeGreaterThan(0)
-  expect(restartResult.newPid).toBeGreaterThan(0)
-  expect(restartResult.newPid).not.toBe(restartResult.oldPid)
-  await expect.poll(async () => {
-    try {
-      const health = await page.request.get('/api/health')
-      const status = health.status()
-      await health.dispose()
-      return status
-    } catch {
-      return 0
-    }
-  }).toBe(200)
-  await page.goto(`/?project=${projectID}`)
-  await expect(page.getByText('项目已加载')).toBeVisible()
-  await expect(page.getByTestId('opening-handle-door-1')).toBeVisible()
-  await expect(page.getByTestId('opening-handle-window-1')).toBeVisible()
-  const detailAfter = await page.request.get(`/api/projects/${projectID}`)
-  expect(detailAfter.ok()).toBe(true)
-  const afterDocument = (await detailAfter.json() as { document: { result: { walls: unknown; doors: unknown; windows: unknown } } }).document
-  expect(afterDocument).toEqual(beforeDocument)
-  expect(afterDocument.result.walls).toEqual(beforeDocument.result.walls)
-  expect(afterDocument.result.doors).toEqual(beforeDocument.result.doors)
-  expect(afterDocument.result.windows).toEqual(beforeDocument.result.windows)
-  const imageAfter = await page.request.get(`/api/projects/${projectID}/source-image`)
-  expect(imageAfter.ok()).toBe(true)
-  expect(imageAfter.headers()['content-type']).toContain('image/png')
-  expect(await imageAfter.body()).toEqual(imageBytes)
-  await expect.poll(() => page.evaluate(() => window.__homevoxE2E?.geometry.fingerprint)).toBe(beforeFingerprint)
-})
-
-for (const [fixture, validationError] of [
-  ['invalid-opening', /missing or degenerate wall/],
-  ['duplicate-wall-id', /wall id must be unique/],
-] as const) {
-  test(`fails closed before voxel or WASM geometry for ${fixture} documents`, async ({ page }) => {
-    await page.goto(`/?e2e=${fixture}`)
-    await expect(page.getByTestId('geometry-validation-error')).toContainText(validationError)
-    await expect(page.getByTestId('wasm-engine-state')).toHaveText(/fallback/)
-    await expect(page.getByTestId('wasm-resource-metrics')).toContainText(/fallback: invalid-input/)
-    const state = await page.evaluate(() => window.__homevoxE2E)
-    expect(state?.wasmCalls).toBe(0)
-    expect(state?.geometry.positionCount).toBe(0)
-  })
 }
+
+test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one production lifecycle', async ({ page }, testInfo) => {
+  await page.goto('/?e2e=instrument')
+  await expect(page.getByRole('heading', { name: '导入真实户型图' })).toBeVisible()
+  await selectFile(page)
+  const captures = [await screenshot(page, testInfo, 'issue-19-import-ai.png')]
+  await parseSelectedFile(page)
+  await page.getByTestId('wall-hit-wall-1').click({ position: { x: 80, y: 1 }, force: true })
+  await expect(page.getByTestId('selected-wall-id')).toHaveText('wall-1')
+  captures.push(await screenshot(page, testInfo, 'issue-19-2d-correction.png'))
+
+  await page.getByRole('button', { name: '继续' }).click()
+  await expect(page.getByRole('heading', { name: '确认 3D 空间' })).toBeVisible()
+  await expect(page.getByLabel('3D 户型预览')).toBeVisible()
+  await expect(page.locator('canvas')).toBeVisible()
+  await expect(page.getByText('已生成可审阅的同源 3D 几何')).toBeVisible()
+  await expect(page.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
+  await expect(page.getByLabel('2D 墙体编辑器')).toHaveCount(0)
+  captures.push(await screenshot(page, testInfo, 'issue-19-3d-confirm.png'))
+
+  await page.getByRole('button', { name: '完成并打开 3D' }).click()
+  await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
+  await expect(page.getByLabel('3D 户型预览')).toBeVisible()
+  await page.getByTestId('three-wall-wall-2').click()
+  await expect(page.getByTestId('selected-wall-id')).toHaveText('wall-2')
+  await expect(page.getByTestId('wall-hit-wall-2')).toHaveAttribute('data-selected', 'true')
+  await expect(page.getByTestId('three-wall-wall-2')).toHaveAttribute('aria-pressed', 'true')
+  await page.getByTestId('wall-hit-wall-3').click({ position: { x: 80, y: 1 }, force: true })
+  await expect(page.getByTestId('selected-wall-id')).toHaveText('wall-3')
+  await expect(page.getByTestId('three-wall-wall-3')).toHaveAttribute('aria-pressed', 'true')
+
+  await page.getByRole('button', { name: '3D 选择窗 window-1' }).click()
+  await expect(page.getByTestId('selected-opening-id')).toContainText('window-1')
+  await expect(page.getByTestId('selected-opening-id')).toContainText('wall-2')
+  await expect(page.getByTestId('selected-wall-id')).toHaveText('wall-2')
+  await expect(page.getByTestId('wall-hit-wall-2')).toHaveAttribute('data-selected', 'true')
+  await expect(page.getByTestId('opening-width')).toHaveValue('64')
+  await page.getByTestId('opening-width').fill('60')
+  await page.getByRole('button', { name: '撤销（Ctrl/Cmd + Z）' }).click()
+  await expect(page.getByTestId('opening-width')).toHaveValue('64')
+  await page.getByRole('button', { name: '重做（Ctrl/Cmd + Shift+Z 或 Ctrl/Cmd + Y）' }).click()
+  await expect(page.getByTestId('opening-width')).toHaveValue('60')
+
+  const geometryBeforeEndpointEdit = await e2eState(page)
+  expect(geometryBeforeEndpointEdit.geometry.finite).toBe(true)
+  expect(geometryBeforeEndpointEdit.geometry.positionCount).toBeGreaterThan(0)
+  await dragEndpoint(page, 'endpoint-handle-0-start', 30, 20)
+  await page.waitForFunction((before) => {
+    const current = window.__homevoxE2E
+    return Boolean(current?.geometry.finite && current.geometry.fingerprint !== before)
+  }, geometryBeforeEndpointEdit.geometry.fingerprint)
+  const geometryAfterEndpointEdit = await e2eState(page)
+  const editedWall = geometryAfterEndpointEdit.walls.find((wall) => wall.id === 'wall-1')
+  expect(editedWall).toBeDefined()
+  expect(editedWall).not.toEqual({ id: 'wall-1', x1: 80, y1: 80, x2: 520, y2: 80 })
+  await page.getByRole('button', { name: '撤销（Ctrl/Cmd + Z）' }).click()
+  await page.waitForFunction((before) => window.__homevoxE2E?.geometry.fingerprint === before, geometryBeforeEndpointEdit.geometry.fingerprint)
+  await page.getByRole('button', { name: '重做（Ctrl/Cmd + Shift+Z 或 Ctrl/Cmd + Y）' }).click()
+  await page.waitForFunction((after) => window.__homevoxE2E?.geometry.fingerprint === after, geometryAfterEndpointEdit.geometry.fingerprint)
+  captures.push(await screenshot(page, testInfo, 'issue-19-linked-workspace.png'))
+  const hashes = await Promise.all(captures.map(async (path) => createHash('sha256').update(await readFile(path)).digest('hex')))
+  expect(new Set(hashes).size).toBe(4)
+
+  await page.getByRole('button', { name: '保存项目' }).click()
+  await page.getByLabel('项目名称').fill('Production lifecycle project')
+  const save = page.waitForResponse((response) => response.url().endsWith('/api/projects') && response.request().method() === 'POST')
+  await page.getByRole('button', { name: '创建项目' }).click()
+  const saved = await save
+  expect(saved.status()).toBe(201)
+  const savedProject = await saved.json() as { id: string; revision: number; document: { result: { walls: Array<{ id: string; x1: number; y1: number; x2: number; y2: number }>; windows: Array<{ id: string; wallId: string; position: number; width: number }> } } }
+  expect(savedProject.id).toMatch(/^[0-9a-f-]{36}$/i)
+  expect(savedProject.revision).toBe(1)
+  expect(savedProject.document.result.walls.find((wall) => wall.id === 'wall-1')).toEqual(editedWall)
+  expect(savedProject.document.result.windows).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'window-1', wallId: 'wall-2', width: 60 })]))
+
+  expect(restartURL).toBeTruthy()
+  const restarted = await page.request.post(restartURL!)
+  expect(restarted.status()).toBe(200)
+  const pids = await restarted.json() as { oldPid: number; newPid: number }
+  expect(pids.newPid).not.toBe(pids.oldPid)
+
+  await page.goto(`/?e2e=instrument&project=${savedProject.id}`)
+  await expect(page.getByRole('button', { name: '校正 2D' })).toBeEnabled()
+  await page.getByRole('button', { name: '校正 2D' }).click()
+  await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
+  await page.getByTestId('opening-handle-window-1').click({ force: true })
+  await expect(page.getByTestId('opening-width')).toHaveValue('60')
+  await page.getByRole('button', { name: '继续' }).click()
+  await expect(page.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
+  const reloadedGeometry = await e2eState(page)
+  expect(reloadedGeometry.geometry.finite).toBe(true)
+  expect(reloadedGeometry.geometry.fingerprint).toBe(geometryAfterEndpointEdit.geometry.fingerprint)
+  expect(reloadedGeometry.walls.find((wall) => wall.id === 'wall-1')).toEqual(editedWall)
+  const accessibility = await page.locator('body').ariaSnapshot()
+  expect(accessibility).not.toMatch(/(?:WASM|Grid|triangles|fallback|结构化 JSON)/i)
+  await expect(page.locator('pre')).toHaveCount(0)
+})
+
+test('keeps invalid and duplicate canonical identity failures closed', async ({ page }) => {
+  const invalid: ParseFixture = { ...canonicalFixture, result: { ...canonicalFixture.result, doors: [{ id: 'door-invalid', kind: 'door', wallId: 'missing-wall', position: 0.5, width: 72, source: 'test-route', confirmed: false }], windows: [] } }
+  await page.route('**/api/floorplans/parse', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(invalid) }))
+  await page.goto('/?e2e=instrument')
+  await uploadAndParse(page)
+  await page.getByRole('button', { name: '继续' }).click()
+  await expect(page.getByRole('alert')).toContainText('当前开口数据无法生成 3D')
+  await expect(page.getByLabel('3D 户型预览')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '完成并打开 3D' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '2D/3D 联动' })).toBeDisabled()
+  await page.getByRole('button', { name: '返回 2D 校正' }).first().click()
+  await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
+  await page.unroute('**/api/floorplans/parse')
+
+  const duplicate: ParseFixture = { ...canonicalFixture, result: { ...canonicalFixture.result, walls: [{ id: 'wall-duplicate', x1: 80, y1: 80, x2: 520, y2: 80 }, { id: 'wall-duplicate', x1: 520, y1: 80, x2: 520, y2: 360 }], doors: [{ id: 'door-duplicate', kind: 'door', wallId: 'wall-duplicate', position: 0.5, width: 72, source: 'test-route', confirmed: false }], windows: [] } }
+  await page.route('**/api/floorplans/parse', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(duplicate) }))
+  await page.goto('/?e2e=instrument')
+  await uploadAndParse(page)
+  await page.getByRole('button', { name: '继续' }).click()
+  await expect(page.getByRole('alert')).toContainText('当前开口数据无法生成 3D')
+  await expect(page.getByLabel('3D 户型预览')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '完成并打开 3D' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '2D/3D 联动' })).toBeDisabled()
+})
+
+test('keeps an unavailable Rust/WASM geometry result fail-closed', async ({ page }) => {
+  await page.goto('/?e2e=instrument&wasm=load-failure')
+  await uploadAndParse(page)
+  await page.getByRole('button', { name: '继续' }).click()
+  await expect(page.getByRole('alert')).toContainText('当前 3D 预览不可用')
+  await expect(page.getByLabel('3D 户型预览')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '完成并打开 3D' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '2D/3D 联动' })).toBeDisabled()
+  await page.getByRole('button', { name: '返回 2D 校正' }).first().click()
+  await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
+})
+
+test('makes parse retry and persistence-unavailable states actionable', async ({ page }) => {
+  await page.goto('/?e2e=instrument')
+  await selectFile(page)
+  await page.route('**/api/floorplans/parse', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'controlled parse outage' }) }))
+  await page.getByRole('button', { name: '开始 AI 识别' }).click()
+  await expect(page.getByRole('alert')).toContainText('HTTP 503')
+  await expect(page.getByRole('button', { name: '重试 AI 识别' })).toBeVisible()
+  await page.unroute('**/api/floorplans/parse')
+  await parseSelectedFile(page)
+  await page.route('**/api/projects', (route) => route.request().method() === 'POST'
+    ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: 'controlled persistence outage' } }) })
+    : route.continue())
+  await page.getByRole('button', { name: '保存项目' }).click()
+  await page.getByLabel('项目名称').fill('Unavailable persistence')
+  await page.getByRole('button', { name: '创建项目' }).click()
+  await expect(page.getByRole('status')).toContainText('项目保存失败')
+})
+
+test('keeps the narrow-screen workflow keyboard reachable', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/?e2e=instrument')
+  await uploadAndParse(page)
+  const correctionStep = page.getByRole('button', { name: '校正 2D' })
+  await correctionStep.focus()
+  await expect(correctionStep).toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
+  const continueButton = page.getByRole('button', { name: '继续' })
+  await continueButton.focus()
+  await expect(continueButton).toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('heading', { name: '确认 3D 空间' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
+})

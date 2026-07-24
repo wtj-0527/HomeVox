@@ -15,6 +15,9 @@ test -d "$TMP_ROOT" && test -w "$TMP_ROOT" || {
   exit 1
 }
 OUT="$(mktemp -d "${TMP_ROOT%/}/homevox-browser-e2e-${SUFFIX}.XXXXXX")"
+ARTIFACT_ROOT="${HOMEVOX_E2E_ARTIFACT_DIR:-${TMP_ROOT%/}/homevox-e2e-run-artifacts}"
+ARTIFACT_DIR="$ARTIFACT_ROOT/$SUFFIX"
+mkdir -p "$ARTIFACT_DIR"
 
 cleanup() {
   local cleanup_status=0
@@ -54,6 +57,14 @@ done
 ! docker network inspect "$NET" >/dev/null 2>&1 || { echo "refusing existing network $NET" >&2; exit 1; }
 
 npm --prefix "$ROOT/frontend" run build
+for test_only_marker in '__homevoxE2E' 'wasm=load-failure' 'test-only WASM loader failure'; do
+  if grep -RIl --include='*.js' "$test_only_marker" "$ROOT/frontend/dist" >/dev/null; then
+    echo "production_bundle_test_only_leak=FAIL marker=$test_only_marker" >&2
+    exit 1
+  fi
+done
+echo production_bundle_test_only_leak=PASS
+VITE_HOMEVOX_E2E=1 npm --prefix "$ROOT/frontend" run build
 (
   cd "$ROOT/backend"
   CGO_ENABLED=0 go build -o "$OUT/homevox-server" ./cmd/server
@@ -103,4 +114,23 @@ echo server_listen_0.0.0.0_18088=PASS
 docker create --name "$BROWSER" --network "$NET" -e "HOMEVOX_E2E_BASE_URL=http://$RUN:18088" -e "HOMEVOX_E2E_RESTART_URL=http://$RUN:18090/restart" -w /work/frontend mcr.microsoft.com/playwright:v1.61.1-noble bash -lc 'npx playwright test --config playwright.config.ts' >/dev/null
 docker cp "$ROOT/frontend/." "$BROWSER":/work/frontend/
 docker start -a "$BROWSER"
-echo production_browser_persistence_e2e=PASS exact_head=$(git -C "$ROOT" rev-parse HEAD) network=$NET
+docker cp "$BROWSER":/work/frontend/test-results/. "$ARTIFACT_DIR/"
+
+for screenshot in issue-19-import-ai.png issue-19-2d-correction.png issue-19-3d-confirm.png issue-19-linked-workspace.png; do
+  screenshot_path="$(find "$ARTIFACT_DIR" -type f -name "$screenshot" -print -quit)"
+  test -n "$screenshot_path" && test -s "$screenshot_path" || {
+    echo "artifact=FAIL missing screenshot=$screenshot" >&2
+    exit 1
+  }
+done
+mapfile -t screenshot_hashes < <(find "$ARTIFACT_DIR" -type f \( -name 'issue-19-import-ai.png' -o -name 'issue-19-2d-correction.png' -o -name 'issue-19-3d-confirm.png' -o -name 'issue-19-linked-workspace.png' \) -exec sha256sum {} \; | awk '{print $1}' | sort -u)
+test "${#screenshot_hashes[@]}" -eq 4 || {
+  echo "artifact=FAIL screenshots are not distinct" >&2
+  exit 1
+}
+HEAD="$(git -C "$ROOT" rev-parse HEAD)"
+printf '%s\n' \
+  "exact_head=$HEAD" \
+  "artifact_path=$ARTIFACT_DIR" \
+  'artifact_screenshots=PASS distinct=4' > "$ARTIFACT_DIR/manifest.txt"
+echo production_browser_persistence_e2e=PASS exact_head=$HEAD network=$NET artifact_path=$ARTIFACT_DIR
