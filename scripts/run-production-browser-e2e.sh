@@ -57,6 +57,14 @@ done
 ! docker network inspect "$NET" >/dev/null 2>&1 || { echo "refusing existing network $NET" >&2; exit 1; }
 
 npm --prefix "$ROOT/frontend" run build
+for test_only_marker in '__homevoxE2E' 'wasm=load-failure' 'test-only WASM loader failure'; do
+  if grep -RIl --include='*.js' "$test_only_marker" "$ROOT/frontend/dist" >/dev/null; then
+    echo "production_bundle_test_only_leak=FAIL marker=$test_only_marker" >&2
+    exit 1
+  fi
+done
+echo production_bundle_test_only_leak=PASS
+VITE_HOMEVOX_E2E=1 npm --prefix "$ROOT/frontend" run build
 (
   cd "$ROOT/backend"
   CGO_ENABLED=0 go build -o "$OUT/homevox-server" ./cmd/server
