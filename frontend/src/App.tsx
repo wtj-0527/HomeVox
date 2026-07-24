@@ -55,7 +55,7 @@ const EMPTY_WALLS: WallSegment[] = []
 const E2E_WALL_FIXTURE: ParseResponse = {
   filename: 'e2e-wall-fixture.png',
   contentType: 'image/png',
-  size: 12,
+  size: 80,
   result: {
     rooms: [],
     walls: [
@@ -518,7 +518,7 @@ export default function App() {
 
   useEffect(() => {
     if (!isE2EFixtureEnabled() || e2EProjectID()) return
-    setSelectedFile(new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0])], 'e2e-wall-fixture.png', { type: 'image/png' }))
+    setSelectedFile(new File([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAF0lEQVR4nGL6////fwZkwARjAAIAAP//YgEEAT/f/TcAAAAASUVORK5CYII='), (value) => value.charCodeAt(0))], 'e2e-wall-fixture.png', { type: 'image/png' }))
     setParseResponse(e2EFixture())
     setStatus('ready')
     setProjectName('Production E2E wall fixture')

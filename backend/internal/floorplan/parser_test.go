@@ -2,6 +2,7 @@ package floorplan
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +34,7 @@ func TestFirstChoiceContentRejectsMissingChoices(t *testing.T) {
 
 func TestParseUsesOpenAICompatibleVisionContractAndRejectsInvalidOpeningGeometry(t *testing.T) {
 	body := strings.Replace(canonicalParseJSON, `"position":0.5,"width":40`, `"position":0.5,"width":240`, 1)
+	imageDataURL := "data:image/png;base64,AAEC"
 	server := visionServer(t, body, func(r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("path = %s", r.URL.Path)
@@ -40,9 +42,39 @@ func TestParseUsesOpenAICompatibleVisionContractAndRejectsInvalidOpeningGeometry
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
 			t.Fatalf("authorization = %q", got)
 		}
+		var request struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode vision request: %v", err)
+		}
+		if request.Model != "vision-test" || len(request.Messages) != 2 {
+			t.Fatalf("vision request = %#v", request)
+		}
+		if request.Messages[0].Role != "system" || string(request.Messages[0].Content) != `"`+visionSystemPrompt+`"` {
+			t.Fatalf("system message = %s", request.Messages[0].Content)
+		}
+		if request.Messages[1].Role != "user" {
+			t.Fatalf("user role = %q", request.Messages[1].Role)
+		}
+		var content []map[string]any
+		if err := json.Unmarshal(request.Messages[1].Content, &content); err != nil {
+			t.Fatalf("decode user content: %v", err)
+		}
+		if len(content) != 2 || content[0]["type"] != "text" || content[0]["text"] != visionUserPrompt || content[1]["type"] != "image_url" {
+			t.Fatalf("user content order/type = %#v", content)
+		}
+		imageURL, ok := content[1]["image_url"].(map[string]any)
+		if !ok || imageURL["url"] != imageDataURL {
+			t.Fatalf("image data URL = %#v", content[1])
+		}
 	})
 	defer server.Close()
-	_, err := NewParser(ai.NewClient(server.URL+"/v1", "test-key", "vision-test")).Parse(context.Background(), "data:image/png;base64,cG5n")
+	_, err := NewParser(ai.NewClient(server.URL+"/v1", "test-key", "vision-test")).Parse(context.Background(), imageDataURL)
 	if err == nil || !strings.Contains(err.Error(), "exceeds wall endpoints") {
 		t.Fatalf("error = %v", err)
 	}
@@ -102,7 +134,7 @@ func TestParseAcceptsOnlyCompleteCanonicalAIJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if result.Walls[0].ID != "wall-1" || result.Doors[0].Source != "ai" || result.Scale.PixelToUnit != 1 {
+	if result.Walls[0].ID != "wall-1" || result.Doors[0].Source != "ai" || result.Scale.PixelToUnit != 1 || result.Windows[0].Confirmed {
 		t.Fatalf("unexpected canonical result: %#v", result)
 	}
 }

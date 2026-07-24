@@ -153,7 +153,7 @@ test('runs the real browser image-selection to Vision parse to persisted workspa
   await page.locator('input[type="file"]').setInputFiles({
     name: 'controlled-plan.png',
     mimeType: 'image/png',
-    buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]),
+    buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAF0lEQVR4nGL6////fwZkwARjAAIAAP//YgEEAT/f/TcAAAAASUVORK5CYII=', 'base64'),
   })
   await expect(page.getByAltText('上传户型图预览')).toBeVisible()
   await page.getByRole('button', { name: '上传并解析' }).click()

@@ -30,6 +30,11 @@ type fakeProjectRepo struct {
 
 const validProjectDocument = `{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px"},"metadata":{"source":"fixture","image_width":100,"image_height":80}}}`
 
+func projectDocumentForSourceImage(t testing.TB) string {
+	t.Helper()
+	return strings.Replace(validProjectDocument, `"size":12`, fmt.Sprintf(`"size":%d`, len(validPNG(t))), 1)
+}
+
 func newFakeProjectRepo() *fakeProjectRepo {
 	return &fakeProjectRepo{projects: make(map[string]db.Project)}
 }
@@ -181,7 +186,7 @@ func TestProjectCreateRequiresValidatedInput(t *testing.T) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	_ = writer.WriteField("name", "   ")
-	_ = writer.WriteField("document", validProjectDocument)
+	_ = writer.WriteField("document", projectDocumentForSourceImage(t))
 	part, err := writer.CreateFormFile("source_image", "plan.txt")
 	if err != nil {
 		t.Fatalf("create form file: %v", err)
@@ -222,12 +227,12 @@ func TestProjectCreateGetsListAndSourceImage(t *testing.T) {
 	store := newFakeObjectStore()
 	router := newProjectRouter(repo, store)
 
-	image := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+	image := validPNG(t)
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	_ = writer.WriteField("name", "My Plan")
-	_ = writer.WriteField("document", validProjectDocument)
+	_ = writer.WriteField("document", projectDocumentForSourceImage(t))
 	part, err := writer.CreateFormFile("source_image", "plan.png")
 	if err != nil {
 		t.Fatalf("create form file: %v", err)
@@ -329,7 +334,7 @@ func TestProjectCreateRejectsSourceImageMetadataMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create form file: %v", err)
 	}
-	_, _ = part.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0})
+	_, _ = part.Write(validPNG(t))
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close multipart writer: %v", err)
 	}
@@ -447,12 +452,12 @@ func TestProjectCreateCompensationDeletesUploadedObjectWhenRepoFails(t *testing.
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	_ = writer.WriteField("name", "Plan")
-	_ = writer.WriteField("document", validProjectDocument)
+	_ = writer.WriteField("document", projectDocumentForSourceImage(t))
 	part, err := writer.CreateFormFile("source_image", "plan.png")
 	if err != nil {
 		t.Fatalf("create form file: %v", err)
 	}
-	_, _ = part.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0})
+	_, _ = part.Write(validPNG(t))
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close multipart writer: %v", err)
 	}
@@ -481,12 +486,12 @@ func TestProjectCreateFailsWhenCleanupFailsReturnsInfraError(t *testing.T) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	_ = writer.WriteField("name", "Plan")
-	_ = writer.WriteField("document", validProjectDocument)
+	_ = writer.WriteField("document", projectDocumentForSourceImage(t))
 	part, err := writer.CreateFormFile("source_image", "plan.png")
 	if err != nil {
 		t.Fatalf("create form file: %v", err)
 	}
-	_, _ = part.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0})
+	_, _ = part.Write(validPNG(t))
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close multipart writer: %v", err)
 	}

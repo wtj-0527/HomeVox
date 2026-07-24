@@ -15,6 +15,7 @@ import (
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/ai"
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/config"
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/floorplan"
+	"github.com/KingBoyAndGirl/HomeVox/backend/internal/imagevalidate"
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/project"
 	"github.com/gin-gonic/gin"
 )
@@ -101,9 +102,9 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 			return
 		}
 
-		contentType := http.DetectContentType(data)
-		if contentType != "image/png" && contentType != "image/jpeg" && contentType != "image/gif" && contentType != "image/webp" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "floorplan must be a PNG, JPEG, GIF, or WebP image"})
+		contentType, _, _, err := imagevalidate.Decode(data)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "floorplan must be a valid PNG, JPEG, GIF, or WebP image"})
 			return
 		}
 

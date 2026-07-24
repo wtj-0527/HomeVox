@@ -11,6 +11,9 @@ import (
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/ai"
 )
 
+const visionSystemPrompt = "You extract residential floor-plan structure. Return only one strict JSON object matching this schema: {rooms:[{name,type,approximate_bounds:{x1,y1,x2,y2},area_ratio}], walls:[{id,x1,y1,x2,y2}], doors:[{id,kind,wallId,position,width,source,confirmed}], windows:[{id,kind,wallId,position,width,source,confirmed}], scale:{unit,pixel_to_unit}, metadata:{source,confidence,image_width,image_height}}. Every listed field is required, no additional fields are accepted, and arrays may be empty. Use pixel coordinates when exact scale is unknown. Never infer or fabricate wall associations, opening widths, architectural dimensions, scale, orientation, height, thickness, or load-bearing status."
+const visionUserPrompt = "Parse this floor-plan image into the required JSON structure. Do not include markdown fences. Omit an opening if its wall-local position or width cannot be established."
+
 type Parser struct {
 	client *ai.Client
 }
@@ -30,12 +33,12 @@ func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, e
 	messages := []ai.Message{
 		{
 			Role:    "system",
-			Content: "You extract residential floor-plan structure. Return only one strict JSON object matching this schema: {rooms:[{name,type,approximate_bounds:{x1,y1,x2,y2},area_ratio}], walls:[{id,x1,y1,x2,y2}], doors:[{id,kind,wallId,position,width,source,confirmed}], windows:[{id,kind,wallId,position,width,source,confirmed}], scale:{unit,pixel_to_unit}, metadata:{source,confidence,image_width,image_height}}. Every listed field is required, no additional fields are accepted, and arrays may be empty. Use pixel coordinates when exact scale is unknown. Never infer or fabricate wall associations, opening widths, architectural dimensions, scale, orientation, height, thickness, or load-bearing status.",
+			Content: visionSystemPrompt,
 		},
 		{
 			Role: "user",
 			Content: []map[string]any{
-				{"type": "text", "text": "Parse this floor-plan image into the required JSON structure. Do not include markdown fences. Omit an opening if its wall-local position or width cannot be established."},
+				{"type": "text", "text": visionUserPrompt},
 				{"type": "image_url", "image_url": map[string]string{"url": imageDataURL}},
 			},
 		},
@@ -56,6 +59,14 @@ func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, e
 	}
 	if err := validateParsedResult(result); err != nil {
 		return ParseResult{}, err
+	}
+	// Vision output is an unmeasured interpretation, never an architectural
+	// confirmation. Preserve only explicit manual/measurement confirmations.
+	for i := range result.Doors {
+		result.Doors[i].Confirmed = false
+	}
+	for i := range result.Windows {
+		result.Windows[i].Confirmed = false
 	}
 	return result, nil
 }
