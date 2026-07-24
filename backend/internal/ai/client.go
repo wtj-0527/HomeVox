@@ -63,11 +63,8 @@ func (c *Client) Chat(ctx context.Context, messages []Message) (map[string]any, 
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		if readErr != nil {
-			return nil, fmt.Errorf("ai api returned %s; failed to read error body: %w", resp.Status, readErr)
-		}
-		return nil, fmt.Errorf("ai api returned %s: %s", resp.Status, summarizeBody(body))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("ai api returned HTTP %d", resp.StatusCode)
 	}
 
 	var out map[string]any

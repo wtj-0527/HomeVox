@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/ai"
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/config"
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/floorplan"
+	"github.com/KingBoyAndGirl/HomeVox/backend/internal/project"
 	"github.com/gin-gonic/gin"
 )
 
@@ -116,12 +118,18 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 			return
 		}
 
-		c.JSON(http.StatusOK, floorplan.ParseResponse{
+		document := floorplan.ParseResponse{
 			Filename:    header.Filename,
 			ContentType: contentType,
 			Size:        len(data),
 			Result:      result,
-		})
+		}
+		canonical, err := project.NormalizeDocument(mustJSON(document))
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "ai returned an invalid floorplan document"})
+			return
+		}
+		c.JSON(http.StatusOK, canonical)
 	})
 
 	if len(frontendDirs) > 0 && frontendDirs[0] != "" {
@@ -129,6 +137,14 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 	}
 
 	return router, deps.Close
+}
+
+func mustJSON(value any) json.RawMessage {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(fmt.Sprintf("marshal canonical floorplan document: %v", err))
+	}
+	return encoded
 }
 
 func registerFrontend(router *gin.Engine, frontendDir string) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/ai"
 )
@@ -28,12 +29,12 @@ func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, e
 	messages := []ai.Message{
 		{
 			Role:    "system",
-			Content: "You extract residential floor-plan structure. Return only strict JSON matching this schema: {rooms:[{name,type,approximate_bounds:{x1,y1,x2,y2},area_ratio}], walls:[{x1,y1,x2,y2}], doors:[{type,x,y,from,to}], windows:[{type,x,y,from,to}], scale:{unit,pixel_to_unit}, metadata:{source,confidence,image_width,image_height}}. Use pixel coordinates when exact scale is unknown.",
+			Content: "You extract residential floor-plan structure. Return only one strict JSON object matching this schema: {rooms:[{name,type,approximate_bounds:{x1,y1,x2,y2},area_ratio}], walls:[{id,x1,y1,x2,y2}], doors:[{id,kind,wallId,position,width,confirmed}], windows:[{id,kind,wallId,position,width,confirmed}], scale:{unit,pixel_to_unit}, metadata:{source,confidence,image_width,image_height}}. Use pixel coordinates when exact scale is unknown. Never infer or fabricate wall associations, opening widths, architectural dimensions, scale, orientation, height, thickness, or load-bearing status.",
 		},
 		{
 			Role: "user",
 			Content: []map[string]any{
-				{"type": "text", "text": "Parse this floor-plan image into the required JSON structure. Do not include markdown fences."},
+				{"type": "text", "text": "Parse this floor-plan image into the required JSON structure. Do not include markdown fences. Omit an opening if its wall-local position or width cannot be established."},
 				{"type": "image_url", "image_url": map[string]string{"url": imageDataURL}},
 			},
 		},
@@ -52,13 +53,11 @@ func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, e
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
 		return ParseResult{}, fmt.Errorf("decode ai parse result: %w", err)
 	}
-	if result.Scale.Unit == "" {
-		result.Scale.Unit = "pixel"
+	result = normalizeParseResult(result)
+	if err := validateParsedResult(result); err != nil {
+		return ParseResult{}, err
 	}
-	if result.Metadata.Source == "" {
-		result.Metadata.Source = "ai"
-	}
-	return normalizeParseResult(result), nil
+	return result, nil
 }
 
 func normalizeParseResult(result ParseResult) ParseResult {
@@ -88,34 +87,57 @@ func normalizeParseResult(result ParseResult) ParseResult {
 			if items[i].Source == "" {
 				items[i].Source = "ai"
 			}
-			if items[i].WallID == "" && len(result.Walls) > 0 {
-				best, bestDistance := 0, math.Inf(1)
-				for j, wall := range result.Walls {
-					dx, dy := wall.X2-wall.X1, wall.Y2-wall.Y1
-					lengthSq := dx*dx + dy*dy
-					if lengthSq == 0 {
-						continue
-					}
-					t := ((items[i].X-wall.X1)*dx + (items[i].Y-wall.Y1)*dy) / lengthSq
-					t = math.Max(0, math.Min(1, t))
-					px, py := wall.X1+t*dx, wall.Y1+t*dy
-					d := math.Hypot(items[i].X-px, items[i].Y-py)
-					if d < bestDistance {
-						best, bestDistance = j, d
-						items[i].Position = t
-					}
-				}
-				items[i].WallID = result.Walls[best].ID
-				if items[i].Width == 0 {
-					items[i].Width = 8
-				}
-			}
 		}
 	}
 	normalize(result.Doors, "door")
 	normalize(result.Windows, "window")
 	return result
 }
+
+func validateParsedResult(result ParseResult) error {
+	if strings.TrimSpace(result.Metadata.Source) == "" || strings.TrimSpace(result.Scale.Unit) == "" {
+		return fmt.Errorf("ai result is missing required schema fields")
+	}
+	if !finite(result.Metadata.Confidence) || !finite(result.Scale.PixelToUnit) {
+		return fmt.Errorf("ai result has invalid numeric metadata")
+	}
+	wallIDs := make(map[string]Segment, len(result.Walls))
+	for i, wall := range result.Walls {
+		if wall.ID == "" {
+			return fmt.Errorf("wall[%d] id is required", i)
+		}
+		if _, exists := wallIDs[wall.ID]; exists {
+			return fmt.Errorf("wall[%d] has duplicate id", i)
+		}
+		if !finite(wall.X1) || !finite(wall.Y1) || !finite(wall.X2) || !finite(wall.Y2) || math.Hypot(wall.X2-wall.X1, wall.Y2-wall.Y1) <= 0 {
+			return fmt.Errorf("wall[%d] has invalid geometry", i)
+		}
+		wallIDs[wall.ID] = wall
+	}
+	seen := map[string]struct{}{}
+	openings := append(append([]Opening{}, result.Doors...), result.Windows...)
+	for i, opening := range openings {
+		if opening.ID == "" || opening.WallID == "" || opening.Width <= 0 || opening.Position < 0 || opening.Position > 1 || !finite(opening.Width) || !finite(opening.Position) {
+			return fmt.Errorf("opening[%d] lacks valid local wall geometry", i)
+		}
+		wall, ok := wallIDs[opening.WallID]
+		if !ok {
+			return fmt.Errorf("opening[%d] references missing wall", i)
+		}
+		if _, exists := seen[opening.ID]; exists {
+			return fmt.Errorf("opening[%d] has duplicate id", i)
+		}
+		seen[opening.ID] = struct{}{}
+		length := math.Hypot(wall.X2-wall.X1, wall.Y2-wall.Y1)
+		half := opening.Width / length / 2
+		if opening.Width >= length || opening.Position-half < 0 || opening.Position+half > 1 {
+			return fmt.Errorf("opening[%d] exceeds wall endpoints", i)
+		}
+	}
+	return nil
+}
+
+func finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
 
 func firstChoiceContent(response map[string]any) (string, error) {
 	choices, ok := response["choices"].([]any)
@@ -131,7 +153,7 @@ func firstChoiceContent(response map[string]any) (string, error) {
 		return "", fmt.Errorf("ai response choice missing message")
 	}
 	content, ok := message["content"].(string)
-	if !ok || content == "" {
+	if !ok || strings.TrimSpace(content) == "" {
 		return "", fmt.Errorf("ai response message content is empty")
 	}
 	return content, nil

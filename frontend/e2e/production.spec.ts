@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import { expect, test } from '@playwright/test'
 
 const baseURL = process.env.HOMEVOX_E2E_BASE_URL ?? 'http://127.0.0.1:18088'
@@ -143,6 +144,40 @@ test('edits wall-local openings atomically and preserves stable opening identity
   await page.getByTestId('opening-handle-window-1').click()
   await expect(page.getByTestId('window-preview-disclosure')).toHaveText(/confirmed=false（未知）/)
   await expect(page.getByTestId('window-preview-disclosure')).toHaveText(/非持久化默认值/)
+})
+
+test('runs the real browser image-selection to Vision parse to persisted workspace loop', async ({ page }) => {
+  await page.goto('/')
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'controlled-plan.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]),
+  })
+  await expect(page.getByAltText('上传户型图预览')).toBeVisible()
+  await page.getByRole('button', { name: '上传并解析' }).click()
+  await expect(page.getByText('解析完成')).toBeVisible()
+  await expect(page.getByRole('img', { name: '户型图墙体端点编辑区' })).toBeVisible()
+  await page.getByLabel('项目名称').fill('controlled Vision loop')
+  await page.getByRole('button', { name: '创建项目' }).click()
+  await expect(page.getByText('项目已创建')).toBeVisible()
+  const projects = await page.request.get('/api/projects')
+  expect(projects.ok()).toBe(true)
+  const listed = await projects.json() as Array<{ id: string; name: string }>
+  const projectID = listed.find((project) => project.name === 'controlled Vision loop')?.id
+  expect(projectID).toMatch(/^[0-9a-f-]{36}$/i)
+  const detailBefore = await page.request.get(`/api/projects/${projectID}`)
+  expect(detailBefore.ok()).toBe(true)
+  const beforeDocument = (await detailBefore.json() as { document: unknown }).document
+  const image = await page.request.get(`/api/projects/${projectID}/source-image`)
+  expect(image.ok()).toBe(true)
+  expect(image.headers()['content-type']).toContain('image/png')
+  await page.goto(`/?project=${projectID}`)
+  await expect(page.getByText('项目已加载')).toBeVisible()
+  await expect(page.getByTestId('opening-handle-door-1')).toBeVisible()
+  await expect(page.getByTestId('opening-handle-window-1')).toBeVisible()
+  const detailAfter = await page.request.get(`/api/projects/${projectID}`)
+  expect(detailAfter.ok()).toBe(true)
+  expect((await detailAfter.json() as { document: unknown }).document).toEqual(beforeDocument)
 })
 
 for (const [fixture, validationError] of [

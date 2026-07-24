@@ -157,29 +157,8 @@ func normalizeStableGeometry(doc *floorplan.ParseResponse) error {
 			if o.Source == "" {
 				o.Source = "parsed"
 			}
-			if o.WallID == "" { // legacy absolute marker migration; invalid markers fail closed.
-				best, bestDistance := -1, math.Inf(1)
-				for j, wall := range doc.Result.Walls {
-					dx, dy := wall.X2-wall.X1, wall.Y2-wall.Y1
-					lengthSq := dx*dx + dy*dy
-					if lengthSq <= 0 {
-						continue
-					}
-					t := ((o.X-wall.X1)*dx + (o.Y-wall.Y1)*dy) / lengthSq
-					t = math.Max(0, math.Min(1, t))
-					d := math.Hypot(o.X-(wall.X1+t*dx), o.Y-(wall.Y1+t*dy))
-					if d < bestDistance {
-						best, bestDistance = j, d
-						o.Position = t
-					}
-				}
-				if best < 0 {
-					return fmt.Errorf("%s[%d] cannot bind to a wall", kind, i)
-				}
-				o.WallID = doc.Result.Walls[best].ID
-				if o.Width == 0 {
-					o.Width = 8
-				}
+			if o.WallID == "" {
+				return fmt.Errorf("%s[%d] lacks wall-local geometry", kind, i)
 			}
 		}
 		return nil
