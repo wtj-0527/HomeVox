@@ -115,3 +115,12 @@ func TestValidateSourceImageMetadata(t *testing.T) {
 		t.Fatal("expected size mismatch error")
 	}
 }
+
+func TestNormalizeDocumentBindsStableOpeningAndRejectsOverlap(t *testing.T) {
+	raw := []byte(`{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[{"id":"wall-a","x1":0,"y1":0,"x2":100,"y2":0}],"doors":[{"id":"door-a","kind":"door","wallId":"wall-a","position":0.5,"width":20,"confirmed":false}],"windows":[],"scale":{"unit":"px"},"metadata":{"source":"fixture"}}}`)
+	doc, err := NormalizeDocument(raw)
+	if err != nil { t.Fatalf("valid local opening rejected: %v", err) }
+	if doc.Result.Doors[0].WallID != "wall-a" || doc.Result.Doors[0].Position != 0.5 { t.Fatalf("opening was not preserved: %#v", doc.Result.Doors[0]) }
+	raw = []byte(`{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[{"id":"wall-a","x1":0,"y1":0,"x2":100,"y2":0}],"doors":[{"id":"door-a","kind":"door","wallId":"wall-a","position":0.5,"width":40},{"id":"door-b","kind":"door","wallId":"wall-a","position":0.6,"width":40}],"windows":[],"scale":{"unit":"px"},"metadata":{"source":"fixture"}}}`)
+	if _, err := NormalizeDocument(raw); err == nil { t.Fatal("expected overlap to fail closed") }
+}

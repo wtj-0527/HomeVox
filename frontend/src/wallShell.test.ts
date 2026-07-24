@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildWallShellModel } from './wallShell'
+import type { ParsedOpening } from './floorplanUi'
 
 const rectangleWalls = [
   { x1: 0, y1: 0, x2: 100, y2: 0 },
@@ -47,19 +48,48 @@ describe('3D wall shell model', () => {
     expect(Object.values(model.walls[0]).filter((value) => typeof value === 'number').every(Number.isFinite)).toBe(true)
   })
 
-  it('places only finite door and window markers in the same normalized coordinates', () => {
+  it('keeps legacy parse-only markers out of durable opening geometry', () => {
     const model = buildWallShellModel(
       rectangleWalls,
-      [
-        { type: 'door', from: '客厅', to: '走廊', x: 50, y: 0 },
-        { type: 'door-without-position' },
-      ],
+      [{ type: 'door', from: '客厅', to: '走廊', x: 50, y: 0 }],
       [{ type: 'window', x: 100, y: 40 }],
     )
 
-    expect(model.openings).toHaveLength(2)
-    expect(model.openings[0]).toMatchObject({ kind: 'door', x: 0, z: -4, label: 'door · 客厅 → 走廊' })
-    expect(model.openings[1]).toMatchObject({ kind: 'window', x: 5, z: 0, label: 'window' })
+    expect(model.walls).toHaveLength(4)
+    expect(model.openings).toEqual([])
+    expect(model.validationError).toContain('opening id')
+  })
+
+  it.each<[string, ParsedOpening[], string]>([
+    ['missing wall', [{ id: 'door-a', kind: 'door', wallId: 'missing', position: 0.5, width: 20 }], 'missing'],
+    ['endpoint overflow', [{ id: 'door-a', kind: 'door', wallId: 'wall-a', position: 0.05, width: 20 }], 'endpoint'],
+    ['overlap', [
+      { id: 'door-a', kind: 'door', wallId: 'wall-a', position: 0.45, width: 30 },
+      { id: 'window-a', kind: 'window', wallId: 'wall-a', position: 0.55, width: 30 },
+    ], 'overlap'],
+    ['under-minimum width', [{ id: 'door-a', kind: 'door', wallId: 'wall-a', position: 0.5, width: 7 }], 'invalid'],
+    ['oversized opening', [{ id: 'door-a', kind: 'door', wallId: 'wall-a', position: 0.5, width: 100 }], 'exceeds'],
+  ])('fails closed for finite but illegal %s openings', (_caseName, openings, error) => {
+    const model = buildWallShellModel([{ id: 'wall-a', x1: 0, y1: 0, x2: 100, y2: 0 }], openings, [])
+
+    expect(model.walls).toHaveLength(1)
+    expect(model.openings).toEqual([])
+    expect(model.validationError).toContain(error)
+  })
+
+  it('fails closed for duplicate explicit wall IDs from a loaded opening document', () => {
+    const model = buildWallShellModel(
+      [
+        { id: 'wall-a', x1: 0, y1: 0, x2: 100, y2: 0 },
+        { id: 'wall-a', x1: 100, y1: 0, x2: 100, y2: 80 },
+      ],
+      [{ id: 'door-a', kind: 'door', wallId: 'wall-a', position: 0.5, width: 20 }],
+      [],
+    )
+
+    expect(model.walls).toHaveLength(2)
+    expect(model.openings).toEqual([])
+    expect(model.validationError).toContain('wall id must be unique')
   })
 
   it('rejects finite inputs whose normalization would overflow', () => {
@@ -69,7 +99,7 @@ describe('3D wall shell model', () => {
       [],
     )
 
-    expect(model).toEqual({ walls: [], openings: [], floor: null, scale: null })
+    expect(model).toEqual({ walls: [], openings: [], floor: null, scale: null, validationError: null })
   })
 
   it('keeps all outputs finite for very large finite coordinates', () => {

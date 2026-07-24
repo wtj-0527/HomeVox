@@ -66,3 +66,41 @@ describe('2D editor view helpers', () => {
     expect(openingLabel({ type: 'window', from: '客厅', to: '室外' })).toBe('window · 客厅 → 室外')
   })
 })
+
+import { validateOpenings } from './floorplanUi'
+
+describe('durable local wall openings', () => {
+  const walls = [{ id: 'wall-a', x1: 0, y1: 0, x2: 100, y2: 0 }]
+  it('accepts a stable local opening and a legal opening close to a wall endpoint', () => {
+    expect(validateOpenings(walls, [{ id: 'door-a', kind: 'door', wallId: 'wall-a', position: 0.5, width: 20, confirmed: false }])).toBeNull()
+    expect(validateOpenings(walls, [{ id: 'window-near-start', kind: 'window', wallId: 'wall-a', position: 0.1, width: 20, confirmed: false }])).toBeNull()
+  })
+
+  it('rejects endpoint overflow, overlap, missing walls, and non-finite local geometry', () => {
+    expect(validateOpenings(walls, [{ id: 'door-a', kind: 'door', wallId: 'wall-a', position: 0.05, width: 20 }])).toContain('endpoint')
+    expect(validateOpenings(walls, [{ id: 'door-a', kind: 'door', wallId: 'missing', position: 0.5, width: 20 }])).toContain('missing')
+    expect(validateOpenings(walls, [
+      { id: 'door-a', kind: 'door', wallId: 'wall-a', position: 0.35, width: 30 },
+      { id: 'window-a', kind: 'window', wallId: 'wall-a', position: 0.55, width: 30, confirmed: false },
+    ])).toContain('overlap')
+    expect(validateOpenings(walls, [{ id: 'door-a', kind: 'door', wallId: 'wall-a', position: Number.NaN, width: 20 }])).toContain('invalid')
+  })
+
+  it('rejects duplicate explicit wall IDs from a structurally valid loaded document', () => {
+    const loadedDocument = {
+      ...validResponse,
+      result: {
+        ...validResponse.result,
+        walls: [
+          { id: 'wall-a', x1: 0, y1: 0, x2: 100, y2: 0 },
+          { id: 'wall-a', x1: 100, y1: 0, x2: 100, y2: 80 },
+        ],
+        doors: [{ id: 'door-a', kind: 'door' as const, wallId: 'wall-a', position: 0.5, width: 20 }],
+        windows: [],
+      },
+    }
+
+    expect(isParseResponse(loadedDocument)).toBe(true)
+    expect(validateOpenings(loadedDocument.result.walls, [...loadedDocument.result.doors, ...loadedDocument.result.windows])).toContain('wall id must be unique')
+  })
+})

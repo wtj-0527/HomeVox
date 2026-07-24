@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/ai"
 )
@@ -73,6 +74,46 @@ func normalizeParseResult(result ParseResult) ParseResult {
 	if result.Windows == nil {
 		result.Windows = []Opening{}
 	}
+	for i := range result.Walls {
+		if result.Walls[i].ID == "" {
+			result.Walls[i].ID = fmt.Sprintf("wall-%d", i+1)
+		}
+	}
+	normalize := func(items []Opening, kind string) {
+		for i := range items {
+			if items[i].ID == "" {
+				items[i].ID = fmt.Sprintf("%s-%d", kind, i+1)
+			}
+			items[i].Kind = kind
+			if items[i].Source == "" {
+				items[i].Source = "ai"
+			}
+			if items[i].WallID == "" && len(result.Walls) > 0 {
+				best, bestDistance := 0, math.Inf(1)
+				for j, wall := range result.Walls {
+					dx, dy := wall.X2-wall.X1, wall.Y2-wall.Y1
+					lengthSq := dx*dx + dy*dy
+					if lengthSq == 0 {
+						continue
+					}
+					t := ((items[i].X-wall.X1)*dx + (items[i].Y-wall.Y1)*dy) / lengthSq
+					t = math.Max(0, math.Min(1, t))
+					px, py := wall.X1+t*dx, wall.Y1+t*dy
+					d := math.Hypot(items[i].X-px, items[i].Y-py)
+					if d < bestDistance {
+						best, bestDistance = j, d
+						items[i].Position = t
+					}
+				}
+				items[i].WallID = result.Walls[best].ID
+				if items[i].Width == 0 {
+					items[i].Width = 8
+				}
+			}
+		}
+	}
+	normalize(result.Doors, "door")
+	normalize(result.Windows, "window")
 	return result
 }
 

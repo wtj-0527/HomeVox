@@ -338,7 +338,7 @@ pub fn marching_cubes_3d(
     let Some(vertex_count) = nx.checked_mul(ny).and_then(|n| n.checked_mul(nz)) else {
         return vec![];
     };
-    if data.len() < vertex_count {
+    if !iso_level.is_finite() || data.len() < vertex_count || data[..vertex_count].iter().any(|value| !value.is_finite()) {
         return vec![];
     }
     let mut vertices: Vec<f32> = Vec::new();
@@ -579,5 +579,59 @@ mod tests {
             "empty sparse grid overallocated capacity {}",
             v.capacity()
         );
+    }
+
+    fn make_wall_with_openings(nx: usize, ny: usize, nz: usize, openings: &[(usize, usize, usize, usize)]) -> Vec<f32> {
+        let mut data = vec![-1.0f32; nx * ny * nz];
+        for z in 2..nz - 2 {
+            for y in 1..ny - 1 {
+                for x in 1..nx - 1 {
+                    let cut = openings.iter().any(|&(x_start, x_end, y_start, y_end)| {
+                        x >= x_start && x <= x_end && y >= y_start && y <= y_end
+                    });
+                    if !cut {
+                        data[x + y * nx + z * nx * ny] = 1.0;
+                    }
+                }
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn test_window_cutout_changes_finite_wasm_geometry() {
+        let solid = make_wall_with_openings(9, 9, 7, &[]);
+        let window = make_wall_with_openings(9, 9, 7, &[(3, 5, 4, 6)]);
+        let solid_vertices = marching_cubes_3d(&solid, 9, 9, 7, 0.0);
+        let window_vertices = marching_cubes_3d(&window, 9, 9, 7, 0.0);
+
+        assert!(!solid_vertices.is_empty());
+        assert!(!window_vertices.is_empty());
+        assert_ne!(window_vertices, solid_vertices, "a window cutout must alter the mesh");
+        assert!(window_vertices.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn test_multiple_openings_change_finite_wasm_geometry() {
+        let one_opening = make_wall_with_openings(11, 9, 7, &[(1, 2, 1, 5)]);
+        let multiple_openings = make_wall_with_openings(11, 9, 7, &[
+            (1, 2, 1, 5),
+            (5, 6, 4, 6),
+            (8, 9, 1, 5),
+        ]);
+        let one_vertices = marching_cubes_3d(&one_opening, 11, 9, 7, 0.0);
+        let multiple_vertices = marching_cubes_3d(&multiple_openings, 11, 9, 7, 0.0);
+
+        assert!(!multiple_vertices.is_empty());
+        assert_ne!(multiple_vertices, one_vertices, "multiple cuts must alter the mesh");
+        assert!(multiple_vertices.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn test_non_finite_scalar_inputs_are_rejected_without_non_finite_output() {
+        let mut field = make_wall_with_openings(5, 5, 5, &[]);
+        field[0] = f32::NAN;
+        assert!(marching_cubes_3d(&field, 5, 5, 5, 0.0).is_empty());
+        assert!(marching_cubes_3d(&make_wall_with_openings(5, 5, 5, &[]), 5, 5, 5, f32::INFINITY).is_empty());
     }
 }

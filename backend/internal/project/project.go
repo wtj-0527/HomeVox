@@ -46,6 +46,9 @@ func NormalizeDocument(raw json.RawMessage) (floorplan.ParseResponse, error) {
 		return floorplan.ParseResponse{}, fmt.Errorf("invalid document JSON: %w", err)
 	}
 
+	if err := normalizeStableGeometry(&doc); err != nil {
+		return floorplan.ParseResponse{}, err
+	}
 	if err := validateDocumentEnvelope(doc); err != nil {
 		return floorplan.ParseResponse{}, err
 	}
@@ -94,19 +97,28 @@ func validateDocumentEnvelope(doc floorplan.ParseResponse) error {
 	if err := validateBounds(doc.Result.Rooms); err != nil {
 		return err
 	}
-	if err := validateOpenings(doc.Result.Doors, "door"); err != nil {
-		return err
-	}
-	if err := validateOpenings(doc.Result.Windows, "window"); err != nil {
+	allOpenings := append(append([]floorplan.Opening{}, doc.Result.Doors...), doc.Result.Windows...)
+	if err := validateOpenings(doc.Result.Walls, allOpenings); err != nil {
 		return err
 	}
 	return nil
 }
 
 func validateSegmentSet(segments []floorplan.Segment) error {
+	seen := map[string]struct{}{}
 	for i, segment := range segments {
+		if strings.TrimSpace(segment.ID) == "" {
+			return fmt.Errorf("wall[%d] id is required", i)
+		}
+		if _, ok := seen[segment.ID]; ok {
+			return fmt.Errorf("wall[%d] has duplicate id", i)
+		}
+		seen[segment.ID] = struct{}{}
 		if isNotFinite(segment.X1) || isNotFinite(segment.Y1) || isNotFinite(segment.X2) || isNotFinite(segment.Y2) {
 			return fmt.Errorf("wall[%d] has invalid numeric value", i)
+		}
+		if math.Hypot(segment.X2-segment.X1, segment.Y2-segment.Y1) <= 0 {
+			return fmt.Errorf("wall[%d] is degenerate", i)
 		}
 	}
 	return nil
@@ -117,10 +129,7 @@ func validateBounds(rooms []floorplan.Room) error {
 		if isNotFinite(room.ApproximateBounds.X1) || isNotFinite(room.ApproximateBounds.Y1) || isNotFinite(room.ApproximateBounds.X2) || isNotFinite(room.ApproximateBounds.Y2) {
 			return fmt.Errorf("room[%d] has invalid bounds", i)
 		}
-		if room.ApproximateBounds.X1 > room.ApproximateBounds.X2 {
-			return fmt.Errorf("room[%d] has invalid bounds ordering", i)
-		}
-		if room.ApproximateBounds.Y1 > room.ApproximateBounds.Y2 {
+		if room.ApproximateBounds.X1 > room.ApproximateBounds.X2 || room.ApproximateBounds.Y1 > room.ApproximateBounds.Y2 {
 			return fmt.Errorf("room[%d] has invalid bounds ordering", i)
 		}
 		if isNotFinite(room.AreaRatio) {
@@ -130,10 +139,98 @@ func validateBounds(rooms []floorplan.Room) error {
 	return nil
 }
 
-func validateOpenings(openings []floorplan.Opening, kind string) error {
-	for i, opening := range openings {
-		if isNotFinite(opening.X) || isNotFinite(opening.Y) {
-			return fmt.Errorf("%s[%d] has invalid numeric value", kind, i)
+func normalizeStableGeometry(doc *floorplan.ParseResponse) error {
+	for i := range doc.Result.Walls {
+		if doc.Result.Walls[i].ID == "" {
+			doc.Result.Walls[i].ID = fmt.Sprintf("wall-%d", i+1)
+		}
+	}
+	normalize := func(items []floorplan.Opening, kind string) error {
+		for i := range items {
+			o := &items[i]
+			if o.ID == "" {
+				o.ID = fmt.Sprintf("%s-%d", kind, i+1)
+			}
+			if o.Kind == "" {
+				o.Kind = kind
+			}
+			if o.Source == "" {
+				o.Source = "parsed"
+			}
+			if o.WallID == "" { // legacy absolute marker migration; invalid markers fail closed.
+				best, bestDistance := -1, math.Inf(1)
+				for j, wall := range doc.Result.Walls {
+					dx, dy := wall.X2-wall.X1, wall.Y2-wall.Y1
+					lengthSq := dx*dx + dy*dy
+					if lengthSq <= 0 {
+						continue
+					}
+					t := ((o.X-wall.X1)*dx + (o.Y-wall.Y1)*dy) / lengthSq
+					t = math.Max(0, math.Min(1, t))
+					d := math.Hypot(o.X-(wall.X1+t*dx), o.Y-(wall.Y1+t*dy))
+					if d < bestDistance {
+						best, bestDistance = j, d
+						o.Position = t
+					}
+				}
+				if best < 0 {
+					return fmt.Errorf("%s[%d] cannot bind to a wall", kind, i)
+				}
+				o.WallID = doc.Result.Walls[best].ID
+				if o.Width == 0 {
+					o.Width = 8
+				}
+			}
+		}
+		return nil
+	}
+	if err := normalize(doc.Result.Doors, "door"); err != nil {
+		return err
+	}
+	return normalize(doc.Result.Windows, "window")
+}
+
+func validateOpenings(walls []floorplan.Segment, openings []floorplan.Opening) error {
+	wallByID := map[string]floorplan.Segment{}
+	for _, wall := range walls {
+		wallByID[wall.ID] = wall
+	}
+	seen := map[string]struct{}{}
+	grouped := map[string][]floorplan.Opening{}
+	for i, o := range openings {
+		if strings.TrimSpace(o.ID) == "" {
+			return fmt.Errorf("opening[%d] id is required", i)
+		}
+		if _, ok := seen[o.ID]; ok {
+			return fmt.Errorf("opening[%d] has duplicate id", i)
+		}
+		seen[o.ID] = struct{}{}
+		if o.Kind != "door" && o.Kind != "window" {
+			return fmt.Errorf("opening[%d] has invalid kind", i)
+		}
+		wall, ok := wallByID[o.WallID]
+		if !ok {
+			return fmt.Errorf("opening[%d] references missing wall", i)
+		}
+		if isNotFinite(o.Position) || isNotFinite(o.Width) || o.Position < 0 || o.Position > 1 || o.Width < 8 {
+			return fmt.Errorf("opening[%d] has invalid local geometry", i)
+		}
+		length := math.Hypot(wall.X2-wall.X1, wall.Y2-wall.Y1)
+		half := o.Width / length / 2
+		if o.Width >= length || o.Position-half < 0 || o.Position+half > 1 {
+			return fmt.Errorf("opening[%d] exceeds wall endpoints", i)
+		}
+		grouped[o.WallID] = append(grouped[o.WallID], o)
+	}
+	for wallID, items := range grouped {
+		wall := wallByID[wallID]
+		length := math.Hypot(wall.X2-wall.X1, wall.Y2-wall.Y1)
+		for i := range items {
+			for j := i + 1; j < len(items); j++ {
+				if math.Abs(items[i].Position-items[j].Position) < (items[i].Width+items[j].Width)/length/2 {
+					return fmt.Errorf("openings overlap on wall %s", wallID)
+				}
+			}
 		}
 	}
 	return nil

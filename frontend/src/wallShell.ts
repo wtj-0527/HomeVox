@@ -1,5 +1,5 @@
 import type { WallSegment } from './floorplanEditor'
-import { openingLabel, type ParsedOpening } from './floorplanUi'
+import { openingLabel, validateOpenings, type ParsedOpening } from './floorplanUi'
 
 export const WALL_SHELL_HEIGHT = 2.8
 export const WALL_SHELL_THICKNESS = 0.18
@@ -17,10 +17,14 @@ export type WallShellWall = {
 }
 
 export type WallShellOpening = {
+  id: string
+  wallId: string
   kind: 'door' | 'window'
   sourceIndex: number
+  width: number
   x: number
   z: number
+  rotationY: number
   label: string | null
 }
 
@@ -36,6 +40,8 @@ export type WallShellModel = {
   openings: WallShellOpening[]
   floor: WallShellFloor | null
   scale: number | null
+  /** Canonical opening validation error; geometry consumers must fail closed. */
+  validationError: string | null
 }
 
 type ValidWall = WallSegment & {
@@ -59,7 +65,7 @@ function validWalls(walls: readonly WallSegment[]): ValidWall[] {
 }
 
 function emptyWallShellModel(): WallShellModel {
-  return { walls: [], openings: [], floor: null, scale: null }
+  return { walls: [], openings: [], floor: null, scale: null, validationError: null }
 }
 
 function allFinite(values: readonly number[]): boolean {
@@ -122,18 +128,54 @@ export function buildWallShellModel(
     return emptyWallShellModel()
   }
 
+  // This is the single geometry admission gate. Never normalize, voxelize, or
+  // pass an opening to WASM unless the same durable document accepted by editing
+  // and persistence passes the canonical validator.
+  const validationError = validateOpenings(walls, [...doors, ...windows])
+  if (validationError) {
+    return { walls: normalizedWalls, openings: [], floor, scale, validationError }
+  }
+
   const normalizedOpenings: WallShellOpening[] = []
+  const wallByID = new Map(valid.map((wall) => [wall.id ?? `wall-${wall.sourceIndex + 1}`, wall]))
+  const normalizedWallBySourceIndex = new Map(normalizedWalls.map((wall) => [wall.sourceIndex, wall]))
   const appendOpenings = (items: readonly ParsedOpening[], kind: 'door' | 'window') => {
     items.forEach((opening, sourceIndex) => {
+      const wall = opening.wallId ? wallByID.get(opening.wallId) : undefined
+      const openingKind = opening.kind ?? kind
+      const normalizedWall = wall ? normalizedWallBySourceIndex.get(wall.sourceIndex) : undefined
+      if (wall && normalizedWall && opening.id && opening.wallId && isFiniteNumber(opening.position) && isFiniteNumber(opening.width) && openingKind === kind) {
+        const sourceX = wall.x1 + (wall.x2 - wall.x1) * opening.position
+        const sourceY = wall.y1 + (wall.y2 - wall.y1) * opening.position
+        const x = (sourceX - centerX) * scale
+        const z = (sourceY - centerY) * scale
+        if (!allFinite([x, z, opening.width * scale])) return
+        normalizedOpenings.push({
+          id: opening.id,
+          wallId: opening.wallId,
+          kind,
+          sourceIndex,
+          width: opening.width * scale,
+          x,
+          z,
+          rotationY: normalizedWall.rotationY,
+          label: openingLabel(opening),
+        })
+        return
+      }
+      // Legacy absolute markers are parse-preview only and are never accepted by persistence.
       if (!isFiniteNumber(opening.x) || !isFiniteNumber(opening.y)) return
-      const x = (opening.x - centerX) * scale
-      const z = (opening.y - centerY) * scale
+      const x = (opening.x - centerX) * scale; const z = (opening.y - centerY) * scale
       if (!allFinite([x, z])) return
       normalizedOpenings.push({
+        id: `legacy-${kind}-${sourceIndex}`,
+        wallId: '',
         kind,
         sourceIndex,
+        width: 0,
         x,
         z,
+        rotationY: 0,
         label: openingLabel(opening),
       })
     })
@@ -146,5 +188,6 @@ export function buildWallShellModel(
     openings: normalizedOpenings,
     floor,
     scale,
+    validationError: null,
   }
 }

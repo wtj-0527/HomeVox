@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
 import { Canvas, type RootState } from '@react-three/fiber'
-import { Grid, OrbitControls } from '@react-three/drei'
+import { Grid, Html, OrbitControls } from '@react-three/drei'
 import type { BufferGeometry } from 'three'
 import {
   type EndpointRef,
@@ -8,8 +8,11 @@ import {
   canRedo,
   canUndo,
   createWallEditorState,
+  addOpening,
   moveEndpoint,
   pushWallSnapshot,
+  removeOpening,
+  updateOpening,
   redo as redoEditor,
   undo as undoEditor,
   type WallEditorState,
@@ -19,6 +22,10 @@ import {
   canvasUnitsForCssPixels,
   isParseResponse,
   openingLabel,
+  openingPoint,
+  validateOpenings,
+  MIN_OPENING_WIDTH,
+  type ParsedOpening,
   type ParseResponse,
   type ParseResult,
   type Viewport,
@@ -52,15 +59,37 @@ const E2E_WALL_FIXTURE: ParseResponse = {
   result: {
     rooms: [],
     walls: [
-      { x1: 80, y1: 80, x2: 520, y2: 80 },
-      { x1: 520, y1: 80, x2: 520, y2: 360 },
-      { x1: 520, y1: 360, x2: 80, y2: 360 },
-      { x1: 80, y1: 360, x2: 80, y2: 80 },
+      { id: 'wall-1', x1: 80, y1: 80, x2: 520, y2: 80 },
+      { id: 'wall-2', x1: 520, y1: 80, x2: 520, y2: 360 },
+      { id: 'wall-3', x1: 520, y1: 360, x2: 80, y2: 360 },
+      { id: 'wall-4', x1: 80, y1: 360, x2: 80, y2: 80 },
     ],
-    doors: [],
-    windows: [],
+    doors: [{ id: 'door-1', kind: 'door', wallId: 'wall-1', position: 0.5, width: 72, source: 'fixture', confirmed: false }],
+    windows: [{ id: 'window-1', kind: 'window', wallId: 'wall-2', position: 0.5, width: 64, source: 'fixture', confirmed: false }],
     scale: { unit: 'px' },
     metadata: { source: 'production-e2e-fixture', image_width: 600, image_height: 440 },
+  },
+}
+
+const E2E_INVALID_OPENING_FIXTURE: ParseResponse = {
+  ...E2E_WALL_FIXTURE,
+  result: {
+    ...E2E_WALL_FIXTURE.result,
+    doors: [{ id: 'door-invalid', kind: 'door', wallId: 'missing-wall', position: 0.5, width: 72, source: 'fixture', confirmed: false }],
+    windows: [],
+  },
+}
+
+const E2E_DUPLICATE_WALL_ID_FIXTURE: ParseResponse = {
+  ...E2E_WALL_FIXTURE,
+  result: {
+    ...E2E_WALL_FIXTURE.result,
+    walls: [
+      { id: 'wall-duplicate', x1: 80, y1: 80, x2: 520, y2: 80 },
+      { id: 'wall-duplicate', x1: 520, y1: 80, x2: 520, y2: 360 },
+    ],
+    doors: [{ id: 'door-duplicate', kind: 'door', wallId: 'wall-duplicate', position: 0.5, width: 72, source: 'fixture', confirmed: false }],
+    windows: [],
   },
 }
 
@@ -77,14 +106,25 @@ declare global {
       generation: number
       wasmCalls: number
       metrics: MarchingCubesMetrics | null
-      geometry: { positionCount: number; normalCount: number; finite: boolean }
+      geometry: { positionCount: number; normalCount: number; finite: boolean; fingerprint: number }
       currentProjectId: string | null
+      selectedOpeningId: string | null
     }
   }
 }
 
+function e2EFixture(): ParseResponse | null {
+  if (typeof window === 'undefined') return null
+  switch (new URLSearchParams(window.location.search).get('e2e')) {
+    case 'wall-fixture': return E2E_WALL_FIXTURE
+    case 'invalid-opening': return E2E_INVALID_OPENING_FIXTURE
+    case 'duplicate-wall-id': return E2E_DUPLICATE_WALL_ID_FIXTURE
+    default: return null
+  }
+}
+
 function isE2EFixtureEnabled(): boolean {
-  return typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('e2e') === 'wall-fixture'
+  return e2EFixture() !== null
 }
 
 function e2EProjectID(): string | null {
@@ -209,9 +249,11 @@ type FloorplanSceneProps = {
   model: WallShellModel
   wasmGeometry: BufferGeometry | null
   wasmActive: boolean
+  selectedOpeningID: string | null
+  onSelectOpening: (openingID: string) => void
 }
 
-function Scene({ model, wasmGeometry, wasmActive }: FloorplanSceneProps) {
+function Scene({ model, wasmGeometry, wasmActive, selectedOpeningID, onSelectOpening }: FloorplanSceneProps) {
 
   return (
     <>
@@ -267,19 +309,37 @@ function Scene({ model, wasmGeometry, wasmActive }: FloorplanSceneProps) {
         const markerHeight = isDoor ? 3.2 : 3.7
         const markerRadius = isDoor ? 0.28 : 0.24
         return (
-          <mesh
-            key={`${opening.kind}-${opening.sourceIndex}`}
-            position={[opening.x, markerHeight, opening.z]}
-            renderOrder={10}
-            userData={{ openingKind: opening.kind, label: opening.label }}
-          >
-            <sphereGeometry args={[markerRadius, 20, 14]} />
-            <meshBasicMaterial
-              color={isDoor ? '#f97316' : '#38bdf8'}
-              depthTest={false}
-              toneMapped={false}
-            />
-          </mesh>
+          <group key={opening.id}>
+            <mesh
+              data-testid={`three-opening-${opening.id}`}
+              position={[opening.x, markerHeight, opening.z]}
+              renderOrder={10}
+              userData={{ openingId: opening.id, openingKind: opening.kind, label: opening.label }}
+              onPointerDown={(event) => { event.stopPropagation(); onSelectOpening(opening.id) }}
+              onClick={(event) => { event.stopPropagation(); onSelectOpening(opening.id) }}
+            >
+              <sphereGeometry args={[markerRadius, 20, 14]} />
+              <meshBasicMaterial
+                color={selectedOpeningID === opening.id ? '#facc15' : isDoor ? '#f97316' : '#38bdf8'}
+                depthTest={false}
+                toneMapped={false}
+              />
+              <mesh>
+                <sphereGeometry args={[0.65, 16, 12]} />
+                <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+              </mesh>
+            </mesh>
+            <Html position={[opening.x, markerHeight, opening.z]} center>
+              <button
+                type="button"
+                data-testid={`three-opening-button-${opening.id}`}
+                aria-label={`3D 选择${isDoor ? '门' : '窗'} ${opening.id}`}
+                aria-pressed={selectedOpeningID === opening.id}
+                className="h-5 w-5 rounded-full border-2 border-white bg-slate-950/30 p-0 shadow-lg"
+                onClick={() => onSelectOpening(opening.id)}
+              />
+            </Html>
+          </group>
         )
       })}
     </>
@@ -371,6 +431,10 @@ export default function App() {
   const [hoveredEndpoint, setHoveredEndpoint] = useState<EndpointRef | null>(null)
   const [draggedEndpoint, setDraggedEndpoint] = useState<EndpointRef | null>(null)
   const [dragPreviewWalls, setDragPreviewWalls] = useState<WallSegment[] | null>(null)
+  const [selectedOpeningID, setSelectedOpeningID] = useState<string | null>(null)
+  const [draggedOpeningID, setDraggedOpeningID] = useState<string | null>(null)
+  const [dragPreviewOpenings, setDragPreviewOpenings] = useState<ParsedOpening[] | null>(null)
+  const [openingError, setOpeningError] = useState('')
   const [selectedWallIndex, setSelectedWallIndex] = useState<number | null>(null)
   const [showSourceImage, setShowSourceImage] = useState(true)
   const [imageDimFallback, setImageDimFallback] = useState<{ width: number; height: number } | null>(null)
@@ -400,26 +464,35 @@ export default function App() {
 
   const result = parseResponse?.result ?? null
   const walls = dragPreviewWalls ?? wallEditor?.walls ?? result?.walls ?? EMPTY_WALLS
+  const openings = useMemo(() => dragPreviewOpenings ?? wallEditor?.openings ?? (result ? [...result.doors, ...result.windows] : []), [dragPreviewOpenings, result, wallEditor])
+  const [doors, windows] = useMemo(() => [openings.filter((opening) => opening.kind === 'door'), openings.filter((opening) => opening.kind === 'window')], [openings])
+  const selectedOpening = openings.find((opening) => opening.id === selectedOpeningID) ?? null
 
   const editableResult = useMemo<ParseResult | null>(() => {
     if (!parseResponse) return null
     return {
       ...parseResponse.result,
       walls,
+      doors,
+      windows,
     }
-  }, [parseResponse, walls])
+  }, [parseResponse, walls, doors, windows])
   const durableDocument = useMemo<ParseResponse | null>(() => (
-    parseResponse ? { ...parseResponse, result: { ...parseResponse.result, walls } } : null
-  ), [parseResponse, walls])
+    parseResponse ? { ...parseResponse, result: { ...parseResponse.result, walls, doors, windows } } : null
+  ), [parseResponse, walls, doors, windows])
+  const geometryValidationError = useMemo(
+    () => validateOpenings(walls, openings),
+    [walls, openings],
+  )
   const wallShellModel = useMemo(
-    () => buildWallShellModel(walls, result?.doors ?? [], result?.windows ?? []),
-    [walls, result?.doors, result?.windows],
+    () => buildWallShellModel(walls, doors, windows),
+    [walls, doors, windows],
   )
   const wallShellTotalLength = useMemo(
     () => wallShellModel.walls.reduce((total, wall) => total + wall.length, 0),
     [wallShellModel],
   )
-  const wallVoxelModel = useMemo(() => buildWallVoxelModel(walls), [walls])
+  const wallVoxelModel = useMemo(() => buildWallVoxelModel(walls, doors, windows), [walls, doors, windows])
 
   const viewport = chooseViewport(result, imageDimFallback)
   const editorScale = canvasScale(editorSize, viewport)
@@ -446,7 +519,7 @@ export default function App() {
   useEffect(() => {
     if (!isE2EFixtureEnabled() || e2EProjectID()) return
     setSelectedFile(new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0])], 'e2e-wall-fixture.png', { type: 'image/png' }))
-    setParseResponse(E2E_WALL_FIXTURE)
+    setParseResponse(e2EFixture())
     setStatus('ready')
     setProjectName('Production E2E wall fixture')
   }, [])
@@ -461,6 +534,9 @@ export default function App() {
       Array.from(positions.array).every(Number.isFinite) &&
       Array.from(normals.array).every(Number.isFinite),
     )
+    const fingerprint = positions
+      ? Array.from(positions.array).reduce((total, value, index) => total + value * (index + 1), 0)
+      : 0
     window.__homevoxE2E = {
       generation: wasmGenerationRef.current,
       wasmCalls: wasmCallsRef.current,
@@ -469,10 +545,12 @@ export default function App() {
         positionCount: positions?.count ?? 0,
         normalCount: normals?.count ?? 0,
         finite,
+        fingerprint,
       },
       currentProjectId: currentProject?.id ?? null,
+      selectedOpeningId: selectedOpeningID,
     }
-  }, [currentProject, wasmGeometry, wasmMetrics, wasmState])
+  }, [currentProject, selectedOpeningID, wasmGeometry, wasmMetrics, wasmState])
 
   function buildScopeFileName(scope: '2d' | '3d'): string {
     exportSequenceRef.current += 1
@@ -520,7 +598,7 @@ export default function App() {
     if (!wallVoxelModel) {
       replaceGeometry(null)
       setWasmMetrics(null)
-      setWasmFallback('empty-model')
+      setWasmFallback(geometryValidationError ? 'invalid-input' : 'empty-model')
       setWasmState('fallback')
       return
     }
@@ -564,7 +642,7 @@ export default function App() {
     return () => {
       disposed = true
     }
-  }, [wallVoxelModel])
+  }, [geometryValidationError, wallVoxelModel])
 
   useEffect(() => {
     void refreshProjects()
@@ -604,7 +682,7 @@ export default function App() {
       setWallEditor(null)
       return
     }
-    setWallEditor(createWallEditorState(result.walls, 6))
+    setWallEditor(createWallEditorState(result.walls, [...result.doors, ...result.windows], 6))
   }, [result])
 
   useEffect(() => {
@@ -634,6 +712,7 @@ export default function App() {
           event.preventDefault()
           setWallEditor((prev) => (prev ? undoEditor(prev) : prev))
           setDragPreviewWalls(null)
+          setDragPreviewOpenings(null)
         }
         return
       }
@@ -643,6 +722,7 @@ export default function App() {
           event.preventDefault()
           setWallEditor((prev) => (prev ? redoEditor(prev) : prev))
           setDragPreviewWalls(null)
+          setDragPreviewOpenings(null)
         }
       }
     }
@@ -704,6 +784,10 @@ export default function App() {
       setDragPreviewWalls(null)
       setHoveredEndpoint(null)
       setSelectedWallIndex(null)
+      setSelectedOpeningID(null)
+      setDraggedOpeningID(null)
+      setDragPreviewOpenings(null)
+      setOpeningError('')
       setExportError('')
     } catch (err) {
       if (controller.signal.aborted || parseRequestRef.current?.id !== requestId) return
@@ -727,6 +811,10 @@ export default function App() {
     setHoveredEndpoint(null)
     setDraggedEndpoint(null)
     setSelectedWallIndex(null)
+    setSelectedOpeningID(null)
+    setDraggedOpeningID(null)
+    setDragPreviewOpenings(null)
+    setOpeningError('')
     setShowSourceImage(true)
     setError('')
     setExportError('')
@@ -823,6 +911,10 @@ export default function App() {
       setDragPreviewWalls(null)
       setHoveredEndpoint(null)
       setSelectedWallIndex(null)
+      setSelectedOpeningID(null)
+      setDraggedOpeningID(null)
+      setDragPreviewOpenings(null)
+      setOpeningError('')
     } catch (err) {
       if (!request.controller.signal.aborted && projectRequestRef.current?.id === request.id) {
         setProjectMessage(`项目加载失败：${err instanceof Error ? err.message : '未知错误'}`)
@@ -838,6 +930,7 @@ export default function App() {
     }
     setWallEditor(undoEditor(wallEditor))
     setDragPreviewWalls(null)
+    setDragPreviewOpenings(null)
   }
 
   function handleRedo() {
@@ -846,6 +939,7 @@ export default function App() {
     }
     setWallEditor(redoEditor(wallEditor))
     setDragPreviewWalls(null)
+    setDragPreviewOpenings(null)
   }
 
   function handleCanvasPointerDown(event: PointerEvent<SVGElement>, endpoint: EndpointRef) {
@@ -881,7 +975,31 @@ export default function App() {
 
     if (draggedEndpoint) {
       const moveResult = moveEndpoint(wallEditor, draggedEndpoint, cursor)
+      const openingValidationError = moveResult.changed
+        ? validateOpenings(moveResult.walls, wallEditor.openings)
+        : null
+      if (openingValidationError) {
+        setDragPreviewWalls(null)
+        setOpeningError(openingValidationError)
+        return
+      }
       setDragPreviewWalls(moveResult.changed ? moveResult.walls : null)
+      setOpeningError('')
+      return
+    }
+
+    if (draggedOpeningID) {
+      const opening = wallEditor.openings.find((item) => item.id === draggedOpeningID)
+      const wall = opening?.wallId ? wallEditor.walls.find((item) => item.id === opening.wallId) : undefined
+      if (!opening || !wall) return
+      const dx = wall.x2 - wall.x1
+      const dy = wall.y2 - wall.y1
+      const lengthSq = dx * dx + dy * dy
+      if (!Number.isFinite(lengthSq) || lengthSq <= 0) return
+      const position = ((cursor.x - wall.x1) * dx + (cursor.y - wall.y1) * dy) / lengthSq
+      const edit = updateOpening(wallEditor, draggedOpeningID, { position })
+      if (edit.error) setOpeningError(edit.error)
+      else { setDragPreviewOpenings(edit.openings); setOpeningError('') }
       return
     }
 
@@ -893,43 +1011,103 @@ export default function App() {
     event.preventDefault()
     event.stopPropagation()
     setSelectedWallIndex(wallIndex)
+    setSelectedOpeningID(null)
+  }
+
+  function commitOpeningPatch(openingID: string, patch: Partial<ParsedOpening>) {
+    if (!wallEditor) return
+    const edit = updateOpening(wallEditor, openingID, patch)
+    if (edit.error) {
+      setOpeningError(edit.error)
+      return
+    }
+    if (edit.changed) setWallEditor(pushWallSnapshot(wallEditor, wallEditor.walls, edit.openings))
+    setOpeningError('')
+  }
+
+  function handleAddOpening(kind: 'door' | 'window') {
+    if (!wallEditor || selectedWallIndex === null) {
+      setOpeningError('请先选择一面墙再添加开口')
+      return
+    }
+    const wall = wallEditor.walls[selectedWallIndex]
+    if (!wall?.id) {
+      setOpeningError('所选墙体没有稳定 ID，无法添加开口')
+      return
+    }
+    const idBase = `${kind}-manual`
+    const id = `${idBase}-${wallEditor.openings.filter((opening) => opening.id?.startsWith(idBase)).length + 1}`
+    for (const position of [0.5, 0.25, 0.75]) {
+      const edit = addOpening(wallEditor, { id, kind, wallId: wall.id, position, width: MIN_OPENING_WIDTH, source: 'manual', confirmed: false })
+      if (!edit.error) {
+        setWallEditor(pushWallSnapshot(wallEditor, wallEditor.walls, edit.openings))
+        setSelectedOpeningID(id)
+        setOpeningError('')
+        return
+      }
+    }
+    setOpeningError('该墙没有可用空间添加最小开口')
+  }
+
+  function handleDeleteOpening() {
+    if (!wallEditor || !selectedOpeningID) return
+    const edit = removeOpening(wallEditor, selectedOpeningID)
+    if (edit.error) { setOpeningError(edit.error); return }
+    setWallEditor(pushWallSnapshot(wallEditor, wallEditor.walls, edit.openings))
+    setSelectedOpeningID(null)
+    setOpeningError('')
+  }
+
+  function handleOpeningPointerDown(event: PointerEvent<SVGCircleElement>, openingID: string) {
+    if (!wallEditor || !wallEditor.openings.some((opening) => opening.id === openingID)) return
+    const svg = editorRef.current
+    if (!svg) return
+    event.preventDefault()
+    event.stopPropagation()
+    setSelectedOpeningID(openingID)
+    setDraggedOpeningID(openingID)
+    setDragPreviewOpenings(wallEditor.openings.map((opening) => ({ ...opening })))
+    setOpeningError('')
+    svg.setPointerCapture(event.pointerId)
   }
 
   function commitDrag(pointerId?: number) {
     if (!wallEditor) {
       setDraggedEndpoint(null)
+      setDraggedOpeningID(null)
       setDragPreviewWalls(null)
+      setDragPreviewOpenings(null)
       return
     }
-
     if (draggedEndpoint && dragPreviewWalls) {
-      setWallEditor((prev) => (prev ? pushWallSnapshot(prev, dragPreviewWalls) : prev))
-    }
-
-    setDraggedEndpoint(null)
-    setDragPreviewWalls(null)
-
-    if (pointerId !== undefined) {
-      const svg = editorRef.current
-      if (svg?.hasPointerCapture(pointerId)) {
-        svg.releasePointerCapture(pointerId)
+      const openingValidationError = validateOpenings(dragPreviewWalls, wallEditor.openings)
+      if (openingValidationError) {
+        setOpeningError(openingValidationError)
+      } else {
+        setWallEditor(pushWallSnapshot(wallEditor, dragPreviewWalls, wallEditor.openings))
+        setOpeningError('')
       }
     }
+    if (draggedOpeningID && dragPreviewOpenings) setWallEditor(pushWallSnapshot(wallEditor, wallEditor.walls, dragPreviewOpenings))
+    setDraggedEndpoint(null)
+    setDraggedOpeningID(null)
+    setDragPreviewWalls(null)
+    setDragPreviewOpenings(null)
+    if (pointerId !== undefined) {
+      const svg = editorRef.current
+      if (svg?.hasPointerCapture(pointerId)) svg.releasePointerCapture(pointerId)
+    }
   }
 
-  function handleCanvasPointerUp(event: PointerEvent<SVGSVGElement>) {
-    commitDrag(event.pointerId)
-  }
+  function handleCanvasPointerUp(event: PointerEvent<SVGSVGElement>) { commitDrag(event.pointerId) }
 
   function handleCanvasPointerCancel(event: PointerEvent<SVGSVGElement>) {
-    if (draggedEndpoint) {
-      setDraggedEndpoint(null)
-      setDragPreviewWalls(null)
-    }
+    setDraggedEndpoint(null)
+    setDraggedOpeningID(null)
+    setDragPreviewWalls(null)
+    setDragPreviewOpenings(null)
     const svg = editorRef.current
-    if (svg?.hasPointerCapture(event.pointerId)) {
-      svg.releasePointerCapture(event.pointerId)
-    }
+    if (svg?.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId)
   }
 
   async function handleExport2D() {
@@ -1126,6 +1304,32 @@ export default function App() {
         </section>
 
         <section className="mt-4 space-y-2 text-xs">
+          <div className="rounded-xl bg-slate-950/70 p-3" aria-label="开口编辑器">
+            <p className="text-slate-500 mb-2">门窗开口（选择墙体后添加；拖拽移动）</p>
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" className="rounded-lg bg-orange-600 px-3 py-2 disabled:opacity-50" disabled={selectedWallIndex === null} onClick={() => handleAddOpening('door')}>添加门</button>
+              <button type="button" className="rounded-lg bg-sky-600 px-3 py-2 disabled:opacity-50" disabled={selectedWallIndex === null} onClick={() => handleAddOpening('window')}>添加窗</button>
+            </div>
+            {selectedOpening && (
+              <div className="mt-2 grid grid-cols-[1fr_auto] gap-2">
+                <label className="text-slate-400">宽度
+                  <input aria-label="开口宽度" data-testid="opening-width" className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100" type="number" min={MIN_OPENING_WIDTH} step="1" value={selectedOpening.width ?? ''} onChange={(event) => { const width = Number(event.target.value); if (Number.isFinite(width)) commitOpeningPatch(selectedOpening.id!, { width }) }} />
+                </label>
+                <button type="button" className="self-end rounded-lg bg-red-700 px-3 py-2" onClick={handleDeleteOpening}>删除</button>
+                {selectedOpening.kind === 'window' && (
+                  <p className="col-span-2 rounded-md border border-amber-600/60 bg-amber-950/40 p-2 text-amber-200" data-testid="window-preview-disclosure" role="status">
+                    窗台高和窗高：confirmed={selectedOpening.confirmed === true ? 'true' : 'false（未知）'}。3D 预览使用非持久化默认值；这些尺寸不会保存为建筑参数。
+                  </p>
+                )}
+                {selectedOpening.kind === 'door' && selectedOpening.confirmed !== true && (
+                  <p className="col-span-2 rounded-md border border-amber-600/60 bg-amber-950/40 p-2 text-amber-200" data-testid="door-preview-disclosure" role="status">
+                    门高：confirmed=false（未知）。3D 全高门洞仅为非持久化预览假设；不会保存为建筑参数。
+                  </p>
+                )}
+              </div>
+            )}
+            {openingError && <p role="alert" className="mt-2 text-amber-300">{openingError}</p>}
+          </div>
           <div className="rounded-xl bg-slate-950/70 p-3">
             <p className="text-slate-500 mb-2">历史与历史同步</p>
             <div className="grid grid-cols-2 gap-2">
@@ -1249,36 +1453,6 @@ export default function App() {
               />
             )}
 
-            {result &&
-              [...result.doors, ...result.windows].map((opening, index) => {
-                if (!isFiniteCoordinate(opening.x) || !isFiniteCoordinate(opening.y)) {
-                  return null
-                }
-                const label = openingLabel(opening)
-                return (
-                  <g key={`${opening.type ?? 'opening'}-${index}`} pointerEvents="none">
-                    <circle
-                      cx={opening.x}
-                      cy={opening.y}
-                      r={openingRadius}
-                      fill="none"
-                      stroke="#f97316"
-                      strokeWidth={openingStroke}
-                    />
-                    {label && (
-                      <text
-                        x={opening.x + labelOffset}
-                        y={opening.y - labelOffset}
-                        fill="#fbbf24"
-                        fontSize={labelSize}
-                      >
-                        {label}
-                      </text>
-                    )}
-                  </g>
-                )
-              })}
-
             <g aria-label="墙体可视层" pointerEvents="none">
               {walls.map((wall, wallIndex) => {
                 const endpointActive =
@@ -1370,6 +1544,36 @@ export default function App() {
                 )),
               )}
             </g>
+
+            {openings.map((opening) => {
+              const wall = opening.wallId ? walls.find((item) => item.id === opening.wallId) : undefined
+              const point = wall ? openingPoint(wall, opening) : null
+              if (!point || !opening.id) return null
+              const selected = selectedOpeningID === opening.id
+              const label = openingLabel(opening)
+              const color = selected ? '#facc15' : opening.kind === 'door' ? '#f97316' : '#38bdf8'
+              return (
+                <g key={opening.id} data-testid={`opening-${opening.id}`}>
+                  <circle
+                    data-testid={`opening-handle-${opening.id}`}
+                    cx={point.x}
+                    cy={point.y}
+                    r={selected ? openingRadius * 1.3 : openingRadius}
+                    fill={color}
+                    fillOpacity={selected ? 0.95 : 0.75}
+                    stroke="#f8fafc"
+                    strokeWidth={openingStroke}
+                    onPointerDown={(event) => handleOpeningPointerDown(event, opening.id!)}
+                    style={{ cursor: 'grab' }}
+                  />
+                  {label && (
+                    <text x={point.x + labelOffset} y={point.y - labelOffset} fill={color} fontSize={labelSize} pointerEvents="none">
+                      {label}
+                    </text>
+                  )}
+                </g>
+              )
+            })}
           </svg>
         </div>
       </section>
@@ -1378,7 +1582,7 @@ export default function App() {
         className="relative min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-slate-950 shadow-2xl"
         aria-label="3D 户型预览"
       >
-        <div className="absolute left-3 top-3 z-10 rounded-xl bg-black/60 px-3 py-2 text-xs text-white/75">
+        <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-xl bg-black/60 px-3 py-2 text-xs text-white/75">
           <div className="font-medium text-white/90">3D 墙体 WASM Marching Cubes</div>
           <div className="mt-1 flex gap-3 text-[11px] text-white/60" aria-label="3D 白模实时指标">
             <span data-testid="wasm-engine-state">引擎 {wasmState}</span>
@@ -1386,6 +1590,11 @@ export default function App() {
             <span data-testid="wasm-triangles">三角 {wasmMetrics?.triangleCount ?? 0}</span>
             <span>墙体 {wallShellModel.walls.length}</span>
           </div>
+          {geometryValidationError && (
+            <p className="mt-1 max-w-xs text-[11px] text-amber-200" data-testid="geometry-validation-error" role="alert">
+              开口校验失败，已阻止体素和 WASM 开洞：{geometryValidationError}。2D 编辑与保存仍可用。
+            </p>
+          )}
           <div className="mt-1 text-[11px] text-white/60" data-testid="wasm-resource-metrics">
             {wasmMetrics
               ? `顶点 ${wasmMetrics.vertexCount} · ${wasmMetrics.elapsedMs.toFixed(1)}ms · 输入 ${wasmMetrics.inputBytes}B · 输出 ${wasmMetrics.outputBytes}B`
@@ -1405,7 +1614,7 @@ export default function App() {
               }}
             >
               <Suspense fallback={null}>
-                <Scene model={wallShellModel} wasmGeometry={wasmGeometry} wasmActive={wasmState === 'active'} />
+                <Scene model={wallShellModel} wasmGeometry={wasmGeometry} wasmActive={wasmState === 'active'} selectedOpeningID={selectedOpeningID} onSelectOpening={(openingID) => { setSelectedOpeningID(openingID); setOpeningError('') }} />
                 <OrbitControls makeDefault />
               </Suspense>
             </Canvas>
@@ -1422,7 +1631,7 @@ export default function App() {
           )}
         </div>
         <div className="pointer-events-none absolute bottom-3 left-3 right-3 rounded-xl bg-black/55 px-3 py-2 text-center text-xs text-white/50">
-          WASM 网格实时跟随当前墙段；失败时互斥回退至 wall-shell。橙色/蓝色仅为门窗 marker，尚未进行布尔开洞
+          WASM 网格实时跟随墙体及其局部开口；仅在引擎 active 时声明真实开洞。失败时显示 wall-shell 降级与可观察错误。
         </div>
       </main>
       </div>

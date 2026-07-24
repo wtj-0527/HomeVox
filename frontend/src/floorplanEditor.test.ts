@@ -6,6 +6,7 @@ import {
   redo,
   undo,
 } from './floorplanEditor'
+import { validateOpenings } from './floorplanUi'
 
 describe('wall edit core', () => {
   it('moves only one endpoint when detached', () => {
@@ -154,5 +155,55 @@ describe('wall edit core', () => {
     const moved = moveEndpoint(state, { wallIndex: 0, endpoint: 'start' }, { x: Number.NaN, y: Infinity })
     expect(moved.changed).toBe(false)
     expect(moved.walls[0]).toEqual({ x1: 0, y1: 0, x2: 10, y2: 0 })
+  })
+})
+
+describe('opening-aware history', () => {
+  const walls = [{ id: 'wall-a', x1: 0, y1: 0, x2: 100, y2: 0 }]
+  const door = { id: 'door-a', kind: 'door' as const, wallId: 'wall-a', position: 0.5, width: 20, confirmed: false }
+
+  it('commits add, move, resize, and delete as atomic opening snapshots', async () => {
+    const { addOpening, removeOpening, updateOpening } = await import('./floorplanEditor')
+    const initial = createWallEditorState(walls, [])
+    const added = addOpening(initial, door)
+    expect(added.error).toBeNull()
+    const afterAdd = pushWallSnapshot(initial, initial.walls, added.openings)
+    const moved = updateOpening(afterAdd, 'door-a', { position: 0.6 })
+    const afterMove = pushWallSnapshot(afterAdd, afterAdd.walls, moved.openings)
+    const resized = updateOpening(afterMove, 'door-a', { width: 30 })
+    const afterResize = pushWallSnapshot(afterMove, afterMove.walls, resized.openings)
+    const deleted = removeOpening(afterResize, 'door-a')
+    const afterDelete = pushWallSnapshot(afterResize, afterResize.walls, deleted.openings)
+
+    expect(afterDelete.openings).toEqual([])
+    expect(undo(afterDelete).openings[0]).toMatchObject({ id: 'door-a', position: 0.6, width: 30 })
+    expect(undo(undo(afterDelete)).openings[0]).toMatchObject({ id: 'door-a', position: 0.6, width: 20 })
+    expect(redo(undo(afterDelete)).openings).toEqual([])
+  })
+
+  it('fails closed when a move or resize would overlap or exceed its wall', async () => {
+    const { updateOpening } = await import('./floorplanEditor')
+    const state = createWallEditorState(walls, [door, { ...door, id: 'window-a', kind: 'window' as const, position: 0.8, width: 12 }])
+    expect(updateOpening(state, 'door-a', { position: 0.75 }).error).toContain('overlap')
+    expect(updateOpening(state, 'door-a', { width: 100 }).error).toContain('exceeds')
+    expect(updateOpening(state, 'door-a', { position: 0.01 }).error).toContain('endpoint')
+  })
+
+  it('rejects endpoint drag candidates that make an opening cross a wall endpoint', () => {
+    const state = createWallEditorState(walls, [{ ...door, position: 0.25 }])
+
+    const shortened = moveEndpoint(state, { wallIndex: 0, endpoint: 'end' }, { x: 30, y: 0 })
+
+    expect(shortened.changed).toBe(true)
+    expect(validateOpenings(shortened.walls, state.openings)).toContain('endpoint')
+  })
+
+  it('rejects endpoint drag candidates that make an opening as wide as its wall', () => {
+    const state = createWallEditorState(walls, [door])
+
+    const shortened = moveEndpoint(state, { wallIndex: 0, endpoint: 'end' }, { x: 20, y: 0 })
+
+    expect(shortened.changed).toBe(true)
+    expect(validateOpenings(shortened.walls, state.openings)).toContain('exceeds')
   })
 })

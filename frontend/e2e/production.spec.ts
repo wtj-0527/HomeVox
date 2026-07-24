@@ -80,3 +80,82 @@ test('uses the adapter load failure branch to fall back while retaining the wall
   await expect(page.getByTestId('wasm-resource-metrics')).toContainText(/wall-shell [1-9]/)
   await expect(page.getByRole('img', { name: '户型图墙体端点编辑区' })).toBeVisible()
 })
+
+test('edits wall-local openings atomically and preserves stable opening identity through project reload', async ({ page }) => {
+  await page.goto('/?e2e=wall-fixture')
+  await expect(page.getByTestId('wasm-engine-state')).toHaveText(/active/)
+
+  await page.getByTestId('three-opening-button-window-1').click()
+  await expect.poll(() => page.evaluate(() => window.__homevoxE2E?.selectedOpeningId)).toBe('window-1')
+  await expect(page.getByTestId('window-preview-disclosure')).toHaveText(/confirmed=false（未知）/)
+  await expect(page.getByTestId('window-preview-disclosure')).toHaveText(/非持久化默认值/)
+
+  // A 2D selection must highlight the same opening in the live R3F scene.
+  await page.getByTestId('opening-handle-window-1').click()
+  await expect(page.getByTestId('three-opening-button-window-1')).toHaveAttribute('aria-pressed', 'true')
+
+  await page.getByTestId('opening-handle-door-1').click()
+  await expect.poll(() => page.evaluate(() => window.__homevoxE2E?.selectedOpeningId)).toBe('door-1')
+  await expect(page.getByTestId('door-preview-disclosure')).toHaveText(/confirmed=false（未知）/)
+  await expect(page.getByTestId('door-preview-disclosure')).toHaveText(/全高门洞仅为非持久化预览假设/)
+  const beforeOpeningEdit = await page.evaluate(() => window.__homevoxE2E?.generation ?? 0)
+  await page.getByTestId('opening-width').fill('80')
+  await expect(page.locator('pre')).toContainText('"width": 80')
+  await expect.poll(() => page.evaluate(() => window.__homevoxE2E?.generation ?? 0))
+    .toBeGreaterThan(beforeOpeningEdit)
+  expect((await page.evaluate(() => window.__homevoxE2E?.geometry.finite))).toBe(true)
+
+  const editor = page.getByRole('img', { name: '户型图墙体端点编辑区' })
+  const editorBox = await editor.boundingBox()
+  expect(editorBox).not.toBeNull()
+  const scale = Math.min((editorBox?.width ?? 0) / 600, (editorBox?.height ?? 0) / 440)
+  await page.mouse.click((editorBox?.x ?? 0) + 150 * scale, (editorBox?.y ?? 0) + 80 * scale)
+  await page.getByRole('button', { name: '添加门' }).click()
+  await expect(page.getByTestId('opening-handle-door-manual-1')).toBeVisible()
+  await page.getByRole('button', { name: '删除' }).click()
+  await expect(page.getByTestId('opening-handle-door-manual-1')).toHaveCount(0)
+  await page.getByRole('button', { name: /撤销/ }).click()
+  await expect(page.getByTestId('opening-handle-door-manual-1')).toBeVisible()
+  await page.getByRole('button', { name: /重做/ }).click()
+  await expect(page.getByTestId('opening-handle-door-manual-1')).toHaveCount(0)
+
+  const export2D = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出2D平面图PNG' }).click()
+  expect((await export2D).suggestedFilename()).toMatch(/\.png$/)
+  const export3D = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出3D白模PNG' }).click()
+  expect((await export3D).suggestedFilename()).toMatch(/\.png$/)
+
+  await page.getByRole('button', { name: '创建项目' }).click()
+  await expect(page.getByText('项目已创建')).toBeVisible()
+  const projectID = await page.evaluate(() => window.__homevoxE2E?.currentProjectId)
+  expect(projectID).toMatch(/^[0-9a-f-]{36}$/i)
+  const persistedOpeningGeometry = await page.evaluate(() => window.__homevoxE2E?.geometry.fingerprint)
+  await page.goto(`/?e2e=wall-fixture&project=${projectID}`)
+  await expect(page.getByText('项目已加载')).toBeVisible()
+  await page.getByTestId('opening-handle-door-1').click()
+  await expect(page.getByTestId('opening-width')).toHaveValue('80')
+  await expect.poll(() => page.evaluate(() => window.__homevoxE2E?.geometry.fingerprint))
+    .toBe(persistedOpeningGeometry)
+  await page.getByTestId('opening-handle-door-1').click()
+  await expect(page.getByTestId('door-preview-disclosure')).toHaveText(/confirmed=false（未知）/)
+  await expect(page.getByTestId('door-preview-disclosure')).toHaveText(/不会保存为建筑参数/)
+  await page.getByTestId('opening-handle-window-1').click()
+  await expect(page.getByTestId('window-preview-disclosure')).toHaveText(/confirmed=false（未知）/)
+  await expect(page.getByTestId('window-preview-disclosure')).toHaveText(/非持久化默认值/)
+})
+
+for (const [fixture, validationError] of [
+  ['invalid-opening', /missing or degenerate wall/],
+  ['duplicate-wall-id', /wall id must be unique/],
+] as const) {
+  test(`fails closed before voxel or WASM geometry for ${fixture} documents`, async ({ page }) => {
+    await page.goto(`/?e2e=${fixture}`)
+    await expect(page.getByTestId('geometry-validation-error')).toContainText(validationError)
+    await expect(page.getByTestId('wasm-engine-state')).toHaveText(/fallback/)
+    await expect(page.getByTestId('wasm-resource-metrics')).toContainText(/fallback: invalid-input/)
+    const state = await page.evaluate(() => window.__homevoxE2E)
+    expect(state?.wasmCalls).toBe(0)
+    expect(state?.geometry.positionCount).toBe(0)
+  })
+}
