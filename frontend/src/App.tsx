@@ -111,6 +111,8 @@ declare global {
       geometry: { positionCount: number; normalCount: number; finite: boolean; fingerprint: number }
       currentProjectId: string | null
       selectedOpeningId: string | null
+      walls: Array<{ id: string | null; x1: number; y1: number; x2: number; y2: number }>
+      openings: Array<{ id: string | null; wallId: string | null; position: number | null; width: number | null }>
     }
   }
 }
@@ -127,6 +129,11 @@ function e2EFixture(): ParseResponse | null {
 
 function isE2EFixtureEnabled(): boolean {
   return e2EFixture() !== null
+}
+
+function isE2EInstrumentationEnabled(): boolean {
+  if (typeof window === 'undefined') return false
+  return new URLSearchParams(window.location.search).has('e2e')
 }
 
 function e2EProjectID(): string | null {
@@ -500,7 +507,9 @@ export default function App() {
     () => validateOpenings(walls, openings),
     [walls, openings],
   )
-  const canOpenLinkedWorkspace = Boolean(durableDocument) && !geometryValidationError
+  const hasCanonicalGeometry = Boolean(durableDocument) && !geometryValidationError
+  const hasRealThreeDGeometry = wasmState === 'active' && wasmGeometry !== null
+  const canOpenLinkedWorkspace = hasCanonicalGeometry && webGLAvailable && hasRealThreeDGeometry
   const wallShellModel = useMemo(
     () => buildWallShellModel(walls, doors, windows),
     [walls, doors, windows],
@@ -538,7 +547,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!isE2EFixtureEnabled()) return
+    if (!isE2EInstrumentationEnabled()) return
     const positions = wasmGeometry?.getAttribute('position')
     const normals = wasmGeometry?.getAttribute('normal')
     const finite = Boolean(
@@ -562,8 +571,21 @@ export default function App() {
       },
       currentProjectId: currentProject?.id ?? null,
       selectedOpeningId: selectedOpeningID,
+      walls: walls.map((wall) => ({
+        id: wall.id ?? null,
+        x1: wall.x1,
+        y1: wall.y1,
+        x2: wall.x2,
+        y2: wall.y2,
+      })),
+      openings: openings.map((opening) => ({
+        id: opening.id ?? null,
+        wallId: opening.wallId ?? null,
+        position: opening.position ?? null,
+        width: opening.width ?? null,
+      })),
     }
-  }, [currentProject, selectedOpeningID, wasmGeometry, wasmMetrics, wasmState])
+  }, [currentProject, openings, selectedOpeningID, walls, wasmGeometry, wasmMetrics, wasmState])
 
   function buildScopeFileName(scope: '2d' | '3d'): string {
     exportSequenceRef.current += 1
@@ -1256,6 +1278,28 @@ export default function App() {
     </main>
   )
 
+  const threeDUnavailablePanel = (
+    <div className="workspace-card p-6 text-slate-800" role={wasmState === 'loading' ? 'status' : 'alert'}>
+      {geometryValidationError ? (
+        <>
+          <h4 className="text-lg font-semibold">当前开口数据无法生成 3D</h4>
+          <p className="mt-2 text-sm text-slate-600">请返回 2D 校正后修复数据，再重新生成 3D。</p>
+        </>
+      ) : wasmState === 'loading' ? (
+        <>
+          <h4 className="text-lg font-semibold">正在准备 3D 预览</h4>
+          <p className="mt-2 text-sm text-slate-600">3D 几何准备完成后，才能打开联动工作台。</p>
+        </>
+      ) : (
+        <>
+          <h4 className="text-lg font-semibold">当前 3D 预览不可用</h4>
+          <p className="mt-2 text-sm text-slate-600">无法生成可靠的 3D 几何。请返回 2D 校正后重试，或在支持 WebGL 的浏览器中打开。</p>
+        </>
+      )}
+      <button type="button" className="mt-4 rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => setActiveStep(3)}>返回 2D 校正</button>
+    </div>
+  )
+
   const editorInspector = (
     <aside className="workspace-card inspector-card min-w-0 p-4 text-slate-800">
       <section className="space-y-3 text-xs">
@@ -1286,8 +1330,8 @@ export default function App() {
         {activeStep === 1 && <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">导入真实户型图</h3><p className="mt-2 text-sm text-slate-500">从你的图纸开始，不套用示意户型。</p><label className="mt-6 block cursor-pointer rounded-xl border border-dashed border-slate-400 bg-slate-50 p-5 text-sm hover:border-violet-500"><span className="block font-medium">选择户型图</span><span className="mt-1 block text-xs text-slate-500">支持 PNG、JPEG、GIF、WebP；后端限制 10 MiB</span><input className="mt-3 block w-full text-xs" type="file" accept="image/png,image/jpeg,image/gif,image/webp" onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)} /></label>{previewURL && <img className="mt-4 max-h-80 w-full rounded-xl object-contain bg-slate-50" src={previewURL} alt="上传户型图预览" />}</section>}
         {activeStep === 2 && <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">AI 识别</h3><p className="mt-2 text-sm text-slate-500">识别完成后才会打开可校正的同源 2D 数据。</p><button className="mt-6 w-full rounded-xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50" type="button" disabled={status === 'uploading' || !selectedFile} onClick={handleParse}>{status === 'uploading' ? 'AI 识别中…' : '开始 AI 识别'}</button><div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm"><span className="text-slate-500">识别状态：</span>{status === 'ready' ? '解析完成' : status === 'uploading' ? '解析中' : status === 'error' ? '失败' : '等待开始'}{error && <p role="alert" className="mt-2 text-red-700">{error}</p>}</div>{status === 'error' && selectedFile && <button type="button" className="mt-3 rounded-lg border border-violet-300 px-3 py-2 text-sm text-violet-700" onClick={handleParse}>重试 AI 识别</button>}</section>}
         {activeStep === 3 && <div className="workspace-grid product-workspace">{twoDPanel}{editorInspector}</div>}
-        {activeStep === 4 && <section className="mx-auto max-w-5xl"><div className="mb-4 flex items-center justify-between rounded-xl bg-white p-4 shadow-sm"><div><h3 className="font-semibold text-slate-900">确认 3D 空间</h3><p className="mt-1 text-sm text-slate-500">这是同一份已校正 2D 数据生成的真实 3D 预览。</p></div><div className="flex gap-2"><button type="button" className="rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => setActiveStep(3)}>返回 2D 校正</button>{canOpenLinkedWorkspace && <button type="button" className="rounded-lg bg-violet-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => setActiveStep(5)}>完成并打开 3D</button>}</div></div>{canOpenLinkedWorkspace ? threeDPanel : <div className="workspace-card p-6 text-slate-800" role="alert"><h4 className="text-lg font-semibold">当前开口数据无法生成 3D</h4><p className="mt-2 text-sm text-slate-600">请返回 2D 校正后修复数据，再重新生成 3D。</p><button type="button" className="mt-4 rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => setActiveStep(3)}>返回 2D 校正</button></div>}</section>}
-        {activeStep === 5 && (canOpenLinkedWorkspace ? <div className="workspace-grid product-workspace product-workspace-linked">{twoDPanel}{threeDPanel}{editorInspector}</div> : <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800" role="alert"><h3 className="text-lg font-semibold">当前开口数据无法生成 3D</h3><p className="mt-2 text-sm text-slate-600">联动工作台已关闭，请先返回 2D 校正。</p><button type="button" className="mt-4 rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => setActiveStep(3)}>返回 2D 校正</button></section>)}
+        {activeStep === 4 && <section className="mx-auto max-w-5xl"><div className="mb-4 flex items-center justify-between rounded-xl bg-white p-4 shadow-sm"><div><h3 className="font-semibold text-slate-900">确认 3D 空间</h3><p className="mt-1 text-sm text-slate-500">这是同一份已校正 2D 数据生成的真实 3D 预览。</p></div><div className="flex gap-2"><button type="button" className="rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => setActiveStep(3)}>返回 2D 校正</button>{canOpenLinkedWorkspace && <button type="button" className="rounded-lg bg-violet-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => setActiveStep(5)}>完成并打开 3D</button>}</div></div>{canOpenLinkedWorkspace ? threeDPanel : threeDUnavailablePanel}</section>}
+        {activeStep === 5 && (canOpenLinkedWorkspace ? <div className="workspace-grid product-workspace product-workspace-linked">{twoDPanel}{threeDPanel}{editorInspector}</div> : <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800" role="alert"><h3 className="text-lg font-semibold">当前 3D 预览不可用</h3><p className="mt-2 text-sm text-slate-600">联动工作台已关闭，请先返回 2D 校正。</p><button type="button" className="mt-4 rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => setActiveStep(3)}>返回 2D 校正</button></section>)}
         {activeStep === 6 && savePanel}
       </div></div>
     </div></div>
