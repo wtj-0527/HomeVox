@@ -149,7 +149,7 @@ func TestParseFloorplanReportsMissingAIConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create form file: %v", err)
 	}
-	_, _ = part.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0})
+	_, _ = part.Write(validPNG(t))
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close multipart writer: %v", err)
 	}
@@ -218,5 +218,47 @@ func TestRouterServesFrontendAndSPAFallback(t *testing.T) {
 				t.Fatalf("GET %s Content-Type = %q, want %q", tc.path, w.Header().Get("Content-Type"), tc.contentType)
 			}
 		})
+	}
+}
+
+func TestParseFloorplanRejectsCorruptImagesBeforeVision(t *testing.T) {
+	visionCalls := 0
+	vision := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		visionCalls++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer vision.Close()
+	router := NewRouter(config.Config{AIBaseURL: vision.URL, AIAPIKey: "test-key", AIModel: "vision-test"})
+
+	for name, data := range map[string][]byte{
+		"PNG":  {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'},
+		"JPEG": {0xff, 0xd8, 0xff},
+		"GIF":  []byte("GIF89a\x02\x00"),
+		"WebP": []byte("RIFF\x24\x00\x00\x00WEBPVP8 "),
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := &bytes.Buffer{}
+			writer := multipart.NewWriter(body)
+			part, err := writer.CreateFormFile("floorplan", "corrupt-image")
+			if err != nil {
+				t.Fatalf("create form file: %v", err)
+			}
+			if _, err := part.Write(data); err != nil {
+				t.Fatalf("write image: %v", err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatalf("close multipart writer: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/floorplans/parse", body)
+			req.Header.Set("Content-Type", writer.FormDataContentType())
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+	if visionCalls != 0 {
+		t.Fatalf("corrupt images reached Vision %d times", visionCalls)
 	}
 }

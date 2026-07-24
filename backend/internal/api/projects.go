@@ -17,6 +17,7 @@ import (
 
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/db"
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/floorplan"
+	"github.com/KingBoyAndGirl/HomeVox/backend/internal/imagevalidate"
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/project"
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/storage"
 	"github.com/gin-gonic/gin"
@@ -176,9 +177,9 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 			return
 		}
 
-		contentType := http.DetectContentType(data)
-		if !project.IsSupportedContentType(contentType) {
-			writeProjectError(c, http.StatusBadRequest, "unsupported_source_image", "source_image must be a PNG, JPEG, GIF, or WebP image")
+		contentType, _, _, err := imagevalidate.Decode(data)
+		if err != nil || !project.IsSupportedContentType(contentType) {
+			writeProjectError(c, http.StatusBadRequest, "unsupported_source_image", "source_image must be a valid PNG, JPEG, GIF, or WebP image")
 			return
 		}
 		if err := project.ValidateSourceImageMetadata(doc, header.Filename, contentType, int64(len(data))); err != nil {
