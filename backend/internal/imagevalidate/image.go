@@ -19,6 +19,11 @@ var supported = map[string]string{
 	"webp": "image/webp",
 }
 
+const (
+	MaxImageDimension = 16384
+	MaxImagePixels    = 100_000_000
+)
+
 // Decode validates the complete encoded image and returns its canonical MIME
 // type and dimensions. Decode, rather than a signature check, rejects truncated
 // and corrupt images before they can reach a provider or object storage.
@@ -26,11 +31,25 @@ func Decode(data []byte) (contentType string, width, height int, err error) {
 	if len(data) == 0 {
 		return "", 0, 0, fmt.Errorf("image is empty")
 	}
+	config, configFormat, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("decode image config: %w", err)
+	}
+	contentType, ok := supported[configFormat]
+	if !ok {
+		return "", 0, 0, fmt.Errorf("unsupported decoded image format %q", configFormat)
+	}
+	if config.Width <= 0 || config.Height <= 0 {
+		return "", 0, 0, fmt.Errorf("image dimensions must be positive")
+	}
+	if config.Width > MaxImageDimension || config.Height > MaxImageDimension || int64(config.Width)*int64(config.Height) > MaxImagePixels {
+		return "", 0, 0, fmt.Errorf("image dimensions exceed %dx%d or %d pixels", MaxImageDimension, MaxImageDimension, MaxImagePixels)
+	}
 	imageValue, format, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return "", 0, 0, fmt.Errorf("decode image: %w", err)
 	}
-	contentType, ok := supported[format]
+	contentType, ok = supported[format]
 	if !ok {
 		return "", 0, 0, fmt.Errorf("unsupported decoded image format %q", format)
 	}

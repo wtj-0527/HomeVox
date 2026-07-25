@@ -120,17 +120,23 @@ func TestValidateSourceImageMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NormalizeDocument returned error: %v", err)
 	}
-	if err := ValidateSourceImageMetadata(doc, "plan.png", "image/png", 12); err != nil {
+	if err := ValidateSourceImageMetadata(doc, "plan.png", "image/png", 12, 100, 80); err != nil {
 		t.Fatalf("valid source-image metadata rejected: %v", err)
 	}
-	if err := ValidateSourceImageMetadata(doc, "other.png", "image/png", 12); err == nil {
+	if err := ValidateSourceImageMetadata(doc, "other.png", "image/png", 12, 100, 80); err == nil {
 		t.Fatal("expected filename mismatch error")
 	}
-	if err := ValidateSourceImageMetadata(doc, "plan.png", "image/jpeg", 12); err == nil {
+	if err := ValidateSourceImageMetadata(doc, "plan.png", "image/jpeg", 12, 100, 80); err == nil {
 		t.Fatal("expected content type mismatch error")
 	}
-	if err := ValidateSourceImageMetadata(doc, "plan.png", "image/png", 13); err == nil {
+	if err := ValidateSourceImageMetadata(doc, "plan.png", "image/png", 13, 100, 80); err == nil {
 		t.Fatal("expected size mismatch error")
+	}
+	if err := ValidateSourceImageMetadata(doc, "plan.png", "image/png", 12, 99, 80); err == nil {
+		t.Fatal("expected width mismatch error")
+	}
+	if err := ValidateSourceImageMetadata(doc, "plan.png", "image/png", 12, 100, 79); err == nil {
+		t.Fatal("expected height mismatch error")
 	}
 }
 

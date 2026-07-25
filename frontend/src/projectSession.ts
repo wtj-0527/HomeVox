@@ -26,7 +26,12 @@ export function projectSaveIssue({
   if (!document) return '请先完成户型解析后再创建项目'
   if (geometryValidationError) return '当前户型几何无效，请返回 2D 校正后再保存'
   if (!projectName.trim()) return '请输入项目名称'
-  if (!currentProject && !sourceFile) return '创建项目需要原始户型图'
+  if (!currentProject && !sourceFile) return '创建项目需要有效裁切户型图'
+  if (!currentProject && sourceFile && (
+    sourceFile.name !== document.filename ||
+    sourceFile.type !== document.contentType ||
+    sourceFile.size !== document.size
+  )) return '待保存图片必须与解析后的有效裁切图一致'
   return null
 }
 

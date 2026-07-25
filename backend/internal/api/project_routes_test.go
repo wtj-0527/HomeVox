@@ -32,7 +32,9 @@ const validProjectDocument = `{"filename":"plan.png","contentType":"image/png","
 
 func projectDocumentForSourceImage(t testing.TB) string {
 	t.Helper()
-	return strings.Replace(validProjectDocument, `"size":12`, fmt.Sprintf(`"size":%d`, len(validPNG(t))), 1)
+	document := strings.Replace(validProjectDocument, `"size":12`, fmt.Sprintf(`"size":%d`, len(validPNG(t))), 1)
+	document = strings.Replace(document, `"image_width":100`, `"image_width":2`, 1)
+	return strings.Replace(document, `"image_height":80`, `"image_height":3`, 1)
 }
 
 func newFakeProjectRepo() *fakeProjectRepo {
@@ -348,6 +350,30 @@ func TestProjectCreateRejectsSourceImageMetadataMismatch(t *testing.T) {
 	}
 }
 
+func TestProjectCreateRejectsEffectiveSourceDimensionMismatch(t *testing.T) {
+	router := newProjectRouter(newFakeProjectRepo(), newFakeObjectStore())
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	_ = writer.WriteField("name", "My Plan")
+	document := strings.Replace(projectDocumentForSourceImage(t), `"image_width":2`, `"image_width":200`, 1)
+	_ = writer.WriteField("document", document)
+	part, err := writer.CreateFormFile("source_image", "plan.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write(validPNG(t))
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "source_image_metadata_mismatch") {
+		t.Fatalf("expected dimension mismatch; status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestProjectListRejectsLimitAbove100(t *testing.T) {
 	router := newProjectRouter(newFakeProjectRepo(), newFakeObjectStore())
 	req := httptest.NewRequest(http.MethodGet, "/api/projects?limit=101", nil)
@@ -427,12 +453,16 @@ func TestProjectUpdateReturnsNotFoundForUnknownID(t *testing.T) {
 
 func TestProjectUpdateRejectsSourceImageMetadataMutation(t *testing.T) {
 	repo := newFakeProjectRepo()
-	_, err := repo.Create(context.Background(), "00000000-0000-0000-0000-000000000001", "Plan", "source", "image/png", 12, []byte(validProjectDocument))
+	image := validPNG(t)
+	document := projectDocumentForSourceImage(t)
+	_, err := repo.Create(context.Background(), "00000000-0000-0000-0000-000000000001", "Plan", "source", "image/png", int64(len(image)), []byte(document))
 	if err != nil {
 		t.Fatalf("create fixture: %v", err)
 	}
-	router := newProjectRouter(repo, newFakeObjectStore())
-	payload := `{"name":"Plan","document":` + strings.Replace(validProjectDocument, `"contentType":"image/png"`, `"contentType":"image/jpeg"`, 1) + `,"expectedRevision":1}`
+	store := newFakeObjectStore()
+	store.objects["source"] = fakeObject{data: image, contentType: "image/png"}
+	router := newProjectRouter(repo, store)
+	payload := `{"name":"Plan","document":` + strings.Replace(document, `"contentType":"image/png"`, `"contentType":"image/jpeg"`, 1) + `,"expectedRevision":1}`
 	req := httptest.NewRequest(http.MethodPut, "/api/projects/00000000-0000-0000-0000-000000000001", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -440,6 +470,49 @@ func TestProjectUpdateRejectsSourceImageMetadataMutation(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "source_image_metadata_mismatch") {
 		t.Fatalf("expected metadata mismatch; status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestProjectUpdateRejectsEffectiveSourceDimensionMutation(t *testing.T) {
+	repo := newFakeProjectRepo()
+	image := validPNG(t)
+	document := projectDocumentForSourceImage(t)
+	_, err := repo.Create(context.Background(), "00000000-0000-0000-0000-000000000001", "Plan", "source", "image/png", int64(len(image)), []byte(document))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeObjectStore()
+	store.objects["source"] = fakeObject{data: image, contentType: "image/png"}
+	router := newProjectRouter(repo, store)
+	mutatedDocument := strings.Replace(document, `"image_width":2`, `"image_width":101`, 1)
+	payload := `{"name":"Plan","document":` + mutatedDocument + `,"expectedRevision":1}`
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/00000000-0000-0000-0000-000000000001", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "source_image_metadata_mismatch") {
+		t.Fatalf("expected dimension mismatch; status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestProjectUpdateChecksImmutableSourceObjectDimensions(t *testing.T) {
+	repo := newFakeProjectRepo()
+	image := validPNG(t)
+	document := strings.Replace(validProjectDocument, `"size":12`, fmt.Sprintf(`"size":%d`, len(image)), 1)
+	_, err := repo.Create(context.Background(), "00000000-0000-0000-0000-000000000001", "Plan", "source", "image/png", int64(len(image)), []byte(document))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeObjectStore()
+	store.objects["source"] = fakeObject{data: image, contentType: "image/png"}
+	router := newProjectRouter(repo, store)
+	payload := `{"name":"Plan","document":` + document + `,"expectedRevision":1}`
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/00000000-0000-0000-0000-000000000001", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "source_image_metadata_mismatch") {
+		t.Fatalf("expected immutable object dimension mismatch; status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 

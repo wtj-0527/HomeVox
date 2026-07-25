@@ -177,12 +177,12 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 			return
 		}
 
-		contentType, _, _, err := imagevalidate.Decode(data)
+		contentType, width, height, err := imagevalidate.Decode(data)
 		if err != nil || !project.IsSupportedContentType(contentType) {
 			writeProjectError(c, http.StatusBadRequest, "unsupported_source_image", "source_image must be a valid PNG, JPEG, GIF, or WebP image")
 			return
 		}
-		if err := project.ValidateSourceImageMetadata(doc, header.Filename, contentType, int64(len(data))); err != nil {
+		if err := project.ValidateSourceImageMetadata(doc, header.Filename, contentType, int64(len(data)), width, height); err != nil {
 			writeProjectError(c, http.StatusBadRequest, "source_image_metadata_mismatch", err.Error())
 			return
 		}
@@ -270,12 +270,26 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 			writeProjectError(c, http.StatusServiceUnavailable, "database_unavailable", "failed to get project")
 			return
 		}
+		if current.Revision != payload.ExpectedRevision {
+			writeProjectError(c, http.StatusConflict, "revision_conflict", (&db.RevisionConflictError{ID: id, Expected: payload.ExpectedRevision, Current: current.Revision}).Error())
+			return
+		}
 		currentDocument, err := project.NormalizeDocument(current.Document)
 		if err != nil {
 			writeProjectError(c, http.StatusInternalServerError, "corrupt_project_document", "failed to decode project document")
 			return
 		}
-		if err := project.ValidateSourceImageMetadata(doc, currentDocument.Filename, current.SourceImageContentType, current.SourceImageSize); err != nil {
+		sourceObject, err := deps.store.GetObject(c.Request.Context(), current.SourceImageKey)
+		if err != nil {
+			writeProjectError(c, http.StatusServiceUnavailable, "storage_unavailable", "failed to verify source image")
+			return
+		}
+		contentType, width, height, err := imagevalidate.Decode(sourceObject.Data)
+		if err != nil || contentType != current.SourceImageContentType || int64(len(sourceObject.Data)) != current.SourceImageSize {
+			writeProjectError(c, http.StatusInternalServerError, "corrupt_source_image", "stored source image is inconsistent")
+			return
+		}
+		if err := project.ValidateSourceImageMetadata(doc, currentDocument.Filename, contentType, int64(len(sourceObject.Data)), width, height); err != nil {
 			writeProjectError(c, http.StatusBadRequest, "source_image_metadata_mismatch", err.Error())
 			return
 		}

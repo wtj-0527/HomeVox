@@ -4,6 +4,10 @@
 
 ### Added
 
+- Issue #19 milestone C：导入链路改为自动候选判断；single 候选自动裁切后解析，composite/uncertain 和分析失败进入可继续的手动裁切。有效裁切图是解析、2D 底图和项目 source-image 的唯一来源，原图不持久化。生产 Playwright/fake-vision 合同验证受控提示词返回的真实矩形、裁切后的尺寸/内容及 parse 失败后的重试保留状态。
+- Issue #19 parity 的权威原型更新为 File `7622c4ac-2f6b-802b-8008-5f15321d47e8` / Page `7622c4ac-2f6b-802b-8008-5f15321d47e9`，版本 **HomeVox · 主流程 · 自动判断与裁切 · 草稿 04 · 视觉验收**，共 8 个 Board。
+- 图片在完整解码前限制单边 `16384` 像素和总计 `100,000,000` 像素，阻断压缩图片炸弹；项目创建与更新均以真实 effective source 的 MIME、字节数和像素宽高绑定 canonical document，更新时会回读不可变对象验证。
+
 - Add repository-owned LazyCat production LPK configuration: local development remains a direct `0.0.0.0:18088` process reached through the development machine's port-prefix URL, while the production LPK runs HomeVox on container port `18088`, persists PostgreSQL and MinIO under `/lzcapp/var`, and keeps every `.lpk` artifact ignored.
 - 修复真实高干扰营销户型图验收发现的比例尺合同矛盾：`scale.pixel_to_unit` 现在是**必填的有限 number 或显式 null**；比例未知时只能持久化为 `{ "unit": "px", "pixel_to_unit": null }`，绝不猜测物理尺寸。严格 JSON、项目保存/重载、前端 guard 与 fake vision 合同同步收紧，缺失字段、字符串 unknown、null confidence/图像尺寸、重复键和尾随 JSON 仍失败关闭。
 - AI 识别失败现在区分服务不可用、模型输出格式不完整和图片中无可靠户型拓扑；复杂营销复合图会明确提示裁切到单个户型或上传更清晰的平面图，不再误报为网络问题。
@@ -12,8 +16,8 @@
 - 恢复 Tailwind spacing utilities 的正常层叠，并将 01、03、04、05 的 1440 × 960 live Penpot 卡片、网格、画布和边距写入 production DOM geometry gate；2D SVG 现在自适应居中，消除右侧黑色裁切和联动页下方无意义空白。
 - 3D 完成页现在只在可见空间预览真正准备好后显示完成态；生产测试同时约束客户可见文案、选择、真实像素、开洞、异步更新和过期导出拒绝。
 
-- 完成 Issue #19 的 Penpot 产品化闭环：直接通过已配置的 Streamable HTTP Penpot MCP 回读当前 live file/page 与 6 个 1440 × 960 Board，并将 232px 侧栏、72px 顶栏、Inter 字体层级、颜色、圆角、工作区与 unknown 语义固化为前端产品设计合同和 production layout gate。
-- 导入页现在在真实浏览器上传后保持在用户可理解的「导入真实户型图」两栏确认界面；主 CTA 才会调用 `/api/floorplans/parse` 并进入 AI 识别状态，避免选择文件即跳到工程流程页。
+- 完成 Issue #19 的 Penpot 产品化闭环：直接通过已配置的 Streamable HTTP Penpot MCP 回读当前 live file/page 与 8 个 1440 × 960 Board，并将 232px 侧栏、72px 顶栏、Inter 字体层级、颜色、圆角、工作区与 unknown 语义固化为前端产品设计合同和 production layout gate。
+- 导入页选择真实图片后自动调用 `/api/floorplans/candidates`：清晰单户型自动裁切并进入 `/api/floorplans/parse`，复合图与不确定结果进入原像素裁切确认；任何分析失败都只降级为可操作的全图手动裁切，不伪造候选。
 - 校正、生成 3D、联动和保存页面改为对应 Penpot 的产品工作区；保留真实 canonical、R3F/Rust-WASM、双向选择、Undo/Redo、保存/reload 和 stale-export fail-closed 链路，同时不在普通界面暴露原始 ID、WASM/端口/时序或 JSON 诊断信息。
 - 为 Vite 8 开发模式补齐 React Refresh 浏览器 preamble；独立 5173 HMR 服务器可在不替换 18088 production preview 的情况下真实热更新 CSS 产品变更。
 

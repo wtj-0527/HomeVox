@@ -31,6 +31,8 @@ HomeVox 采用混合技术路线：**Go 管业务 API，Rust 管体素/几何核
 
 - ✅ Go 单进程固定监听 `0.0.0.0:18088`，同源提供 `/api/*` 与 `frontend/dist`，并支持 SPA fallback
 - ✅ 户型图上传与 OpenAI-compatible AI 解析接口已落地；正向解析运行需要配置 `AI_API_KEY`、`AI_BASE_URL`、`AI_MODEL`
+- ✅ 自动判断与裁切：新文件会先请求候选区域；单一候选自动生成裁切后的 effective source 并解析，复合/不确定候选进入可调整裁切。分析的传输、schema 或内容失败会安全回到全图手动裁切；裁切后解析失败会保留原图、候选和裁切框以便重试。
+- ✅ 持久化边界：只保存已确认并实际解析的 effective source；原图仅保留在当前浏览器会话中用于重新裁切，不会上传为项目 source image。
 - ✅ 2D 户型校正编辑器支持墙体选择、共享端点拖拽、Undo/Redo 与底图显隐
 - ✅ Issue #13：生产前端构建会从 `wasm/` 源码执行 `wasm-pack build --target web`，由受控 17³（4,913 voxel）标量场调用 Rust Marching Cubes，并在 R3F 中显示有限 position/normal 的真实 WASM 网格。
 - ✅ Issue #17：浏览器上传链路的 AI 结果现在经受控 OpenAI-compatible Vision HTTP 合同和严格 canonical schema validation；未知字段、重复键、缺失/部分字段、null、错误类型和尾随 JSON 都会失败关闭，且不会补齐 AI 输出中的 ID、kind、source 或集合。

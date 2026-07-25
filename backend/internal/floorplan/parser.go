@@ -14,6 +14,10 @@ import (
 
 const visionSystemPrompt = "You extract residential floor-plan structure. Return only one strict JSON object matching this schema: {rooms:[{name,type,approximate_bounds:{x1,y1,x2,y2},area_ratio}], walls:[{id,x1,y1,x2,y2}], doors:[{id,kind,wallId,position,width,source,confirmed}], windows:[{id,kind,wallId,position,width,source,confirmed}], scale:{unit,pixel_to_unit}, metadata:{source,confidence,image_width,image_height}}. Every listed field is required, no additional fields are accepted, and arrays may be empty. All coordinates and opening widths are image pixels. scale.pixel_to_unit must be either a finite number or null, never a string: when no physical scale is explicitly visible, return exactly scale:{unit:\"px\",pixel_to_unit:null}; do not infer a conversion, orientation, height, thickness, or load-bearing status. metadata.confidence must be a finite number and image_width/image_height must be integers."
 const visionUserPrompt = "Parse this floor-plan image into the required JSON structure. Do not include markdown fences. Omit an opening if its wall-local position or width cannot be established."
+const candidateSystemPrompt = "Find reliable single-floor-plan crops in this source image. Return only one strict JSON object matching this schema: {mode:string,candidates:[{x:number,y:number,width:number,height:number}]}. mode must be exactly one of \"single\", \"composite\", or \"uncertain\". Candidates must be absolute integer-pixel rectangles on the source image. Return mode \"uncertain\" with candidates:[] when no reliable crop can be established. Return \"single\" with exactly one candidate; return \"composite\" with two or more non-overlapping candidates. Do not add fields or markdown."
+const candidateUserPrompt = "Detect reliable crop rectangles that each contain one standalone floor plan. Do not guess a crop when the image is ambiguous."
+
+const minCandidateAreaPixels = 64
 
 type ParseErrorCode string
 
@@ -94,6 +98,124 @@ func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, e
 		result.Windows[i].Confirmed = false
 	}
 	return result, nil
+}
+
+// AnalyzeCandidates finds reliable source-image crop candidates without
+// creating a fallback rectangle. Returned coordinates stay in original pixels.
+func (p *Parser) AnalyzeCandidates(ctx context.Context, imageDataURL string, imageWidth, imageHeight int) (CandidateDetection, error) {
+	if p.client == nil || p.client.APIKey == "" {
+		return CandidateDetection{}, fmt.Errorf("AI_API_KEY is required to analyze floor-plan candidates")
+	}
+	if p.client.BaseURL == "" || p.client.Model == "" {
+		return CandidateDetection{}, fmt.Errorf("AI_BASE_URL and AI_MODEL are required to analyze floor-plan candidates")
+	}
+	if imageWidth <= 0 || imageHeight <= 0 {
+		return CandidateDetection{}, &ParseError{Code: ParseErrorContent, Err: fmt.Errorf("source image dimensions must be positive")}
+	}
+	response, err := p.client.Chat(ctx, []ai.Message{
+		{Role: "system", Content: candidateSystemPrompt},
+		{Role: "user", Content: []map[string]any{
+			{"type": "text", "text": candidateUserPrompt},
+			{"type": "image_url", "image_url": map[string]string{"url": imageDataURL}},
+		}},
+	})
+	if err != nil {
+		return CandidateDetection{}, &ParseError{Code: ParseErrorTransport, Err: err}
+	}
+	content, err := firstChoiceContent(response)
+	if err != nil {
+		return CandidateDetection{}, &ParseError{Code: ParseErrorSchema, Err: err}
+	}
+	result, err := decodeCandidateDetection(content)
+	if err != nil {
+		return CandidateDetection{}, &ParseError{Code: ParseErrorSchema, Err: err}
+	}
+	if err := validateCandidateDetection(result, imageWidth, imageHeight); err != nil {
+		return CandidateDetection{}, &ParseError{Code: ParseErrorContent, Err: err}
+	}
+	return result, nil
+}
+
+func decodeCandidateDetection(content string) (CandidateDetection, error) {
+	decoder := json.NewDecoder(strings.NewReader(content))
+	if err := validateJSONValue(decoder, true); err != nil {
+		return CandidateDetection{}, fmt.Errorf("decode ai candidate result: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return CandidateDetection{}, fmt.Errorf("decode ai candidate result: trailing JSON value")
+		}
+		return CandidateDetection{}, fmt.Errorf("decode ai candidate result: trailing content: %w", err)
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(content), &root); err != nil {
+		return CandidateDetection{}, fmt.Errorf("decode ai candidate result: %w", err)
+	}
+	if err := validateObject(root, map[string]rawValidator{
+		"mode": validateString, "candidates": validateCandidateRects,
+	}); err != nil {
+		return CandidateDetection{}, fmt.Errorf("decode ai candidate result: %w", err)
+	}
+	var result CandidateDetection
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		return CandidateDetection{}, fmt.Errorf("decode ai candidate result: %w", err)
+	}
+	return result, nil
+}
+
+func validateCandidateRects(raw json.RawMessage) error {
+	return validateArray(raw, func(item json.RawMessage) error {
+		object, err := decodeObject(item)
+		if err != nil {
+			return err
+		}
+		return validateObject(object, map[string]rawValidator{
+			"x": validateNumber, "y": validateNumber, "width": validateNumber, "height": validateNumber,
+		})
+	})
+}
+
+func validateCandidateDetection(result CandidateDetection, imageWidth, imageHeight int) error {
+	switch result.Mode {
+	case CandidateModeUncertain:
+		if len(result.Candidates) != 0 {
+			return fmt.Errorf("uncertain candidate detection must not fabricate candidates")
+		}
+		return nil
+	case CandidateModeSingle:
+		if len(result.Candidates) != 1 {
+			return fmt.Errorf("single candidate detection must contain exactly one candidate")
+		}
+	case CandidateModeComposite:
+		if len(result.Candidates) < 2 {
+			return fmt.Errorf("composite candidate detection must contain at least two candidates")
+		}
+	default:
+		return fmt.Errorf("candidate detection has invalid mode")
+	}
+	for i, candidate := range result.Candidates {
+		if !finite(candidate.X) || !finite(candidate.Y) || !finite(candidate.Width) || !finite(candidate.Height) ||
+			math.Trunc(candidate.X) != candidate.X || math.Trunc(candidate.Y) != candidate.Y ||
+			math.Trunc(candidate.Width) != candidate.Width || math.Trunc(candidate.Height) != candidate.Height ||
+			candidate.X < 0 || candidate.Y < 0 || candidate.Width <= 0 || candidate.Height <= 0 ||
+			candidate.Width*candidate.Height < minCandidateAreaPixels ||
+			candidate.X+candidate.Width > float64(imageWidth) || candidate.Y+candidate.Height > float64(imageHeight) {
+			return fmt.Errorf("candidate[%d] has invalid source-pixel rectangle", i)
+		}
+		for j := 0; j < i; j++ {
+			if overlaps(candidate, result.Candidates[j]) {
+				return fmt.Errorf("candidate[%d] overlaps candidate[%d]", i, j)
+			}
+		}
+	}
+	return nil
+}
+
+func overlaps(a, b CandidateRect) bool {
+	left, top := math.Max(a.X, b.X), math.Max(a.Y, b.Y)
+	right, bottom := math.Min(a.X+a.Width, b.X+b.Width), math.Min(a.Y+a.Height, b.Y+b.Height)
+	return right > left && bottom > top
 }
 
 func validateParsedResult(result ParseResult) error {

@@ -46,7 +46,9 @@ import type { FloorplanEditorPanelProps } from './FloorplanEditorPanel'
 import type { InspectorPanelProps } from './InspectorPanel'
 import { ProjectSaveView } from './ProjectSaveView'
 import { LinkedWorkspace, ThreeDConfirmation, TwoDWorkspace } from './ProductViews'
-import { SourceImportView, AIParseView, type ParseViewStatus } from './SourceImportView'
+import { SourceImportView, AIParseView, CropConfirmView, type ParseViewStatus } from './SourceImportView'
+import { clampCrop, createCroppedFile, fullImageCrop, isCandidateDetection, selectCandidate, type CandidateDetection, type CropRect } from './cropFlow'
+import { LatestOperation, type OperationToken } from './latestOperation'
 import type { ThreeDPreviewPanelProps } from './ThreeDPreviewPanel'
 import type { ThreeDRenderer } from './ThreeDPreview'
 import { useProductFlowController } from './useProductFlowController'
@@ -60,6 +62,7 @@ import { e2EProjectID, e2EWasmLoader, isE2EInstrumentationEnabled, publishE2ESta
 import './App.css'
 
 const API_PARSE_URL = '/api/floorplans/parse'
+const API_CANDIDATES_URL = '/api/floorplans/candidates'
 const EMPTY_WALLS: WallSegment[] = []
 
 
@@ -195,8 +198,14 @@ function hasWebGLSupport(): boolean {
 export default function App() {
   const productFlow = useProductFlowController()
   const { activeStep, completed: completedSteps, transition: transitionProductFlow } = productFlow
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [previewURL, setPreviewURL] = useState<string>('')
+  // originalSource is never persisted; effectiveSource is the exact image whose
+  // pixels define canonical parse coordinates and the durable project document.
+  const [originalSource, setOriginalSource] = useState<File | null>(null)
+  const [effectiveSource, setEffectiveSource] = useState<File | null>(null)
+  const [candidateDetection, setCandidateDetection] = useState<CandidateDetection | null>(null)
+  const [crop, setCrop] = useState<CropRect | null>(null)
+  const [originalPreviewURL, setOriginalPreviewURL] = useState<string>('')
+  const [effectivePreviewURL, setEffectivePreviewURL] = useState<string>('')
   const [parseResponse, setParseResponse] = useState<ParseResponse | null>(null)
   const [status, setStatus] = useState<ParseState>('idle')
   const [error, setError] = useState<string>('')
@@ -212,7 +221,8 @@ export default function App() {
   const [openingError, setOpeningError] = useState('')
   const [selectedWallID, setSelectedWallID] = useState<string | null>(null)
   const [showSourceImage, setShowSourceImage] = useState(true)
-  const [imageDimFallback, setImageDimFallback] = useState<{ width: number; height: number } | null>(null)
+  const [originalImageSize, setOriginalImageSize] = useState<{ width: number; height: number } | null>(null)
+  const [effectiveImageSize, setEffectiveImageSize] = useState<{ width: number; height: number } | null>(null)
   const [editorSize, setEditorSize] = useState({ width: 0, height: 0 })
   const [wasmGeometry, setWasmGeometry] = useState<BufferGeometry | null>(null)
   const [wasmState, setWasmState] = useState<'idle' | 'loading' | 'active' | 'fallback'>('idle')
@@ -224,7 +234,12 @@ export default function App() {
   const editorRef = useRef<SVGSVGElement | null>(null)
   const svgUrlRef = useRef('')
   const parseRequestRef = useRef<{ id: number; controller: AbortController } | null>(null)
+  const analysisRequestRef = useRef<{ id: number; controller: AbortController } | null>(null)
+  const analyzedSourceRef = useRef<File | null>(null)
+  const originalSourceRef = useRef<File | null>(null)
+  originalSourceRef.current = originalSource
   const requestSequenceRef = useRef(0)
+  const cropOperationRef = useRef(new LatestOperation())
   const initialProjectLoadRef = useRef<(id: string) => Promise<void>>(() => Promise.resolve())
   const wasmGenerationRef = useRef(0)
   const [, setWasmGeneration] = useState(0)
@@ -289,11 +304,12 @@ export default function App() {
   }, [productFlowContext, transitionProductFlow])
   const applyLoadedProject = useCallback((loaded: ProjectDetail, sourceImage: Blob) => {
     const nextPreviewURL = URL.createObjectURL(sourceImage)
-    setPreviewURL((currentURL) => {
+    setEffectivePreviewURL((currentURL) => {
       if (currentURL) URL.revokeObjectURL(currentURL)
       return nextPreviewURL
     })
-    setSelectedFile(null)
+    setOriginalSource(null)
+    setEffectiveSource(new File([sourceImage], loaded.document.filename, { type: loaded.document.contentType }))
     setParseResponse(loaded.document)
     applyProductTransition(
       { type: 'reload', completed: initialCompletedSteps({ hasCanonicalDocument: true, isSavedProject: true }) },
@@ -316,7 +332,7 @@ export default function App() {
   const projectSession = useProjectSession({
     document: durableDocument,
     geometryValidationError,
-    sourceFile: selectedFile,
+    sourceFile: effectiveSource,
     onProjectSaved: () => applyProductTransition({ type: 'complete', step: 6 }, productFlowContext),
     onProjectLoaded: applyLoadedProject,
   })
@@ -338,7 +354,7 @@ export default function App() {
   )
   const wallVoxelModel = useMemo(() => buildWallVoxelModel(walls, doors, windows), [walls, doors, windows])
 
-  const viewport = chooseViewport(result, imageDimFallback)
+  const viewport = chooseViewport(result, effectiveImageSize)
   const editorScale = canvasScale(editorSize, viewport)
   const hitRadius = canvasUnitsForCssPixels(16, editorScale)
   const handleRadius = canvasUnitsForCssPixels(5, editorScale)
@@ -452,6 +468,11 @@ export default function App() {
 
   useEffect(() => () => {
     parseRequestRef.current?.controller.abort()
+    analysisRequestRef.current?.controller.abort()
+    // React StrictMode replays effect cleanup while preserving this ref. Only
+    // invalidate in-flight work so the replayed mounted instance can begin new
+    // crop operations; the aborted controllers still stop network requests.
+    cropOperationRef.current.invalidate()
   }, [])
 
   useEffect(() => () => {
@@ -534,28 +555,44 @@ export default function App() {
   }, [])
 
   useEffect(() => () => {
-    if (previewURL) URL.revokeObjectURL(previewURL)
-  }, [previewURL])
+    if (originalPreviewURL) URL.revokeObjectURL(originalPreviewURL)
+  }, [originalPreviewURL])
 
   useEffect(() => {
-    if (!previewURL || svgUrlRef.current === previewURL) {
+    if (!effectivePreviewURL || svgUrlRef.current === effectivePreviewURL) {
       return
     }
 
     const image = new Image()
-    image.src = previewURL
-    svgUrlRef.current = previewURL
+    image.src = effectivePreviewURL
+    svgUrlRef.current = effectivePreviewURL
     image.onload = () => {
-      if (previewURL !== svgUrlRef.current) {
+      if (effectivePreviewURL !== svgUrlRef.current) {
         return
       }
-      setImageDimFallback({ width: image.naturalWidth, height: image.naturalHeight })
+      setEffectiveImageSize({ width: image.naturalWidth, height: image.naturalHeight })
     }
 
     return () => {
       image.onload = null
     }
-  }, [previewURL])
+  }, [effectivePreviewURL])
+
+  useEffect(() => () => {
+    if (effectivePreviewURL) URL.revokeObjectURL(effectivePreviewURL)
+  }, [effectivePreviewURL])
+
+  // Candidate analysis is automatic, but only after original dimensions are
+  // available. Identity + AbortController guarantee a replacement file cannot
+  // receive an older request's result.
+  useEffect(() => {
+    if (!originalSource || !originalImageSize || analyzedSourceRef.current === originalSource) return
+    analyzedSourceRef.current = originalSource
+    void handleAnalyze(originalSource, originalImageSize)
+  // handleAnalyze intentionally reads refs/state at invocation time; this
+  // effect is keyed only to a newly ready original image.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [originalSource, originalImageSize])
 
   useEffect(() => {
     if (!result) {
@@ -613,11 +650,11 @@ export default function App() {
     }
   }, [wallEditor])
 
-  async function handleParse() {
-    if (!selectedFile) {
+  async function handleParse(fileToParse: File | null, parsedPreviewURL: string, operation?: OperationToken): Promise<boolean> {
+    if (!fileToParse) {
       setError('请先选择 PNG / JPG / WebP 户型图')
       setStatus('error')
-      return
+      return false
     }
 
     parseRequestRef.current?.controller.abort()
@@ -630,7 +667,7 @@ export default function App() {
     setStatus('uploading')
     setError('')
     const formData = new FormData()
-    formData.append('floorplan', selectedFile)
+    formData.append('floorplan', fileToParse)
 
     try {
       let response: Response
@@ -656,9 +693,14 @@ export default function App() {
       if (!isParseResponse(body)) {
         throw new Error('识别结果暂时无法使用，请重新选择图纸后再试。')
       }
-      if (parseRequestRef.current?.id !== requestId) return
+      if (parseRequestRef.current?.id !== requestId || (operation && !operation.isCurrent())) return false
 
       setParseResponse(body)
+      setEffectiveSource(fileToParse)
+      setEffectivePreviewURL((currentURL) => {
+        if (currentURL && currentURL !== parsedPreviewURL) URL.revokeObjectURL(currentURL)
+        return parsedPreviewURL
+      })
       applyProductTransition({ type: 'complete', step: 2, next: 3 }, { hasDocument: true, hasCanonicalGeometry: false, hasThreeDGeometry: false })
       clearCurrentProject()
       setProjectName(projectName || body.filename)
@@ -672,10 +714,12 @@ export default function App() {
       setDragPreviewOpenings(null)
       setOpeningError('')
       setExportError('')
+      return true
     } catch (err) {
-      if (controller.signal.aborted || parseRequestRef.current?.id !== requestId) return
+      if (controller.signal.aborted || parseRequestRef.current?.id !== requestId || (operation && !operation.isCurrent())) return false
       setError(err instanceof Error ? err.message : parseNetworkFailureMessage())
       setStatus('error')
+      return false
     } finally {
       if (parseRequestRef.current?.id === requestId) {
         parseRequestRef.current = null
@@ -683,11 +727,96 @@ export default function App() {
     }
   }
 
-  function handleFileChange(file: File | null) {
+  async function handleAnalyze(source = originalSource, dimensions = originalImageSize) {
+    if (!source || !dimensions) return
+    const operation = cropOperationRef.current.begin()
+    analysisRequestRef.current?.controller.abort()
+    const requestId = requestSequenceRef.current + 1; requestSequenceRef.current = requestId
+    const controller = new AbortController(); analysisRequestRef.current = { id: requestId, controller }
+    setStatus('uploading'); setError('')
+    try {
+      const form = new FormData(); form.append('floorplan', source)
+      const response = await fetch(API_CANDIDATES_URL, { method: 'POST', body: form, signal: controller.signal })
+      const text = await response.text(); let body: unknown = null; try { body = text ? JSON.parse(text) : null } catch { /* fallback */ }
+      if (!response.ok || !isCandidateDetection(body, dimensions)) throw new Error(response.ok ? '自动判断结果暂时无法使用，请手动裁切。' : parseFailureMessage(response.status, body))
+      if (analysisRequestRef.current?.id !== requestId || controller.signal.aborted || !operation.isCurrent() || originalSourceRef.current !== source) return
+      setCandidateDetection(body)
+      const recommended = body.candidates[0] ? clampCrop(body.candidates[0], dimensions, 1) : fullImageCrop(dimensions)
+      setCrop(recommended)
+      if (body.mode === 'single') {
+        const cropped = await createCroppedFile(source, recommended)
+        if (analysisRequestRef.current?.id !== requestId || controller.signal.aborted || !operation.isCurrent() || originalSourceRef.current !== source) return
+        const croppedURL = URL.createObjectURL(cropped)
+        if (!operation.isCurrent() || originalSourceRef.current !== source) {
+          URL.revokeObjectURL(croppedURL)
+          return
+        }
+        if (!await handleParse(cropped, croppedURL, operation)) URL.revokeObjectURL(croppedURL)
+        return
+      }
+      setStatus('idle'); applyProductTransition({ type: 'complete', step: 1, next: 2 }, { hasDocument: false, hasCanonicalGeometry: false, hasThreeDGeometry: false })
+    } catch (err) {
+      if (controller.signal.aborted || analysisRequestRef.current?.id !== requestId) return
+      setCandidateDetection({ mode: 'uncertain', candidates: [] }); setCrop(fullImageCrop(dimensions)); setStatus('idle'); setError(err instanceof Error ? `${err.message} 已切换为手动全图裁切。` : '自动判断失败，已切换为手动全图裁切。')
+      applyProductTransition({ type: 'complete', step: 1, next: 2 }, { hasDocument: false, hasCanonicalGeometry: false, hasThreeDGeometry: false })
+    } finally { if (analysisRequestRef.current?.id === requestId) analysisRequestRef.current = null }
+  }
+
+  async function confirmCrop() {
+    if (!originalSource || !crop) return
+    const source = originalSource
+    const cropSnapshot = crop
+    const operation = cropOperationRef.current.begin()
     parseRequestRef.current?.controller.abort()
+    setStatus('uploading')
+    // A changed crop defines a new coordinate system. Invalidate the previous
+    // canonical/effective pair before starting recognition so a failed retry
+    // can never leave new crop controls attached to stale 2D/3D geometry.
+    if (parseResponse || effectiveSource) {
+      setParseResponse(null)
+      setEffectiveSource(null)
+      setEffectiveImageSize(null)
+      setEffectivePreviewURL((currentURL) => {
+        if (currentURL) URL.revokeObjectURL(currentURL)
+        return ''
+      })
+      setWallEditor(null)
+      setDragPreviewWalls(null)
+      setDragPreviewOpenings(null)
+      setSelectedWallID(null)
+      setSelectedOpeningID(null)
+      clearCurrentProject()
+      const emptyContext = { hasDocument: false, hasCanonicalGeometry: false, hasThreeDGeometry: false }
+      applyProductTransition({ type: 'reload', completed: [1] }, emptyContext)
+      applyProductTransition({ type: 'complete', step: 1, next: 2 }, emptyContext)
+    }
+    try {
+      const cropped = await createCroppedFile(source, cropSnapshot)
+      if (!operation.isCurrent() || originalSourceRef.current !== source) return
+      const croppedURL = URL.createObjectURL(cropped)
+      if (!operation.isCurrent() || originalSourceRef.current !== source) {
+        URL.revokeObjectURL(croppedURL)
+        return
+      }
+      if (!await handleParse(cropped, croppedURL, operation)) URL.revokeObjectURL(croppedURL)
+    } catch (err) {
+      if (!operation.isCurrent() || originalSourceRef.current !== source) return
+      setStatus('error'); setError(err instanceof Error ? err.message : '无法生成裁切图。')
+    }
+  }
+
+  function handleFileChange(file: File | null) {
+    cropOperationRef.current.invalidate()
+    parseRequestRef.current?.controller.abort()
+    analysisRequestRef.current?.controller.abort()
+    analysisRequestRef.current = null
     parseRequestRef.current = null
     requestSequenceRef.current += 1
-    setSelectedFile(file)
+    setOriginalSource(file)
+    setEffectiveSource(null)
+    analyzedSourceRef.current = null
+    setCandidateDetection(null)
+    setCrop(null)
     setParseResponse(null)
     setWallEditor(null)
     setDragPreviewWalls(null)
@@ -702,14 +831,29 @@ export default function App() {
     setError('')
     setExportError('')
     setStatus('idle')
-    setImageDimFallback(null)
+    setOriginalImageSize(null)
+    setEffectiveImageSize(null)
     clearCurrentProject()
     applyProductTransition({ type: 'reload', completed: file ? [1] : [] }, { hasDocument: false, hasCanonicalGeometry: false, hasThreeDGeometry: false })
 
-    setPreviewURL((currentURL) => {
+    setOriginalPreviewURL((currentURL) => {
       if (currentURL) URL.revokeObjectURL(currentURL)
       return file ? URL.createObjectURL(file) : ''
     })
+    setEffectivePreviewURL((currentURL) => {
+      if (currentURL) URL.revokeObjectURL(currentURL)
+      return ''
+    })
+    if (file) {
+      const url = URL.createObjectURL(file)
+      const image = new Image()
+      image.onload = () => {
+        URL.revokeObjectURL(url)
+        if (originalSourceRef.current === file) setOriginalImageSize({ width: image.naturalWidth, height: image.naturalHeight })
+      }
+      image.onerror = () => URL.revokeObjectURL(url)
+      image.src = url
+    }
   }
 
   function handleUndo() {
@@ -971,7 +1115,7 @@ export default function App() {
     walls,
     openings,
     showSourceImage,
-    previewURL,
+    previewURL: effectivePreviewURL,
     geometryValidationError,
     selectedWallID,
     selectedWallLabel: selectedWall?.id ?? null,
@@ -1052,8 +1196,8 @@ export default function App() {
 
   return (
     <ProductShell activeStep={activeStep} completedSteps={completedSteps} flow={flow} hasDocument={Boolean(durableDocument)} onOpenStep={(step) => applyProductTransition({ type: 'open', step })} primaryAction={primaryAction}>
-        {activeStep === 1 && <SourceImportView selectedFile={selectedFile} previewURL={previewURL} onFileChange={handleFileChange} status={status} error={error} onParse={handleParse} />}
-        {activeStep === 2 && <AIParseView selectedFile={selectedFile} previewURL={previewURL} onFileChange={handleFileChange} status={status} error={error} onParse={handleParse} />}
+        {activeStep === 1 && <SourceImportView selectedFile={originalSource} previewURL={originalPreviewURL} onFileChange={handleFileChange} status={status} error={error} />}
+        {activeStep === 2 && (crop ? <CropConfirmView selectedFile={originalSource} previewURL={originalPreviewURL} onFileChange={handleFileChange} imageSize={originalImageSize} detection={candidateDetection} crop={crop} status={status} error={error} onCropChange={(next) => originalImageSize && setCrop(clampCrop(next, originalImageSize))} onSelectCandidate={(index) => { if (originalImageSize) { const next = selectCandidate(candidateDetection?.candidates ?? [], index, originalImageSize); if (next) setCrop(next) } }} onRestoreRecommended={() => { if (originalImageSize) { const next = selectCandidate(candidateDetection?.candidates ?? [], 0, originalImageSize); setCrop(next ?? fullImageCrop(originalImageSize)) } }} onResetFullImage={() => originalImageSize && setCrop(fullImageCrop(originalImageSize))} onConfirm={() => { void confirmCrop() }} /> : <AIParseView selectedFile={originalSource} previewURL={originalPreviewURL} onFileChange={handleFileChange} status={status} error={error} />)}
         {activeStep === 3 && <TwoDWorkspace editor={editorProps} inspector={inspectorProps} canAdvance={canAdvance} onAdvance={goNext} />}
         {activeStep === 4 && <ThreeDConfirmation preview={threeDPreviewProps} previewAvailable={canRenderThreeDPreview} canOpenLinkedWorkspace={canOpenLinkedWorkspace} wasmState={wasmState} onBack={() => applyProductTransition({ type: 'open', step: 3 })} onComplete={() => completeAndAdvance(4, 5)} />}
         {activeStep === 5 && <LinkedWorkspace editor={editorProps} preview={threeDPreviewProps} inspector={inspectorProps} previewAvailable={canRenderThreeDPreview} canAdvance={canAdvance} onAdvance={goNext} onBack={() => applyProductTransition({ type: 'open', step: 3 })} />}

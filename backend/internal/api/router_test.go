@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -166,6 +168,33 @@ func TestParseFloorplanReportsMissingAIConfig(t *testing.T) {
 	}
 }
 
+func TestParseFloorplanRejectsCanonicalDimensionsThatDoNotMatchEffectiveImage(t *testing.T) {
+	content := `{"rooms":[],"walls":[{"id":"wall-1","x1":0,"y1":0,"x2":1,"y2":0}],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"vision","confidence":0.8,"image_width":200,"image_height":300}}`
+	vision := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"content":%q}}]}`, content)
+	}))
+	defer vision.Close()
+	router := NewRouter(config.Config{AIBaseURL: vision.URL, AIAPIKey: "controlled-test-key", AIModel: "test-model"})
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("floorplan", "effective-crop.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write(validPNG(t)) // 2 × 3 pixels
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/floorplans/parse", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "ai_content_unreliable") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestParseFloorplanClassifiesInvalidAIOutputWithoutLeakingDiagnostics(t *testing.T) {
 	tests := map[string]struct {
 		content  string
@@ -322,5 +351,38 @@ func TestParseFloorplanRejectsCorruptImagesBeforeVision(t *testing.T) {
 	}
 	if visionCalls != 0 {
 		t.Fatalf("corrupt images reached Vision %d times", visionCalls)
+	}
+}
+
+func TestAnalyzeFloorplanCandidatesReturnsSourcePixelRectsAndFailsClosed(t *testing.T) {
+	vision := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"mode\":\"single\",\"candidates\":[{\"x\":1,\"y\":2,\"width\":10,\"height\":10}]}"}}]}`))
+	}))
+	defer vision.Close()
+	router := NewRouter(config.Config{AIBaseURL: vision.URL, AIAPIKey: "test-key", AIModel: "test-model"})
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("floorplan", "plan.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageData := &bytes.Buffer{}
+	if err := png.Encode(imageData, image.NewRGBA(image.Rect(0, 0, 20, 20))); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write(imageData.Bytes())
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/floorplans/candidates", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"mode":"single"`) || !strings.Contains(response.Body.String(), `"width":10`) {
+		t.Fatalf("body=%s", response.Body.String())
 	}
 }

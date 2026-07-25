@@ -319,14 +319,15 @@ async function parseSelectedFile(page: Page): Promise<void> {
   const parse = page.waitForResponse((response) =>
     response.url().endsWith('/api/floorplans/parse') && response.request().method() === 'POST',
   )
-  await page.getByRole('button', { name: '开始 AI 识别' }).click()
   expect((await parse).status()).toBe(200)
   await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
 }
 
 async function uploadAndParse(page: Page): Promise<void> {
+  const parse = page.waitForResponse((response) => response.url().endsWith('/api/floorplans/parse') && response.request().method() === 'POST')
   await selectFile(page)
-  await parseSelectedFile(page)
+  expect((await parse).status()).toBe(200)
+  await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
 }
 
 async function dragEndpoint(page: Page, testID: string, deltaX: number, deltaY: number): Promise<void> {
@@ -356,7 +357,26 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await expect(page.getByRole('button', { name: /导入户型图，当前步骤，已完成/ })).toBeVisible()
   const captures = [await screenshot(page, testInfo, 'issue-19-import-ai.png')]
   await parseSelectedFile(page)
+  const visionURL = new URL(baseURL); visionURL.port = '18089'; visionURL.pathname = '/e2e/requests'
+  const visionFacts = await (await page.request.get(visionURL.toString())).json() as Array<{ prompt: string; width: number; height: number; imageDiffers: boolean; cropMatches?: boolean }>
+  expect(visionFacts).toEqual(expect.arrayContaining([
+    expect.objectContaining({ prompt: 'candidate', width: 600, height: 440, imageDiffers: false }),
+    expect.objectContaining({ prompt: 'parse', width: 560, height: 400, imageDiffers: true, cropMatches: true }),
+  ]))
   await expect(page.getByRole('button', { name: /AI 识别，已完成/ })).toBeVisible()
+  await page.getByRole('button', { name: /AI 识别，已完成/ }).click()
+  await expect(page.getByLabel('户型裁切区域')).toHaveAttribute('viewBox', '0 0 600 440')
+  await page.route('**/api/floorplans/parse', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'controlled recrop outage' }) }))
+  await page.getByLabel('户型裁切区域').focus()
+  await page.keyboard.press('ArrowRight')
+  await page.getByRole('button', { name: '确认裁切并判断' }).click()
+  await expect(page.getByRole('alert')).toContainText('识别服务暂时不可用')
+  await expect(page.getByRole('button', { name: /校正 2D，未解锁/ })).toBeDisabled()
+  await page.unroute('**/api/floorplans/parse')
+  const recropRetry = page.waitForResponse((response) => response.url().endsWith('/api/floorplans/parse') && response.request().method() === 'POST')
+  await page.getByRole('button', { name: '确认裁切并判断' }).click()
+  expect((await recropRetry).status()).toBe(200)
+  await page.getByRole('button', { name: /校正 2D/ }).click()
   await expect(page.getByRole('button', { name: /校正 2D，当前步骤/ })).toBeVisible()
   await expectBox(page, '.two-d-editor-frame', { x: 256, y: 92, width: 870, height: 800 })
   await expectBox(page, '.two-d-product-workspace .inspector-card', { x: 1146, y: 92, width: 246, height: 800 })
@@ -480,6 +500,81 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await expect(page.locator('pre')).toHaveCount(0)
 })
 
+test('keeps a selected composite candidate and adjusted crop after parse failure', async ({ page }) => {
+  const visionURL = new URL(baseURL)
+  visionURL.port = '18089'
+  visionURL.pathname = '/e2e/candidate-mode'
+  const mode = await page.request.post(visionURL.toString(), { data: { mode: 'composite' } })
+  expect(mode.status()).toBe(204)
+  try {
+    await page.goto('/?e2e=instrument')
+    await selectFile(page)
+    await expect(page.getByRole('button', { name: /候选 1/ })).toBeVisible()
+    await expect(page.getByRole('button', { name: /候选 2/ })).toBeVisible()
+    await page.getByRole('button', { name: /候选 2/ }).click()
+    await expect(page.getByTestId('crop-selection')).toHaveAttribute('x', '320')
+    await page.getByLabel('户型裁切区域').focus()
+    await page.keyboard.press('ArrowRight')
+    await expect(page.getByTestId('crop-selection')).toHaveAttribute('x', '321')
+    await page.route('**/api/floorplans/parse', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'controlled composite outage' }) }))
+    await page.getByRole('button', { name: '确认裁切并判断' }).click()
+    await expect(page.getByRole('alert')).toContainText('识别服务暂时不可用')
+    await expect(page.getByRole('button', { name: /候选 2/ })).toBeVisible()
+    await expect(page.getByTestId('crop-selection')).toHaveAttribute('x', '321')
+    const retainedOriginal = page.getByLabel('户型裁切区域')
+    await expect(retainedOriginal).toHaveAttribute('viewBox', '0 0 600 440')
+    await expect(retainedOriginal.locator('image')).toHaveAttribute('href', /^blob:/)
+    await expect(page.getByRole('button', { name: '确认裁切并判断' })).toBeEnabled()
+  } finally {
+    await page.request.post(visionURL.toString(), { data: { mode: 'single' } })
+  }
+})
+
+test('falls back to an adjustable full-image crop when candidate analysis fails', async ({ page }) => {
+  await page.route('**/api/floorplans/candidates', (route) => route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ code: 'ai_transport_unavailable', error: 'controlled analysis outage' }) }))
+  await page.goto('/?e2e=instrument')
+  await page.locator('input[type="file"]').first().setInputFiles({ name: 'controlled-production-floorplan.png', mimeType: 'image/png', buffer: fixturePNG })
+  await expect(page.getByRole('alert')).toContainText('手动全图裁切')
+  await expect(page.getByRole('button', { name: /候选/ })).toHaveCount(0)
+  await expect(page.getByTestId('crop-selection')).toHaveAttribute('x', '0')
+  await expect(page.getByTestId('crop-selection')).toHaveAttribute('y', '0')
+  await expect(page.getByTestId('crop-selection')).toHaveAttribute('width', '600')
+  await expect(page.getByTestId('crop-selection')).toHaveAttribute('height', '440')
+  await expect(page.getByRole('button', { name: '确认裁切并判断' })).toBeEnabled()
+})
+
+test('does not publish stale candidate analysis after a replacement file is selected', async ({ page }) => {
+  let firstRequestStarted!: () => void
+  let releaseFirst!: () => void
+  const started = new Promise<void>((resolve) => { firstRequestStarted = resolve })
+  const release = new Promise<void>((resolve) => { releaseFirst = resolve })
+  let requests = 0
+  await page.route('**/api/floorplans/candidates', async (route) => {
+    requests += 1
+    if (requests === 1) {
+      firstRequestStarted()
+      await release
+      try {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ mode: 'composite', candidates: [{ x: 20, y: 20, width: 260, height: 400 }, { x: 320, y: 20, width: 260, height: 400 }] }) })
+      } catch {
+        // The first browser request is expected to be aborted by replacement.
+      }
+      return
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ mode: 'uncertain', candidates: [] }) })
+  })
+  await page.goto('/?e2e=instrument')
+  await page.locator('input[type="file"]').first().setInputFiles({ name: 'first.png', mimeType: 'image/png', buffer: fixturePNG })
+  await started
+  await page.locator('input[type="file"]').first().setInputFiles({ name: 'replacement.png', mimeType: 'image/png', buffer: fixturePNG })
+  await expect(page.getByTestId('crop-selection')).toHaveAttribute('width', '600')
+  releaseFirst()
+  await page.waitForTimeout(100)
+  await expect(page.getByRole('button', { name: /候选/ })).toHaveCount(0)
+  await expect(page.getByTestId('crop-selection')).toHaveAttribute('x', '0')
+  await expect(page.getByTestId('crop-selection')).toHaveAttribute('width', '600')
+})
+
 test('keeps invalid and duplicate canonical identity failures closed', async ({ page }) => {
   const invalid: ParseFixture = { ...canonicalFixture, result: { ...canonicalFixture.result, doors: [{ id: 'door-invalid', kind: 'door', wallId: 'missing-wall', position: 0.5, width: 72, source: 'test-route', confirmed: false }], windows: [] } }
   await page.route('**/api/floorplans/parse', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(invalid) }))
@@ -541,14 +636,16 @@ test('keeps an unavailable Rust/WASM geometry result fail-closed', async ({ page
 
 test('makes parse retry and persistence-unavailable states actionable', async ({ page }) => {
   await page.goto('/?e2e=instrument')
-  await selectFile(page)
   await page.route('**/api/floorplans/parse', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'controlled parse outage' }) }))
-  await page.getByRole('button', { name: '开始 AI 识别' }).click()
+  await selectFile(page)
   await expect(page.getByRole('alert')).toContainText('识别服务暂时不可用')
-  await expect(page.getByRole('button', { name: '重试 AI 识别' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '确认裁切并判断' })).toBeVisible()
   await expect(page.getByRole('button', { name: /AI 识别，已完成/ })).toHaveCount(0)
   await page.unroute('**/api/floorplans/parse')
-  await parseSelectedFile(page)
+  const retry = page.waitForResponse((response) => response.url().endsWith('/api/floorplans/parse') && response.request().method() === 'POST')
+  await page.getByRole('button', { name: '确认裁切并判断' }).click()
+  expect((await retry).status()).toBe(200)
+  await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
   await page.getByTestId('complete-product-step').click()
   await expect(page.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
   await page.getByRole('button', { name: '完成并打开 3D' }).click()

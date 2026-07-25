@@ -247,7 +247,7 @@ func IsSupportedContentType(contentType string) bool {
 
 // ValidateSourceImageMetadata makes the durable document's source-image
 // metadata agree with the immutable object bytes stored for the project.
-func ValidateSourceImageMetadata(doc floorplan.ParseResponse, filename, contentType string, size int64) error {
+func ValidateSourceImageMetadata(doc floorplan.ParseResponse, filename, contentType string, size int64, width, height int) error {
 	if doc.Filename != filename {
 		return errors.New("document filename must match source_image filename")
 	}
@@ -256,6 +256,9 @@ func ValidateSourceImageMetadata(doc floorplan.ParseResponse, filename, contentT
 	}
 	if int64(doc.Size) != size {
 		return errors.New("document size must match source_image size")
+	}
+	if doc.Result.Metadata.ImageWidth != width || doc.Result.Metadata.ImageHeight != height {
+		return errors.New("document image dimensions must match source_image dimensions")
 	}
 	return nil
 }

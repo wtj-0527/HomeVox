@@ -102,7 +102,7 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 			return
 		}
 
-		contentType, _, _, err := imagevalidate.Decode(data)
+		contentType, width, height, err := imagevalidate.Decode(data)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "floorplan must be a valid PNG, JPEG, GIF, or WebP image"})
 			return
@@ -137,6 +137,13 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 			}
 			return
 		}
+		if result.Metadata.ImageWidth != width || result.Metadata.ImageHeight != height {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"code":  "ai_content_unreliable",
+				"error": "识别结果与当前裁切图不一致，未生成可编辑户型。请重新确认裁切区域后再试。",
+			})
+			return
+		}
 
 		document := floorplan.ParseResponse{
 			Filename:    header.Filename,
@@ -153,6 +160,51 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 			return
 		}
 		c.JSON(http.StatusOK, canonical)
+	})
+
+	router.POST("/api/floorplans/candidates", func(c *gin.Context) {
+		file, header, err := c.Request.FormFile("floorplan")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "field floorplan is required"})
+			return
+		}
+		defer file.Close()
+		if header.Size > maxFloorplanUploadBytes {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "floorplan image must be 10 MiB or smaller"})
+			return
+		}
+		data, err := io.ReadAll(io.LimitReader(file, maxFloorplanUploadBytes+1))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read floorplan image"})
+			return
+		}
+		if len(data) > maxFloorplanUploadBytes {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "floorplan image must be 10 MiB or smaller"})
+			return
+		}
+		contentType, width, height, err := imagevalidate.Decode(data)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "floorplan must be a valid PNG, JPEG, GIF, or WebP image"})
+			return
+		}
+		if cfg.AIAPIKey == "" || cfg.AIBaseURL == "" || cfg.AIModel == "" {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"code": "ai_transport_unavailable", "error": "识别服务暂时不可用，请稍后重试。"})
+			return
+		}
+		imageDataURL := fmt.Sprintf("data:%s;base64,%s", contentType, base64.StdEncoding.EncodeToString(data))
+		result, err := parser.AnalyzeCandidates(c.Request.Context(), imageDataURL, width, height)
+		if err != nil {
+			switch floorplan.ErrorCode(err) {
+			case floorplan.ParseErrorSchema:
+				c.JSON(http.StatusUnprocessableEntity, gin.H{"code": "ai_schema_invalid", "error": "识别结果格式不完整，未生成可靠裁切区域。请上传更清晰的图片。"})
+			case floorplan.ParseErrorContent:
+				c.JSON(http.StatusUnprocessableEntity, gin.H{"code": "ai_content_unreliable", "error": "这张图片无法可靠判断户型区域。请手动裁切或上传更清晰的图片。"})
+			default:
+				c.JSON(http.StatusBadGateway, gin.H{"code": "ai_transport_unavailable", "error": "识别服务暂时不可用，请稍后重试。"})
+			}
+			return
+		}
+		c.JSON(http.StatusOK, result)
 	})
 
 	if len(frontendDirs) > 0 && frontendDirs[0] != "" {

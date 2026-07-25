@@ -180,3 +180,60 @@ func visionServer(t *testing.T, content string, check func(*http.Request)) *http
 		_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"content":%q}}]}`, content)
 	}))
 }
+
+func TestAnalyzeCandidatesUsesStrictContractAndRejectsUnsafeCrops(t *testing.T) {
+	valid := `{"mode":"composite","candidates":[{"x":10,"y":20,"width":100,"height":80},{"x":150,"y":20,"width":90,"height":80}]}`
+	server := visionServer(t, valid, func(r *http.Request) {
+		var request struct {
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if len(request.Messages) != 2 || request.Messages[0].Role != "system" {
+			t.Fatalf("messages=%#v", request.Messages)
+		}
+		var system string
+		if err := json.Unmarshal(request.Messages[0].Content, &system); err != nil || system != candidateSystemPrompt {
+			t.Fatalf("system=%q err=%v", system, err)
+		}
+	})
+	defer server.Close()
+	result, err := NewParser(ai.NewClient(server.URL, "test-key", "vision-test")).AnalyzeCandidates(context.Background(), "data:image/png;base64,cG5n", 300, 200)
+	if err != nil {
+		t.Fatalf("AnalyzeCandidates() error = %v", err)
+	}
+	if result.Mode != CandidateModeComposite || len(result.Candidates) != 2 || result.Candidates[1].X != 150 {
+		t.Fatalf("result=%#v", result)
+	}
+
+	uncertainServer := visionServer(t, `{"mode":"uncertain","candidates":[]}`, nil)
+	defer uncertainServer.Close()
+	uncertain, err := NewParser(ai.NewClient(uncertainServer.URL, "test-key", "vision-test")).AnalyzeCandidates(context.Background(), "data:image/png;base64,cG5n", 300, 200)
+	if err != nil || uncertain.Mode != CandidateModeUncertain || len(uncertain.Candidates) != 0 {
+		t.Fatalf("uncertain=%#v err=%v", uncertain, err)
+	}
+
+	for name, content := range map[string]string{
+		"empty single":  `{"mode":"single","candidates":[]}`,
+		"out of bounds": `{"mode":"single","candidates":[{"x":250,"y":0,"width":60,"height":80}]}`,
+		"zero area":     `{"mode":"single","candidates":[{"x":0,"y":0,"width":0,"height":80}]}`,
+		"overlap":       `{"mode":"composite","candidates":[{"x":0,"y":0,"width":100,"height":100},{"x":50,"y":0,"width":100,"height":100}]}`,
+		"unknown field": `{"mode":"single","candidates":[{"x":0,"y":0,"width":100,"height":80,"score":0.9}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := visionServer(t, content, nil)
+			defer s.Close()
+			_, err := NewParser(ai.NewClient(s.URL, "key", "model")).AnalyzeCandidates(context.Background(), "data:image/png;base64,cG5n", 300, 200)
+			if err == nil {
+				t.Fatalf("accepted unsafe result: %s", content)
+			}
+			if ErrorCode(err) != ParseErrorContent && name != "unknown field" {
+				t.Fatalf("code=%s error=%v", ErrorCode(err), err)
+			}
+		})
+	}
+}

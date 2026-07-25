@@ -5,7 +5,7 @@ import type { ProjectDetail, ProjectSummary } from './projects'
 const document = {
   filename: 'plan.png',
   contentType: 'image/png',
-  size: 12,
+  size: 3,
   result: { rooms: [], walls: [], doors: [], windows: [], scale: { unit: 'px', pixel_to_unit: null }, metadata: { source: 'fixture', confidence: 0.5, image_width: 100, image_height: 80 } },
 }
 
@@ -38,7 +38,8 @@ describe('project session save admission', () => {
 
   it('requires a source image only for a newly created project, never for updating a loaded project', () => {
     expect(projectSaveIssue({ document, geometryValidationError: null, projectName: ' ', currentProject: project, sourceFile: null })).toContain('项目名称')
-    expect(projectSaveIssue({ document, geometryValidationError: null, projectName: 'Home', currentProject: null, sourceFile: null })).toContain('原始户型图')
+    expect(projectSaveIssue({ document, geometryValidationError: null, projectName: 'Home', currentProject: null, sourceFile: null })).toContain('有效裁切')
+    expect(projectSaveIssue({ document, geometryValidationError: null, projectName: 'Home', currentProject: null, sourceFile: new File(['original'], 'original.png', { type: 'image/png' }) })).toContain('有效裁切图一致')
     expect(projectSaveIssue({ document, geometryValidationError: null, projectName: 'Home', currentProject: project, sourceFile: null })).toBeNull()
   })
 })
@@ -169,6 +170,8 @@ describe('ProjectSession controller', () => {
     const create = sessionHarness({ dependencies: { createProject: vi.fn().mockReturnValue(pendingCreate.promise) } })
     const createRequest = create.controller.saveProject()
     expect(create.dependencies.createProject).toHaveBeenCalledWith('Home', document, expect.any(File), expect.any(AbortSignal))
+    const uploaded = (create.dependencies.createProject as ReturnType<typeof vi.fn>).mock.calls[0][2] as File
+    expect([uploaded.name, uploaded.type, uploaded.size]).toEqual([document.filename, document.contentType, document.size])
     expect(create.dependencies.updateProject).not.toHaveBeenCalled()
     expect(create.onProjectSaved).not.toHaveBeenCalled()
     pendingCreate.resolve(project)

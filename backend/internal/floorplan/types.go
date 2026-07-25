@@ -83,6 +83,26 @@ type ParseResponse struct {
 	Result      ParseResult `json:"result"`
 }
 
+type CandidateDetectionMode string
+
+const (
+	CandidateModeSingle    CandidateDetectionMode = "single"
+	CandidateModeComposite CandidateDetectionMode = "composite"
+	CandidateModeUncertain CandidateDetectionMode = "uncertain"
+)
+
+type CandidateRect struct {
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
+type CandidateDetection struct {
+	Mode       CandidateDetectionMode `json:"mode"`
+	Candidates []CandidateRect        `json:"candidates"`
+}
+
 // HasPixelToUnit distinguishes an explicit null (an honest unknown physical
 // conversion) from an omitted field.  The field is part of the durable schema
 // and must always be present as either a finite number or null.
