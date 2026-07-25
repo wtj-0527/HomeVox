@@ -6,6 +6,7 @@ export function canExportCurrentThreeD({
   hasWasmGeometry,
   rendererMounted,
   rendererGeneration,
+  geometryGeneration,
   canonicalGeneration,
 }: {
   isExporting: boolean
@@ -14,8 +15,9 @@ export function canExportCurrentThreeD({
   wasmActive: boolean
   hasWasmGeometry: boolean
   rendererMounted: boolean
-  rendererGeneration: number | null
-  canonicalGeneration: number
+  rendererGeneration: string | null
+  geometryGeneration: string | null
+  canonicalGeneration: string | null
 }): boolean {
-  return hasModel && webGLAvailable && wasmActive && hasWasmGeometry && rendererMounted && rendererGeneration === canonicalGeneration && !isExporting
+  return hasModel && webGLAvailable && wasmActive && hasWasmGeometry && rendererMounted && canonicalGeneration !== null && canonicalGeneration === geometryGeneration && canonicalGeneration === rendererGeneration && !isExporting
 }

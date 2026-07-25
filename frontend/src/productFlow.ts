@@ -53,3 +53,35 @@ export function initialCompletedSteps({
   if (!hasCanonicalDocument) return []
   return isSavedProject ? [1, 2, 6] : [1, 2]
 }
+
+export type ProductFlowEvent =
+  | { type: 'open'; step: ProductStep }
+  | { type: 'complete'; step: ProductStep; next?: ProductStep }
+  | { type: 'reload'; completed: readonly ProductStep[] }
+export type ProductFlowState = { activeStep: ProductStep; completed: readonly ProductStep[] }
+
+/** Admission predicate shared by clickable navigation, completion controls, and
+ * the reducer-like transition.  In particular, Step 5 can only complete while
+ * its currently mounted renderer is admitted through hasThreeDGeometry. */
+export function canApplyProductFlowEvent(
+  state: ProductFlowState,
+  event: Exclude<ProductFlowEvent, { type: 'reload' }>,
+  context: Omit<ProductFlowContext, 'completed'>,
+): boolean {
+  const flow = { ...context, completed: state.completed }
+  if (event.type === 'open') return canOpenStep(event.step, flow)
+  if (state.activeStep !== event.step || !canOpenStep(event.step, flow)) return false
+  if (!event.next) return true
+  const completed = completeProductStep(state.completed, event.step)
+  return canOpenStep(event.next, { ...context, completed })
+}
+
+/** The only transition entrance for sidebar, completion buttons, and reload. */
+export function transitionProductFlow(state: ProductFlowState, event: ProductFlowEvent, context: Omit<ProductFlowContext, 'completed'>): ProductFlowState {
+  if (event.type === 'reload') return { activeStep: event.completed.includes(3) ? 3 : 1, completed: [...event.completed] }
+  if (!canApplyProductFlowEvent(state, event, context)) return state
+  if (event.type === 'open') return { ...state, activeStep: event.step }
+  const completed = completeProductStep(state.completed, event.step)
+  const next = event.next ?? nextProductStep(event.step, { ...context, completed })
+  return next !== event.step && canOpenStep(next, { ...context, completed }) ? { activeStep: next, completed } : { activeStep: event.step, completed }
+}

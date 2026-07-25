@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildWallShellModel } from './wallShell'
+import { buildWallShellModel, buildWallShellPieces, frameWallShellModel, WINDOW_OPENING_HEIGHT, WINDOW_SILL_HEIGHT } from './wallShell'
 import type { ParsedOpening } from './floorplanUi'
 
 const rectangleWalls = [
@@ -127,5 +127,36 @@ describe('3D wall shell model', () => {
     expect(model.openings).toEqual([])
     expect(model.floor).toBeNull()
     expect(model.validationError).toContain('at least one wall')
+  })
+})
+
+describe('3D scene framing', () => {
+  it('fits the normalized floorplan rather than relying on a fixed camera distance', () => {
+    const frame = frameWallShellModel(buildWallShellModel(rectangleWalls, [], []))
+    expect(frame.floorSpan).toBeGreaterThan(8)
+    expect(frame.position[0]).toBeGreaterThan(frame.floorSpan)
+    expect(frame.target[1]).toBeGreaterThan(0)
+  })
+})
+
+describe('3D visible wall pieces', () => {
+  it('keeps canonical door and window spans as real holes instead of painting a solid selection shell over them', () => {
+    const model = buildWallShellModel(
+      rectangleWalls,
+      [{ id: 'door-1', kind: 'door', wallId: 'wall-1', position: 0.5, width: 20 }],
+      [{ id: 'window-1', kind: 'window', wallId: 'wall-2', position: 0.5, width: 16 }],
+    )
+    const pieces = buildWallShellPieces(model)
+    const firstWall = pieces.filter((piece) => piece.wallId === 'wall-1')
+    const secondWall = pieces.filter((piece) => piece.wallId === 'wall-2')
+
+    expect(firstWall).toHaveLength(2)
+    expect(secondWall).toHaveLength(4)
+    expect(firstWall.reduce((total, piece) => total + piece.length, 0)).toBeCloseTo(model.walls[0].length - model.openings[0].width)
+    expect(secondWall.find((piece) => piece.id === 'window-1-sill')).toMatchObject({ height: WINDOW_SILL_HEIGHT, y: WINDOW_SILL_HEIGHT / 2 })
+    expect(secondWall.find((piece) => piece.id === 'window-1-lintel')).toMatchObject({
+      height: model.walls[1].height - WINDOW_SILL_HEIGHT - WINDOW_OPENING_HEIGHT,
+      y: WINDOW_SILL_HEIGHT + WINDOW_OPENING_HEIGHT + (model.walls[1].height - WINDOW_SILL_HEIGHT - WINDOW_OPENING_HEIGHT) / 2,
+    })
   })
 })

@@ -44,3 +44,21 @@ describe('product flow', () => {
     expect(canOpenStep(4, context([1, 2, 6]))).toBe(false)
   })
 })
+
+import { canApplyProductFlowEvent, transitionProductFlow } from './productFlow'
+describe('ProductFlowController', () => {
+  it('does not let completion bypass the same current-generation guard used by sidebar navigation', () => {
+    const state = { activeStep: 4 as const, completed: [1, 2, 3, 4] as ProductFlowContext['completed'] }
+    const stale = transitionProductFlow(state, { type: 'complete', step: 4, next: 5 }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false })
+    expect(stale).toEqual(state)
+    expect(transitionProductFlow({ activeStep: 3, completed: [1, 2, 3] }, { type: 'complete', step: 4, next: 5 }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: true })).toEqual({ activeStep: 3, completed: [1, 2, 3] })
+    expect(transitionProductFlow({ activeStep: 1, completed: [] }, { type: 'reload', completed: [1, 2, 6] }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false })).toEqual({ activeStep: 1, completed: [1, 2, 6] })
+  })
+
+  it('uses the same event admission to disable Step 5 completion when its renderer becomes stale', () => {
+    const state = { activeStep: 5 as const, completed: [1, 2, 3, 4] as ProductFlowContext['completed'] }
+    expect(canApplyProductFlowEvent(state, { type: 'open', step: 5 }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false })).toBe(false)
+    expect(canApplyProductFlowEvent(state, { type: 'complete', step: 5, next: 6 }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false })).toBe(false)
+    expect(canApplyProductFlowEvent(state, { type: 'complete', step: 5, next: 6 }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: true })).toBe(true)
+  })
+})

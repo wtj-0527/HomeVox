@@ -5,6 +5,8 @@ export const WALL_SHELL_HEIGHT = 2.8
 export const WALL_SHELL_THICKNESS = 0.18
 export const WALL_SHELL_TARGET_SPAN = 10
 export const WALL_SHELL_FLOOR_MARGIN = 1
+export const WINDOW_SILL_HEIGHT = 0.92
+export const WINDOW_OPENING_HEIGHT = 1.12
 
 export type WallShellWall = {
   id: string
@@ -43,6 +45,18 @@ export type WallShellModel = {
   scale: number | null
   /** Canonical opening validation error; geometry consumers must fail closed. */
   validationError: string | null
+}
+
+export type WallShellPiece = {
+  id: string
+  wallId: string
+  x: number
+  y: number
+  z: number
+  length: number
+  height: number
+  thickness: number
+  rotationY: number
 }
 
 type ValidWall = WallSegment & {
@@ -189,4 +203,84 @@ export function buildWallShellModel(
     scale,
     validationError: null,
   }
+}
+
+export type ThreeDFrame = { position: readonly [number, number, number]; target: readonly [number, number, number]; floorSpan: number }
+/** Camera derived from the same normalized shell, rather than a fixed scene-size guess. */
+export function frameWallShellModel(model: WallShellModel): ThreeDFrame {
+  const floorSpan = Math.max(model.floor?.width ?? 0, model.floor?.depth ?? 0, 1)
+  const distance = floorSpan * 1.16 + WALL_SHELL_HEIGHT * 1.5
+  return { position: [distance, distance * 0.72, distance], target: [0, WALL_SHELL_HEIGHT * 0.38, 0], floorSpan }
+}
+
+/** Builds visible wall spans from canonical openings.  The renderer uses these
+ * pieces instead of a translucent solid selection shell, so door/window holes
+ * remain visible even while a wall is selected. */
+export function buildWallShellPieces(model: WallShellModel): WallShellPiece[] {
+  const openingsByWall = new Map<string, WallShellOpening[]>()
+  for (const opening of model.openings) {
+    if (!opening.wallId || opening.width <= 0) continue
+    openingsByWall.set(opening.wallId, [...(openingsByWall.get(opening.wallId) ?? []), opening])
+  }
+
+  return model.walls.flatMap((wall) => {
+    const intervals = (openingsByWall.get(wall.id) ?? [])
+      .map((opening) => {
+        const center = (opening.x - wall.x) * Math.cos(wall.rotationY) - (opening.z - wall.z) * Math.sin(wall.rotationY)
+        return {
+          start: Math.max(-wall.length / 2, center - opening.width / 2),
+          end: Math.min(wall.length / 2, center + opening.width / 2),
+        }
+      })
+      .filter((interval) => interval.end > interval.start)
+      .sort((a, b) => a.start - b.start)
+
+    const solidSpans: Array<{ start: number; end: number }> = []
+    let cursor = -wall.length / 2
+    for (const interval of intervals) {
+      if (interval.start > cursor) solidSpans.push({ start: cursor, end: interval.start })
+      cursor = Math.max(cursor, interval.end)
+    }
+    if (cursor < wall.length / 2) solidSpans.push({ start: cursor, end: wall.length / 2 })
+
+    const fullHeightPiece = (id: string, span: { start: number; end: number }): WallShellPiece => {
+      const along = (span.start + span.end) / 2
+      return {
+        id,
+        wallId: wall.id,
+        x: wall.x + Math.cos(wall.rotationY) * along,
+        y: wall.height / 2,
+        z: wall.z - Math.sin(wall.rotationY) * along,
+        length: span.end - span.start,
+        height: wall.height,
+        thickness: wall.thickness,
+        rotationY: wall.rotationY,
+      }
+    }
+    const pieces = solidSpans.map((span, index) => fullHeightPiece(`${wall.id}-span-${index}`, span))
+
+    for (const opening of openingsByWall.get(wall.id) ?? []) {
+      if (opening.kind !== 'window') continue
+      const center = (opening.x - wall.x) * Math.cos(wall.rotationY) - (opening.z - wall.z) * Math.sin(wall.rotationY)
+      const start = Math.max(-wall.length / 2, center - opening.width / 2)
+      const end = Math.min(wall.length / 2, center + opening.width / 2)
+      if (end <= start) continue
+      const span = { start, end }
+      const sillHeight = Math.min(WINDOW_SILL_HEIGHT, wall.height)
+      const lintelBottom = Math.min(sillHeight + WINDOW_OPENING_HEIGHT, wall.height)
+      if (sillHeight > 0) {
+        const lower = fullHeightPiece(`${opening.id}-sill`, span)
+        lower.y = sillHeight / 2
+        lower.height = sillHeight
+        pieces.push(lower)
+      }
+      if (lintelBottom < wall.height) {
+        const upper = fullHeightPiece(`${opening.id}-lintel`, span)
+        upper.y = lintelBottom + (wall.height - lintelBottom) / 2
+        upper.height = wall.height - lintelBottom
+        pieces.push(upper)
+      }
+    }
+    return pieces
+  })
 }
