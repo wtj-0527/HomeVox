@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 const baseURL = process.env.HOMEVOX_E2E_BASE_URL ?? 'http://127.0.0.1:18088'
 const restartURL = process.env.HOMEVOX_E2E_RESTART_URL
 const fixturePNG = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAF0lEQVR4nGL6////fwZkwARjAAIAAP//YgEEAT/f/TcAAAAASUVORK5CYII=',
+  'iVBORw0KGgoAAAANSUhEUgAAAlgAAAG4CAIAAAAWqA6UAAAJQklEQVR4nO3VsY1kVRRF0cmCCMgBEQfhkBoh4Y8QBm4ZR8OMxOdWaS9pmW20Xv1z95evf/0NAFlfzv8DADgkhACkCSEAaUIIQJoQApAmhACkCSEAaUIIQJoQApAmhACkCSEAaUIIQJoQApAmhACkCSEAaUIIQJoQApAmhACkCSEAaUIIQJoQApAmhACkCSEAaUIIQJoQApAmhACkCSEAaUIIQJoQApAmhACkPRvCn37+jX91/hG8p/PfBXgrz10bIbx3npz3dP67AG/luWsjhPdeX+z3X/98dV6jQ+e/C/BWnrs2Qnjv9cWE0McDTM9dGyG89/piQujjAabnro0Q3nt9MSH08QDTc9dGCO+9vpgQ+niA6blrI4T3Xl9MCH08wPTctRHCe68vJoQ+HmB67tqchfD8zr4nIYwwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQIawwDZiEECGsMA2YhBAhrDANmIQQKkwDJiGE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',
   'base64',
 )
 test.use({ baseURL, viewport: { width: 1440, height: 960 } })
@@ -108,8 +108,10 @@ function visibleLightPixels(png: Buffer): number {
 
 async function assertThreeDRenderIsVisible(page: Page, testInfo: TestInfo, name: string): Promise<void> {
   const path = testInfo.outputPath(name)
-  await page.getByTestId('three-render-surface').screenshot({ path })
-  expect(visibleLightPixels(await readFile(path))).toBeGreaterThan(120)
+  await expect.poll(async () => {
+    await page.getByTestId('three-render-surface').screenshot({ path })
+    return visibleLightPixels(await readFile(path))
+  }, { timeout: 5_000 }).toBeGreaterThan(120)
 }
 
 async function assertSelectingOpeningWallKeepsCanvasPixels(page: Page, testInfo: TestInfo): Promise<void> {
@@ -240,10 +242,11 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await page.waitForFunction((before) => window.__homevoxE2E?.geometry.fingerprint === before, geometryBeforeEndpointEdit.geometry.fingerprint)
   await page.getByRole('button', { name: '重做（Ctrl/Cmd + Shift+Z 或 Ctrl/Cmd + Y）' }).click()
   await page.waitForFunction((after) => window.__homevoxE2E?.geometry.fingerprint === after, geometryAfterEndpointEdit.geometry.fingerprint)
+  await expect(page.getByRole('button', { name: /2D\/3D 联动，当前步骤/ })).toBeVisible()
+  captures.push(await screenshot(page, testInfo, 'issue-19-linked-workspace.png'))
   await page.getByRole('button', { name: '继续' }).click()
   await expect(page.getByRole('button', { name: /2D\/3D 联动，已完成/ })).toBeVisible()
   await expect(page.getByRole('button', { name: /保存项目，当前步骤/ })).toBeVisible()
-  captures.push(await screenshot(page, testInfo, 'issue-19-linked-workspace.png'))
   const hashes = await Promise.all(captures.map(async (path) => createHash('sha256').update(await readFile(path)).digest('hex')))
   expect(new Set(hashes).size).toBe(4)
 
@@ -355,6 +358,10 @@ test('makes parse retry and persistence-unavailable states actionable', async ({
   await expect(page.getByRole('button', { name: /AI 识别，已完成/ })).toHaveCount(0)
   await page.unroute('**/api/floorplans/parse')
   await parseSelectedFile(page)
+  await page.getByRole('button', { name: '继续' }).click()
+  await expect(page.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
+  await page.getByRole('button', { name: '完成并打开 3D' }).click()
+  await page.getByRole('button', { name: '继续' }).click()
   await page.route('**/api/projects', (route) => route.request().method() === 'POST'
     ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: 'controlled persistence outage' } }) })
     : route.continue())
@@ -379,4 +386,28 @@ test('keeps the narrow-screen workflow keyboard reachable', async ({ page }) => 
   await page.keyboard.press('Enter')
   await expect(page.getByRole('heading', { name: '确认 3D 空间' })).toBeVisible()
   await expect(page.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
+})
+
+test('does not export stale 3D after current canonical geometry becomes invalid', async ({ page }) => {
+  const withoutOpenings: ParseFixture = { ...canonicalFixture, result: { ...canonicalFixture.result, doors: [], windows: [] } }
+  await page.route('**/api/floorplans/parse', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(withoutOpenings) }))
+  await page.goto('/?e2e=instrument')
+  await uploadAndParse(page)
+  await page.getByRole('button', { name: '继续' }).click()
+  await expect(page.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
+  await page.getByRole('button', { name: '完成并打开 3D' }).click()
+  await expect(page.getByLabel('导出3D白模PNG')).toBeEnabled()
+  await page.getByRole('button', { name: /校正 2D/ }).click()
+  const start = await page.getByTestId('endpoint-handle-0-start').boundingBox()
+  const end = await page.getByTestId('endpoint-handle-0-end').boundingBox()
+  expect(start).not.toBeNull()
+  expect(end).not.toBeNull()
+  if (!start || !end) throw new Error('missing wall endpoint handles')
+  await dragEndpoint(page, 'endpoint-handle-0-start', end.x - start.x, end.y - start.y)
+  await expect(page.getByText('wall length must be strictly greater than zero', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
+  let downloads = 0
+  page.on('download', () => { downloads += 1 })
+  await page.waitForTimeout(150)
+  expect(downloads).toBe(0)
 })

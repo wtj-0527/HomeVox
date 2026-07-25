@@ -1,5 +1,5 @@
-import { Suspense, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
-import { Canvas, type RootState } from '@react-three/fiber'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
+import { Canvas, useThree, type RootState } from '@react-three/fiber'
 import { Grid, Html, OrbitControls } from '@react-three/drei'
 import type { BufferGeometry } from 'three'
 import {
@@ -49,7 +49,10 @@ import {
   type ProjectDetail,
   type ProjectSummary,
 } from './projects'
-import { PRODUCT_STEPS, canOpenStep, completeProductStep, initialCompletedSteps, type ProductStep } from './productFlow'
+import { completeProductStep, initialCompletedSteps, type ProductStep, type ProductFlowContext } from './productFlow'
+import { ProductShell } from './ProductShell'
+import { LinkedWorkspace, ThreeDConfirmation, TwoDWorkspace } from './ProductViews'
+import { canExportCurrentThreeD } from './threeDExport'
 import { e2EProjectID, e2EWasmLoader, isE2EInstrumentationEnabled, publishE2EState } from '@homevox-e2e'
 import './App.css'
 
@@ -58,6 +61,21 @@ const EMPTY_WALLS: WallSegment[] = []
 
 
 type ParseState = 'idle' | 'uploading' | 'ready' | 'error'
+
+type RendererState = { state: RootState; generation: number }
+
+function RendererLifecycle({ generation, onMount, onUnmount }: {
+  generation: number
+  onMount: (renderer: RendererState) => void
+  onUnmount: (generation: number) => void
+}) {
+  const state = useThree()
+  useEffect(() => {
+    onMount({ state, generation })
+    return () => onUnmount(generation)
+  }, [generation, onMount, onUnmount, state])
+  return null
+}
 
 type ScenePoint = {
   x: number
@@ -386,7 +404,7 @@ export default function App() {
   const [showSourceImage, setShowSourceImage] = useState(true)
   const [imageDimFallback, setImageDimFallback] = useState<{ width: number; height: number } | null>(null)
   const [editorSize, setEditorSize] = useState({ width: 0, height: 0 })
-  const [threeRenderer, setThreeRenderer] = useState<RootState | null>(null)
+  const [threeRenderer, setThreeRenderer] = useState<RendererState | null>(null)
   const [projectName, setProjectName] = useState('')
   const [currentProject, setCurrentProject] = useState<ProjectDetail | null>(null)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
@@ -406,6 +424,7 @@ export default function App() {
   const projectRequestRef = useRef<{ id: number; controller: AbortController } | null>(null)
   const projectSequenceRef = useRef(0)
   const wasmGenerationRef = useRef(0)
+  const [wasmGeneration, setWasmGeneration] = useState(0)
   const wasmGeometryRef = useRef<BufferGeometry | null>(null)
   const wasmCallsRef = useRef(0)
 
@@ -448,11 +467,16 @@ export default function App() {
   const canExportModel = walls.length > 0
   const isExporting = exportingScope !== null
   const canExport2D = canExportModel && status === 'ready' && !isExporting
-  const canExport3D =
-    canExportModel &&
-    webGLAvailable &&
-    Boolean(threeRenderer?.gl) &&
-    !isExporting
+  const canExport3D = canExportCurrentThreeD({
+    isExporting,
+    hasModel: canExportModel,
+    webGLAvailable,
+    wasmActive: wasmState === 'active',
+    hasWasmGeometry: wasmGeometry !== null,
+    rendererMounted: threeRenderer !== null,
+    rendererGeneration: threeRenderer?.generation ?? null,
+    canonicalGeneration: wasmGeneration,
+  })
 
   useEffect(() => {
     if (!isE2EInstrumentationEnabled()) return
@@ -532,6 +556,7 @@ export default function App() {
   useEffect(() => {
     const generation = wasmGenerationRef.current + 1
     wasmGenerationRef.current = generation
+    setWasmGeneration(generation)
     const replaceGeometry = (next: BufferGeometry | null) => {
       disposeWasmWallGeometry(wasmGeometryRef.current)
       wasmGeometryRef.current = next
@@ -1106,7 +1131,7 @@ export default function App() {
     setExportError('')
 
     try {
-      const rendererState = threeRenderer
+      const rendererState = threeRenderer.state
       rendererState.gl.render(rendererState.scene, rendererState.camera)
       const fileName = buildScopeFileName('3d')
       const exportResult = await exportWebGLCanvasToPng(rendererState.gl, fileName)
@@ -1122,6 +1147,14 @@ export default function App() {
       setExportingScope(null)
     }
   }
+
+  const handleRendererMount = useCallback((renderer: RendererState) => {
+    setThreeRenderer(renderer)
+  }, [])
+
+  const handleRendererUnmount = useCallback((generation: number) => {
+    setThreeRenderer((current) => current?.generation === generation ? null : current)
+  }, [])
 
   const twoDPanel = (
     <section className="workspace-card canvas-card min-w-0 p-3" aria-label="2D 墙体编辑器">
@@ -1179,7 +1212,8 @@ export default function App() {
         {geometryValidationError && <p className="mt-1 max-w-xs text-[11px] text-amber-200" role="alert">当前开口数据无法生成 3D，请返回 2D 校正后重试。</p>}
       </div>
       <div className="h-full w-full">
-        {webGLAvailable ? <Canvas className="absolute inset-0" camera={{ position: [11, 9, 11], fov: 42, near: 0.1, far: 100 }} shadows gl={{ antialias: true, preserveDrawingBuffer: true }} onCreated={setThreeRenderer} data-testid="three-render-surface">
+        {webGLAvailable ? <Canvas key={wasmGeneration} className="absolute inset-0" camera={{ position: [11, 9, 11], fov: 42, near: 0.1, far: 100 }} shadows gl={{ antialias: true, preserveDrawingBuffer: true }} data-testid="three-render-surface">
+          <RendererLifecycle generation={wasmGeneration} onMount={handleRendererMount} onUnmount={handleRendererUnmount} />
           <Suspense fallback={null}><Scene model={wallShellModel} wasmGeometry={wasmGeometry} wasmActive={wasmState === 'active'} selectedWallID={selectedWallID} selectedOpeningID={selectedOpeningID} onSelectWall={selectWall} onSelectOpening={selectOpening} /><OrbitControls makeDefault target={[0, 1.15, 0]} /></Suspense>
         </Canvas> : <div className="flex h-full w-full items-center justify-center px-8 text-center" role="status" aria-label="3D 渲染不可用"><div className="max-w-sm rounded-2xl border border-amber-400/25 bg-amber-950/30 px-5 py-4 text-sm leading-6 text-amber-100">当前浏览器无法显示 3D 预览。请在启用 WebGL 的浏览器中打开；2D 校正仍可继续。</div></div>}
       </div>
@@ -1243,18 +1277,17 @@ export default function App() {
     else if (activeStep === 5) completeAndAdvance(5, 6)
   }
 
+  const flow: ProductFlowContext = { completed: completedSteps, hasDocument: Boolean(durableDocument), hasCanonicalGeometry, hasThreeDGeometry: canOpenLinkedWorkspace }
+  const primaryAction = (activeStep === 1 || activeStep === 3 || activeStep === 5) && <button className="rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50" type="button" disabled={activeStep === 1 ? !selectedFile : !hasCanonicalGeometry} onClick={goNext}>{activeStep === 1 ? '继续到 AI 识别' : '继续'}</button>
+
   return (
-    <div className="homevox-app"><div className="homevox-layout min-h-screen lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
-      <aside className="product-sidebar flex flex-col px-4 py-6"><div className="mb-8 px-2"><p className="text-xs font-semibold tracking-[0.22em] text-indigo-200">HOMEVOX</p><h1 className="mt-2 text-xl font-bold">筑居</h1><p className="mt-2 text-xs leading-5 text-indigo-100/75">从真实户型图到可编辑空间</p></div><nav className="space-y-2" aria-label="产品步骤">{PRODUCT_STEPS.map((step) => { const unlocked = canOpenStep(step.id, Boolean(durableDocument)) && (step.id < 4 || hasCanonicalGeometry) && (step.id !== 5 || canOpenLinkedWorkspace); const completed = completedSteps.includes(step.id); const stateLabel = [activeStep === step.id ? '当前步骤' : '', completed ? '已完成' : '', !completed && activeStep !== step.id ? (unlocked ? '可进入' : '未解锁') : ''].filter(Boolean).join('，'); return <button key={step.id} className="product-step flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium disabled:cursor-not-allowed" type="button" data-active={activeStep === step.id} data-completed={completed} data-locked={!unlocked} aria-current={activeStep === step.id ? 'step' : undefined} aria-label={`${step.label}，${stateLabel}`} disabled={!unlocked} onClick={() => setActiveStep(step.id)}><span className="step-dot" aria-hidden="true">{completed ? '✓' : step.id}</span><span>{step.label}</span><span className="sr-only">{stateLabel}</span></button> })}</nav><div className="mt-auto rounded-xl border border-white/10 bg-white/8 p-3 text-xs leading-5 text-indigo-100/80">空间设计沟通工具，不是施工 CAD。未知建筑属性会保持未知，需现场实测。</div></aside>
-      <div className="flex min-h-screen min-w-0 flex-col"><header className="product-topbar flex min-h-[72px] items-center justify-between border-b border-slate-200 bg-white px-5 lg:px-8"><div><p className="text-xs font-medium text-violet-600">步骤 {activeStep} / 6</p><h2 className="mt-1 text-lg font-bold text-slate-900">{PRODUCT_STEPS[activeStep - 1].label}</h2></div><div className="flex items-center gap-2">{durableDocument && <span className="status-chip px-3 py-1.5 text-xs font-medium">同一份空间数据</span>}{(activeStep === 1 || activeStep === 3 || activeStep === 5) && <button className="rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50" type="button" disabled={activeStep === 1 ? !selectedFile : !hasCanonicalGeometry} onClick={goNext}>{activeStep === 1 ? '继续到 AI 识别' : '继续'}</button>}</div></header>
-      <div className="min-h-0 flex-1 p-4">
+    <ProductShell activeStep={activeStep} completedSteps={completedSteps} flow={flow} hasDocument={Boolean(durableDocument)} onOpenStep={setActiveStep} primaryAction={primaryAction}>
         {activeStep === 1 && <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">导入真实户型图</h3><p className="mt-2 text-sm text-slate-500">从你的图纸开始，不套用示意户型。</p><label className="mt-6 block cursor-pointer rounded-xl border border-dashed border-slate-400 bg-slate-50 p-5 text-sm hover:border-violet-500"><span className="block font-medium">选择户型图</span><span className="mt-1 block text-xs text-slate-500">支持 PNG、JPEG、GIF、WebP；后端限制 10 MiB</span><input className="mt-3 block w-full text-xs" type="file" accept="image/png,image/jpeg,image/gif,image/webp" onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)} /></label>{sourcePreview}</section>}
         {activeStep === 2 && <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">AI 识别</h3><p className="mt-2 text-sm text-slate-500">识别前请核对这张原图；识别完成后才会打开可校正的同源 2D 数据。</p>{sourcePreview}<button className="mt-6 w-full rounded-xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50" type="button" disabled={status === 'uploading' || !selectedFile} onClick={handleParse}>{status === 'uploading' ? 'AI 识别中…' : '开始 AI 识别'}</button><div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm"><span className="text-slate-500">识别状态：</span>{status === 'ready' ? '解析完成' : status === 'uploading' ? '解析中' : status === 'error' ? '失败' : '等待开始'}{error && <p role="alert" className="mt-2 text-red-700">{error}</p>}</div>{status === 'error' && selectedFile && <button type="button" className="mt-3 rounded-lg border border-violet-300 px-3 py-2 text-sm text-violet-700" onClick={handleParse}>重试 AI 识别</button>}</section>}
-        {activeStep === 3 && <div className="workspace-grid product-workspace">{twoDPanel}{editorInspector}</div>}
-        {activeStep === 4 && <section className="mx-auto max-w-5xl"><div className="mb-4 flex items-center justify-between rounded-xl bg-white p-4 shadow-sm"><div><h3 className="font-semibold text-slate-900">确认 3D 空间</h3><p className="mt-1 text-sm text-slate-500">这是同一份已校正 2D 数据生成的真实 3D 预览。</p></div><div className="flex gap-2"><button type="button" className="rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => setActiveStep(3)}>返回 2D 校正</button>{canOpenLinkedWorkspace && <button type="button" className="rounded-lg bg-violet-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => completeAndAdvance(4, 5)}>完成并打开 3D</button>}</div></div>{canOpenLinkedWorkspace ? threeDPanel : threeDUnavailablePanel}</section>}
-        {activeStep === 5 && (canOpenLinkedWorkspace ? <div className="workspace-grid product-workspace product-workspace-linked">{twoDPanel}{threeDPanel}{editorInspector}</div> : <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800" role="alert"><h3 className="text-lg font-semibold">当前 3D 预览不可用</h3><p className="mt-2 text-sm text-slate-600">联动工作台已关闭，请先返回 2D 校正。</p><button type="button" className="mt-4 rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => setActiveStep(3)}>返回 2D 校正</button></section>)}
+        {activeStep === 3 && <TwoDWorkspace editor={twoDPanel} inspector={editorInspector} />}
+        {activeStep === 4 && <ThreeDConfirmation preview={threeDPanel} unavailable={threeDUnavailablePanel} canOpenLinkedWorkspace={canOpenLinkedWorkspace} onBack={() => setActiveStep(3)} onComplete={() => completeAndAdvance(4, 5)} />}
+        {activeStep === 5 && <LinkedWorkspace editor={twoDPanel} preview={threeDPanel} inspector={editorInspector} available={canOpenLinkedWorkspace} onBack={() => setActiveStep(3)} />}
         {activeStep === 6 && savePanel}
-      </div></div>
-    </div></div>
+    </ProductShell>
   )
 }
