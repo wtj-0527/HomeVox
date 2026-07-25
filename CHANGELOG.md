@@ -4,6 +4,10 @@
 
 ### Added
 
+- 修复 Issue #19 独立视觉验收发现的产品问题：移除普通用户界面的内部标识和工程术语，统一以「待确认 / 尚未测量 / 尚未识别」表达未确认信息；真实底层状态、选择、历史、导出与失败关闭链路不变。
+- 恢复 Tailwind spacing utilities 的正常层叠，并将 01、03、04、05 的 1440 × 960 live Penpot 卡片、网格、画布和边距写入 production DOM geometry gate；2D SVG 现在自适应居中，消除右侧黑色裁切和联动页下方无意义空白。
+- 3D 完成页现在只在可见空间预览真正准备好后显示完成态；生产测试同时约束客户可见文案、选择、真实像素、开洞、异步更新和过期导出拒绝。
+
 - 完成 Issue #19 的 Penpot 产品化闭环：直接通过已配置的 Streamable HTTP Penpot MCP 回读当前 live file/page 与 6 个 1440 × 960 Board，并将 232px 侧栏、72px 顶栏、Inter 字体层级、颜色、圆角、工作区与 unknown 语义固化为前端产品设计合同和 production layout gate。
 - 导入页现在在真实浏览器上传后保持在用户可理解的「导入真实户型图」两栏确认界面；主 CTA 才会调用 `/api/floorplans/parse` 并进入 AI 识别状态，避免选择文件即跳到工程流程页。
 - 校正、生成 3D、联动和保存页面改为对应 Penpot 的产品工作区；保留真实 canonical、R3F/Rust-WASM、双向选择、Undo/Redo、保存/reload 和 stale-export fail-closed 链路，同时不在普通界面暴露原始 ID、WASM/端口/时序或 JSON 诊断信息。

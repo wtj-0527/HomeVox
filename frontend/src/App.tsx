@@ -161,12 +161,12 @@ function toCanvasPoint(
     return { x: Number.NaN, y: Number.NaN }
   }
 
-  // Match the outer SVG's preserveAspectRatio="xMinYMin meet" transform exactly.
+  // Match the centered SVG's preserveAspectRatio="xMidYMid meet" transform exactly.
   const scale = Math.min(rect.width / viewport.width, rect.height / viewport.height)
   const renderedWidth = viewport.width * scale
   const renderedHeight = viewport.height * scale
-  const x = event.clientX - rect.left
-  const y = event.clientY - rect.top
+  const x = event.clientX - rect.left - (rect.width - renderedWidth) / 2
+  const y = event.clientY - rect.top - (rect.height - renderedHeight) / 2
   if (x < 0 || y < 0 || x > renderedWidth || y > renderedHeight) {
     return { x: Number.NaN, y: Number.NaN }
   }
@@ -407,6 +407,7 @@ export default function App() {
         currentFrame: currentThreeDGeneration,
       },
       currentProjectId: currentProject?.id ?? null,
+      selectedWallId: selectedWallID,
       selectedOpeningId: selectedOpeningID,
       walls: walls.map((wall) => ({
         id: wall.id ?? null,
@@ -422,7 +423,7 @@ export default function App() {
         width: opening.width ?? null,
       })),
     })
-  }, [canonicalRevision, currentProject, currentThreeDGeneration, frameRevision, geometryRevision, openings, selectedOpeningID, threeRenderer, walls, wasmGeometry, wasmMetrics, wasmState])
+  }, [canonicalRevision, currentProject, currentThreeDGeneration, frameRevision, geometryRevision, openings, selectedOpeningID, selectedWallID, threeRenderer, walls, wasmGeometry, wasmMetrics, wasmState])
 
   function buildScopeFileName(scope: '2d' | '3d'): string {
     exportSequenceRef.current += 1
@@ -644,14 +645,10 @@ export default function App() {
         // Reverse proxies and upstream failures can return non-JSON error pages.
       }
       if (!response.ok) {
-        const message =
-          body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
-            ? body.error
-            : responseText.trim() || response.statusText || '未知错误'
-        throw new Error(`解析失败：HTTP ${response.status} ${message}`)
+        throw new Error('暂时无法完成识别，请检查网络或稍后重试。')
       }
       if (!isParseResponse(body)) {
-        throw new Error('解析失败：服务返回的数据结构不完整或包含无效坐标')
+        throw new Error('识别结果暂时无法使用，请重新选择图纸后再试。')
       }
       if (parseRequestRef.current?.id !== requestId) return
 

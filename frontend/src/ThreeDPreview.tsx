@@ -164,7 +164,7 @@ function CanonicalScene({
           <button
             type="button"
             data-testid={`three-wall-${wall.id}`}
-            aria-label={`3D 选择墙体 ${wall.id}`}
+            aria-label="选择墙体"
             aria-pressed={selectedWallID === wall.id}
             data-selected={selectedWallID === wall.id ? 'true' : 'false'}
             className={`h-4 w-4 rounded border border-white p-0 shadow ${selectedWallID === wall.id ? 'bg-violet-500' : 'bg-slate-950/45'}`}
@@ -195,7 +195,7 @@ function CanonicalScene({
               <button
                 type="button"
                 data-testid={`three-opening-button-${opening.id}`}
-                aria-label={`3D 选择${isDoor ? '门' : '窗'} ${opening.id}`}
+                aria-label={`选择${isDoor ? '门洞' : '窗洞'}`}
                 aria-pressed={selectedOpeningID === opening.id}
                 className="h-5 w-5 rounded-full border-2 border-white bg-slate-950/30 p-0 shadow-lg"
                 onClick={() => onSelectOpening(opening.id)}
@@ -211,7 +211,7 @@ function CanonicalScene({
 export function ThreeDPreview(props: ThreeDPreviewProps) {
   const frame = frameWallShellModel(props.model)
   if (!props.webGLAvailable) {
-    return <div className="flex h-full w-full items-center justify-center px-8 text-center" role="status" aria-label="3D 渲染不可用"><div className="max-w-sm rounded-2xl border border-amber-400/25 bg-amber-950/30 px-5 py-4 text-sm leading-6 text-amber-100">当前浏览器无法显示 3D 预览。请在启用 WebGL 的浏览器中打开；2D 校正仍可继续。</div></div>
+    return <div className="flex h-full w-full items-center justify-center px-8 text-center" role="status" aria-label="空间预览不可用"><div className="max-w-sm rounded-2xl border border-amber-400/25 bg-amber-950/30 px-5 py-4 text-sm leading-6 text-amber-100">当前浏览器无法显示空间预览。请换用支持 3D 显示的浏览器；平面图调整仍可继续。</div></div>
   }
   return (
     <Canvas key={props.canonicalRevision ?? 'invalid'} className="absolute inset-0 h-full w-full" camera={{ position: frame.position, fov: 38, near: 0.1, far: 100 }} shadows gl={{ antialias: true, preserveDrawingBuffer: true, alpha: false }} data-testid="three-render-surface">

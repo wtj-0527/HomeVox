@@ -10,12 +10,12 @@ export function ThreeDPreviewPanel({ geometryValidationError, ...previewProps }:
   return (
     <main className="three-card relative min-h-[520px] min-w-0 overflow-hidden" aria-label="3D 户型预览">
       <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-xl bg-black/60 px-3 py-2 text-xs text-white/75">
-        <div className="font-medium text-white/90">3D 空间 · 同源可编辑预览</div><p className="mt-1 inline-flex rounded-full bg-violet-500/25 px-2 py-0.5 text-[11px] font-medium text-violet-100">已生成可审阅的同源 3D 几何</p>
-        <p className="mt-1 text-[11px] text-white/65">选择墙体、门窗可在两个视图中保持一致。</p>
-        {geometryValidationError && <p className="mt-1 max-w-xs text-[11px] text-amber-200" role="alert">当前开口数据无法生成 3D，请返回 2D 校正后重试。</p>}
+        <div className="font-medium text-white/90">空间预览</div><p className="mt-1 inline-flex rounded-full bg-violet-500/25 px-2 py-0.5 text-[11px] font-medium text-violet-100">可继续查看与编辑</p>
+        <p className="mt-1 text-[11px] text-white/65">在平面图或空间预览中选择同一个位置。</p>
+        {geometryValidationError && <p className="mt-1 max-w-xs text-[11px] text-amber-200" role="alert">部分位置需要回到平面图调整后再试。</p>}
       </div>
       <div className="h-full w-full"><ThreeDPreview {...previewProps} /></div>
-      <div className="pointer-events-none absolute bottom-3 left-3 right-3 rounded-xl bg-black/55 px-3 py-2 text-center text-xs text-white/50">墙体高度为示意；精确高度、承重属性、墙厚与窗台高度需实测。</div>
+      <div className="pointer-events-none absolute bottom-3 left-3 right-3 rounded-xl bg-black/55 px-3 py-2 text-center text-xs text-white/50">层高、墙高和结构属性尚未测量，当前仅作空间查看参考。</div>
     </main>
   )
 }
