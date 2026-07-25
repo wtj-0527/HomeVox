@@ -205,12 +205,25 @@ export function buildWallShellModel(
   }
 }
 
-export type ThreeDFrame = { position: readonly [number, number, number]; target: readonly [number, number, number]; floorSpan: number }
-/** Camera derived from the same normalized shell, rather than a fixed scene-size guess. */
-export function frameWallShellModel(model: WallShellModel): ThreeDFrame {
+export type ThreeDFrame = {
+  position: readonly [number, number, number]
+  target: readonly [number, number, number]
+  floorSpan: number
+}
+
+/** Camera derived from normalized floorplan bounds and the actual canvas aspect
+ * ratio. The previous fixed-distance framing made a valid floorplan occupy too
+ * little of Step 4/5 on production layouts. */
+export function frameWallShellModel(model: WallShellModel, aspectRatio = 16 / 9): ThreeDFrame {
   const floorSpan = Math.max(model.floor?.width ?? 0, model.floor?.depth ?? 0, 1)
-  const distance = floorSpan * 1.16 + WALL_SHELL_HEIGHT * 1.5
-  return { position: [distance, distance * 0.72, distance], target: [0, WALL_SHELL_HEIGHT * 0.38, 0], floorSpan }
+  const aspect = Number.isFinite(aspectRatio) ? Math.min(2.6, Math.max(0.8, aspectRatio)) : 16 / 9
+  const horizontalDistance = floorSpan * (aspect >= 1.2 ? 0.92 : 1.06) + WALL_SHELL_HEIGHT * 0.55
+  const elevation = Math.max(WALL_SHELL_HEIGHT * 2.25, floorSpan * 0.58 + WALL_SHELL_HEIGHT * 0.7)
+  return {
+    position: [horizontalDistance, elevation, horizontalDistance],
+    target: [0, WALL_SHELL_HEIGHT * 0.38, 0],
+    floorSpan,
+  }
 }
 
 /** Builds visible wall spans from canonical openings.  The renderer uses these

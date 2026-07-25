@@ -38,19 +38,18 @@ import {
   validateCanvasSize,
 } from './export'
 import {
-  createProject,
-  getProject,
-  listProjects,
-  updateProject,
   type ProjectDetail,
-  type ProjectSummary,
 } from './projects'
 import { canApplyProductFlowEvent, initialCompletedSteps, type ProductStep, type ProductFlowContext } from './productFlow'
 import { ProductShell } from './ProductShell'
-import { FloorplanEditorPanel } from './FloorplanEditorPanel'
+import type { FloorplanEditorPanelProps } from './FloorplanEditorPanel'
+import type { InspectorPanelProps } from './InspectorPanel'
+import { ProjectSaveView } from './ProjectSaveView'
 import { LinkedWorkspace, ThreeDConfirmation, TwoDWorkspace } from './ProductViews'
-import { ThreeDPreview } from './ThreeDPreview'
+import { SourceImportView, AIParseView, type ParseViewStatus } from './SourceImportView'
+import type { ThreeDPreviewPanelProps } from './ThreeDPreviewPanel'
 import { useProductFlowController } from './useProductFlowController'
+import { useProjectSession } from './useProjectSession'
 import { useThreeDGenerationController } from './useThreeDGenerationController'
 import { canExportCurrentThreeD } from './threeDExport'
 import { canonicalRevisionToken } from './floorplanSession'
@@ -61,7 +60,7 @@ const API_PARSE_URL = '/api/floorplans/parse'
 const EMPTY_WALLS: WallSegment[] = []
 
 
-type ParseState = 'idle' | 'uploading' | 'ready' | 'error'
+type ParseState = ParseViewStatus
 
 type ScenePoint = {
   x: number
@@ -212,11 +211,6 @@ export default function App() {
   const [showSourceImage, setShowSourceImage] = useState(true)
   const [imageDimFallback, setImageDimFallback] = useState<{ width: number; height: number } | null>(null)
   const [editorSize, setEditorSize] = useState({ width: 0, height: 0 })
-  const [projectName, setProjectName] = useState('')
-  const [currentProject, setCurrentProject] = useState<ProjectDetail | null>(null)
-  const [projects, setProjects] = useState<ProjectSummary[]>([])
-  const [projectMessage, setProjectMessage] = useState('')
-  const [projectBusy, setProjectBusy] = useState<null | 'list' | 'save' | 'load'>(null)
   const [wasmGeometry, setWasmGeometry] = useState<BufferGeometry | null>(null)
   const [wasmState, setWasmState] = useState<'idle' | 'loading' | 'active' | 'fallback'>('idle')
   const [wasmMetrics, setWasmMetrics] = useState<MarchingCubesMetrics | null>(null)
@@ -228,9 +222,7 @@ export default function App() {
   const svgUrlRef = useRef('')
   const parseRequestRef = useRef<{ id: number; controller: AbortController } | null>(null)
   const requestSequenceRef = useRef(0)
-  const projectRequestRef = useRef<{ id: number; controller: AbortController } | null>(null)
-  const projectSequenceRef = useRef(0)
-  const initialProjectLoadRef = useRef<(id: string) => void>(() => undefined)
+  const initialProjectLoadRef = useRef<(id: string) => Promise<void>>(() => Promise.resolve())
   const wasmGenerationRef = useRef(0)
   const [, setWasmGeneration] = useState(0)
   const wasmGeometryRef = useRef<BufferGeometry | null>(null)
@@ -258,11 +250,13 @@ export default function App() {
   const {
     geometryRevision,
     renderer: threeRenderer,
+    frameRevision,
     isCurrent: isCurrentThreeDGeneration,
     invalidateGeometry,
     resolveGeometry,
     mountRenderer,
     unmountRenderer,
+    acknowledgeFrame,
   } = threeDGeneration
   const currentThreeDGeneration = isCurrentThreeDGeneration(wasmState === 'active' && wasmGeometry !== null)
   // Confirmation mounts the renderer that completes the revision handshake.
@@ -283,6 +277,51 @@ export default function App() {
   const applyProductTransition = useCallback((event: Parameters<typeof productFlow.transition>[0], context = productFlowContext) => {
     transitionProductFlow(event, context)
   }, [productFlowContext, transitionProductFlow])
+  const applyLoadedProject = useCallback((loaded: ProjectDetail, sourceImage: Blob) => {
+    const nextPreviewURL = URL.createObjectURL(sourceImage)
+    setPreviewURL((currentURL) => {
+      if (currentURL) URL.revokeObjectURL(currentURL)
+      return nextPreviewURL
+    })
+    setSelectedFile(null)
+    setParseResponse(loaded.document)
+    applyProductTransition(
+      { type: 'reload', completed: initialCompletedSteps({ hasCanonicalDocument: true, isSavedProject: true }) },
+      { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false },
+    )
+    applyProductTransition(
+      { type: 'open', step: 3 },
+      { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false },
+    )
+    setStatus('ready')
+    setDraggedEndpoint(null)
+    setDragPreviewWalls(null)
+    setHoveredEndpoint(null)
+    setSelectedWallID(null)
+    setSelectedOpeningID(null)
+    setDraggedOpeningID(null)
+    setDragPreviewOpenings(null)
+    setOpeningError('')
+  }, [applyProductTransition])
+  const projectSession = useProjectSession({
+    document: durableDocument,
+    geometryValidationError,
+    sourceFile: selectedFile,
+    onProjectSaved: () => applyProductTransition({ type: 'complete', step: 6 }, productFlowContext),
+    onProjectLoaded: applyLoadedProject,
+  })
+  const {
+    projectName,
+    currentProject,
+    projects,
+    projectMessage,
+    projectBusy,
+    setProjectName,
+    clearCurrentProject,
+    refreshProjects,
+    saveProject,
+    loadProject,
+  } = projectSession
   const wallShellModel = useMemo(
     () => buildWallShellModel(walls, doors, windows),
     [walls, doors, windows],
@@ -314,6 +353,7 @@ export default function App() {
     rendererMounted: threeRenderer !== null,
     rendererGeneration: threeRenderer?.generation ?? null,
     geometryGeneration: geometryRevision,
+    frameGeneration: frameRevision,
     canonicalGeneration: canonicalRevision,
   })
 
@@ -340,6 +380,13 @@ export default function App() {
         finite,
         fingerprint,
       },
+      threeD: {
+        canonicalRevision,
+        geometryRevision,
+        rendererRevision: threeRenderer?.generation ?? null,
+        frameRevision,
+        currentFrame: currentThreeDGeneration,
+      },
       currentProjectId: currentProject?.id ?? null,
       selectedOpeningId: selectedOpeningID,
       walls: walls.map((wall) => ({
@@ -356,7 +403,7 @@ export default function App() {
         width: opening.width ?? null,
       })),
     })
-  }, [currentProject, openings, selectedOpeningID, walls, wasmGeometry, wasmMetrics, wasmState])
+  }, [canonicalRevision, currentProject, currentThreeDGeneration, frameRevision, geometryRevision, openings, selectedOpeningID, threeRenderer, walls, wasmGeometry, wasmMetrics, wasmState])
 
   function buildScopeFileName(scope: '2d' | '3d'): string {
     exportSequenceRef.current += 1
@@ -384,7 +431,6 @@ export default function App() {
 
   useEffect(() => () => {
     parseRequestRef.current?.controller.abort()
-    projectRequestRef.current?.controller.abort()
   }, [])
 
   useEffect(() => () => {
@@ -456,14 +502,14 @@ export default function App() {
 
   useEffect(() => {
     void refreshProjects()
-  }, [])
+  }, [refreshProjects])
 
   // The URL-selected project is an initial-load command, not a reactive
   // request; later editor changes must never reload it over local edits.
-  initialProjectLoadRef.current = handleLoadProject
+  initialProjectLoadRef.current = loadProject
   useEffect(() => {
     const projectID = e2EProjectID()
-    if (projectID) initialProjectLoadRef.current(projectID)
+    if (projectID) void initialProjectLoadRef.current(projectID)
   }, [])
 
   useEffect(() => () => {
@@ -591,8 +637,8 @@ export default function App() {
 
       setParseResponse(body)
       applyProductTransition({ type: 'complete', step: 2, next: 3 }, { hasDocument: true, hasCanonicalGeometry: false, hasThreeDGeometry: false })
-      setCurrentProject(null)
-      setProjectName((current) => current || body.filename)
+      clearCurrentProject()
+      setProjectName(projectName || body.filename)
       setStatus('ready')
       setDraggedEndpoint(null)
       setDragPreviewWalls(null)
@@ -634,7 +680,7 @@ export default function App() {
     setExportError('')
     setStatus('idle')
     setImageDimFallback(null)
-    setCurrentProject(null)
+    clearCurrentProject()
     applyProductTransition({ type: 'reload', completed: file ? [1] : [] }, { hasDocument: false, hasCanonicalGeometry: false, hasThreeDGeometry: false })
     if (file) applyProductTransition({ type: 'open', step: 2 }, { hasDocument: false, hasCanonicalGeometry: false, hasThreeDGeometry: false })
 
@@ -642,109 +688,6 @@ export default function App() {
       if (currentURL) URL.revokeObjectURL(currentURL)
       return file ? URL.createObjectURL(file) : ''
     })
-  }
-
-  function beginProjectRequest(): { id: number; controller: AbortController } {
-    projectRequestRef.current?.controller.abort()
-    const request = { id: projectSequenceRef.current + 1, controller: new AbortController() }
-    projectSequenceRef.current = request.id
-    projectRequestRef.current = request
-    return request
-  }
-
-  async function refreshProjects() {
-    const request = beginProjectRequest()
-    setProjectBusy('list')
-    try {
-      const items = await listProjects(request.controller.signal)
-      if (projectRequestRef.current?.id === request.id) setProjects(items)
-    } catch (err) {
-      if (!request.controller.signal.aborted && projectRequestRef.current?.id === request.id) {
-        setProjectMessage(`项目列表加载失败：${err instanceof Error ? err.message : '未知错误'}`)
-      }
-    } finally {
-      if (projectRequestRef.current?.id === request.id) setProjectBusy(null)
-    }
-  }
-
-  async function handleProjectSave() {
-    if (!durableDocument) {
-      setProjectMessage('请先完成户型解析后再创建项目')
-      return
-    }
-    if (geometryValidationError) {
-      setProjectMessage('当前户型几何无效，请返回 2D 校正后再保存')
-      return
-    }
-    if (!projectName.trim()) {
-      setProjectMessage('请输入项目名称')
-      return
-    }
-    if (!currentProject && !selectedFile) {
-      setProjectMessage('创建项目需要原始户型图')
-      return
-    }
-    const request = beginProjectRequest()
-    setProjectBusy('save')
-    setProjectMessage('')
-    try {
-      const saved = currentProject
-        ? await updateProject(currentProject.id, projectName, durableDocument, currentProject.revision, request.controller.signal)
-        : await createProject(projectName, durableDocument, selectedFile!, request.controller.signal)
-      if (projectRequestRef.current?.id !== request.id) return
-      setCurrentProject(saved)
-      setProjectName(saved.name)
-      setProjectMessage(currentProject ? '项目已保存' : '项目已创建')
-      applyProductTransition({ type: 'complete', step: 6 }, productFlowContext)
-      setProjects((items) => [saved, ...items.filter((item) => item.id !== saved.id)])
-    } catch (err) {
-      if (!request.controller.signal.aborted && projectRequestRef.current?.id === request.id) {
-        setProjectMessage(`项目保存失败：${err instanceof Error ? err.message : '未知错误'}`)
-      }
-    } finally {
-      if (projectRequestRef.current?.id === request.id) setProjectBusy(null)
-    }
-  }
-
-  async function handleLoadProject(id: string) {
-    const request = beginProjectRequest()
-    setProjectBusy('load')
-    setProjectMessage('')
-    try {
-      const loaded = await getProject(id, request.controller.signal)
-      const imageResponse = await fetch(loaded.sourceImageURL, { signal: request.controller.signal })
-      if (!imageResponse.ok) throw new Error(`HTTP ${imageResponse.status}: 无法加载原始户型图`)
-      const imageBlob = await imageResponse.blob()
-      if (!imageBlob.type.startsWith('image/')) throw new Error('原始户型图不是受支持的图片')
-      if (projectRequestRef.current?.id !== request.id) return
-      const nextPreviewURL = URL.createObjectURL(imageBlob)
-      setPreviewURL((currentURL) => {
-        if (currentURL) URL.revokeObjectURL(currentURL)
-        return nextPreviewURL
-      })
-      setSelectedFile(null)
-      setParseResponse(loaded.document)
-      applyProductTransition({ type: 'reload', completed: initialCompletedSteps({ hasCanonicalDocument: true, isSavedProject: true }) }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false })
-      applyProductTransition({ type: 'open', step: 3 }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false })
-      setCurrentProject(loaded)
-      setProjectName(loaded.name)
-      setStatus('ready')
-      setProjectMessage('项目已加载')
-      setDraggedEndpoint(null)
-      setDragPreviewWalls(null)
-      setHoveredEndpoint(null)
-      setSelectedWallID(null)
-      setSelectedOpeningID(null)
-      setDraggedOpeningID(null)
-      setDragPreviewOpenings(null)
-      setOpeningError('')
-    } catch (err) {
-      if (!request.controller.signal.aborted && projectRequestRef.current?.id === request.id) {
-        setProjectMessage(`项目加载失败：${err instanceof Error ? err.message : '未知错误'}`)
-      }
-    } finally {
-      if (projectRequestRef.current?.id === request.id) setProjectBusy(null)
-    }
   }
 
   function handleUndo() {
@@ -992,98 +935,72 @@ export default function App() {
     }
   }
 
-  const twoDPanel = (
-    <FloorplanEditorPanel
-      editorRef={editorRef}
-      viewport={viewport}
-      walls={walls}
-      openings={openings}
-      showSourceImage={showSourceImage}
-      previewURL={previewURL}
-      geometryValidationError={geometryValidationError}
-      selectedWallID={selectedWallID}
-      selectedWallLabel={selectedWall?.id ?? null}
-      selectedOpeningID={selectedOpeningID}
-      hoveredEndpoint={hoveredEndpoint}
-      draggedEndpoint={draggedEndpoint}
-      hitRadius={hitRadius}
-      handleRadius={handleRadius}
-      activeHandleRadius={activeHandleRadius}
-      wallHitStroke={wallHitStroke}
-      wallStroke={wallStroke}
-      activeWallStroke={activeWallStroke}
-      openingRadius={openingRadius}
-      openingStroke={openingStroke}
-      labelOffset={labelOffset}
-      labelSize={labelSize}
-      onShowSourceImageChange={setShowSourceImage}
-      onCanvasPointerMove={handleCanvasPointerMove}
-      onCanvasPointerUp={handleCanvasPointerUp}
-      onCanvasPointerCancel={handleCanvasPointerCancel}
-      onEndpointPointerDown={handleCanvasPointerDown}
-      onWallPointerDown={handleWallPointerDown}
-      onOpeningPointerDown={handleOpeningPointerDown}
-    />
-  )
-
-  const threeDPanel = (
-    <main className="three-card relative min-h-[520px] min-w-0 overflow-hidden" aria-label="3D 户型预览">
-      <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-xl bg-black/60 px-3 py-2 text-xs text-white/75">
-        <div className="font-medium text-white/90">3D 空间 · 同源可编辑预览</div><p className="mt-1 inline-flex rounded-full bg-violet-500/25 px-2 py-0.5 text-[11px] font-medium text-violet-100">已生成可审阅的同源 3D 几何</p>
-        <p className="mt-1 text-[11px] text-white/65">选择墙体、门窗可在两个视图中保持一致。</p>
-        {geometryValidationError && <p className="mt-1 max-w-xs text-[11px] text-amber-200" role="alert">当前开口数据无法生成 3D，请返回 2D 校正后重试。</p>}
-      </div>
-      <div className="h-full w-full">
-        <ThreeDPreview canonicalRevision={canonicalRevision} model={wallShellModel} wasmGeometry={wasmGeometry} wasmActive={wasmState === 'active'} webGLAvailable={webGLAvailable} selectedWallID={selectedWallID} selectedOpeningID={selectedOpeningID} onSelectWall={selectWall} onSelectOpening={selectOpening} onRendererMount={mountRenderer} onRendererUnmount={unmountRenderer} />
-      </div>
-      <div className="pointer-events-none absolute bottom-3 left-3 right-3 rounded-xl bg-black/55 px-3 py-2 text-center text-xs text-white/50">墙体高度为示意；精确高度、承重属性、墙厚与窗台高度需实测。</div>
-    </main>
-  )
-
-  const threeDUnavailablePanel = (
-    <div className="workspace-card p-6 text-slate-800" role={wasmState === 'loading' ? 'status' : 'alert'}>
-      {geometryValidationError ? (
-        <>
-          <h4 className="text-lg font-semibold">当前开口数据无法生成 3D</h4>
-          <p className="mt-2 text-sm text-slate-600">请返回 2D 校正后修复数据，再重新生成 3D。</p>
-        </>
-      ) : wasmState === 'loading' ? (
-        <>
-          <h4 className="text-lg font-semibold">正在准备 3D 预览</h4>
-          <p className="mt-2 text-sm text-slate-600">3D 几何准备完成后，才能打开联动工作台。</p>
-        </>
-      ) : (
-        <>
-          <h4 className="text-lg font-semibold">当前 3D 预览不可用</h4>
-          <p className="mt-2 text-sm text-slate-600">无法生成可靠的 3D 几何。请返回 2D 校正后重试，或在支持 WebGL 的浏览器中打开。</p>
-        </>
-      )}
-      <button type="button" className="mt-4 rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => applyProductTransition({ type: 'open', step: 3 })}>返回 2D 校正</button>
-    </div>
-  )
-
-  const editorInspector = (
-    <aside className="workspace-card inspector-card min-w-0 p-4 text-slate-800">
-      <section className="space-y-3 text-xs">
-        <div><h3 className="text-base font-semibold">对象检查器</h3><p className="mt-1 text-slate-500">选择 2D 或 3D 中的对象以查看同一个稳定标识。</p></div>
-        <div className="rounded-xl bg-slate-50 p-3" aria-label="墙体对象上下文"><p className="text-slate-500">当前墙体</p><p data-testid="selected-wall-id" className="mt-1 font-semibold text-slate-900">{selectedWall?.id ?? '未选择'}</p>{selectedOpening && <p data-testid="selected-opening-id" className="mt-2 text-slate-600">开口：{selectedOpening.id} · 归属：{selectedOpening.wallId ?? '未知'}</p>}</div>
-        <div className="rounded-xl bg-slate-50 p-3" aria-label="开口编辑器"><p className="mb-2 text-slate-500">门窗开口</p><div className="grid grid-cols-2 gap-2"><button type="button" className="rounded-lg bg-orange-600 px-3 py-2 text-white disabled:opacity-50" disabled={!selectedWallID} onClick={() => handleAddOpening('door')}>添加门</button><button type="button" className="rounded-lg bg-sky-600 px-3 py-2 text-white disabled:opacity-50" disabled={!selectedWallID} onClick={() => handleAddOpening('window')}>添加窗</button></div>{selectedOpening && <div className="mt-2 grid grid-cols-[1fr_auto] gap-2"><label className="text-slate-600">宽度<input aria-label="开口宽度" data-testid="opening-width" className="mt-1 w-full rounded border border-slate-300 bg-white px-2 py-1 text-slate-900" type="number" min={MIN_OPENING_WIDTH} step="1" value={selectedOpening.width ?? ''} onChange={(event) => { const width = Number(event.target.value); if (Number.isFinite(width)) commitOpeningPatch(selectedOpening.id!, { width }) }} /></label><button type="button" className="self-end rounded-lg bg-red-700 px-3 py-2 text-white" onClick={handleDeleteOpening}>删除</button>{selectedOpening.kind === 'window' && <p className="unknown-note col-span-2 p-2" data-testid="window-preview-disclosure" role="status">窗台高和窗高未知。3D 预览使用未持久化的示意值，不会保存为建筑参数。</p>}{selectedOpening.kind === 'door' && selectedOpening.confirmed !== true && <p className="unknown-note col-span-2 p-2" data-testid="door-preview-disclosure" role="status">门高未知。3D 全高门洞仅为预览示意，不会保存为建筑参数。</p>}</div>}{openingError && <p role="alert" className="mt-2 text-amber-700">{openingError}</p>}</div>
-        <div className="rounded-xl bg-slate-50 p-3"><p className="mb-2 text-slate-500">导出当前视图</p><div className="grid grid-cols-2 gap-2"><button aria-label="导出2D平面图PNG" className="rounded-lg bg-emerald-600 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!canExport2D} onClick={handleExport2D}>{exportingScope === '2d' ? '导出中…' : '导出2D PNG'}</button><button aria-label="导出3D白模PNG" className="rounded-lg bg-sky-600 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!canExport3D} onClick={handleExport3D}>{exportingScope === '3d' ? '导出中…' : '导出3D PNG'}</button></div>{exportError && <p role="alert" className="mt-2 text-amber-700">{exportError}</p>}</div>
-        <div className="rounded-xl bg-slate-50 p-3"><p className="mb-2 text-slate-500">编辑历史</p><div className="grid grid-cols-2 gap-2"><button aria-label="撤销（Ctrl/Cmd + Z）" className="rounded-lg bg-slate-800 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!canUndo(wallEditor)} onClick={handleUndo}>Undo</button><button aria-label="重做（Ctrl/Cmd + Shift+Z 或 Ctrl/Cmd + Y）" className="rounded-lg bg-slate-800 px-3 py-2 text-white disabled:opacity-50" type="button" disabled={!canRedo(wallEditor)} onClick={handleRedo}>Redo</button></div></div>
-      </section>
-    </aside>
-  )
-
-  const sourcePreview = previewURL && selectedFile && (
-    <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-3" aria-label="已选择的户型图">
-      <div className="flex items-start justify-between gap-3"><div><p className="font-medium text-slate-800">原图预览</p><p className="mt-1 text-xs text-slate-500">{selectedFile.name} · {selectedFile.type || '未知类型'} · {selectedFile.size.toLocaleString()} bytes</p></div><label className="cursor-pointer rounded-lg border border-violet-300 px-3 py-1.5 text-xs font-medium text-violet-700">重新选择<input className="sr-only" type="file" accept="image/png,image/jpeg,image/gif,image/webp" onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)} /></label></div>
-      <img className="mt-3 max-h-72 w-full rounded-lg object-contain bg-white" src={previewURL} alt="上传户型图预览" />
-    </section>
-  )
-
-  const savePanel = (
-    <section className="workspace-card mx-auto w-full max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">保存项目</h3><p className="mt-2 text-sm text-slate-500">手动保存当前同源 2D 与 3D 数据。保存不可用时会保留当前编辑，不会假装成功。</p><div className="mt-6 space-y-3"><input aria-label="项目名称" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900" value={projectName} maxLength={120} placeholder="项目名称" onChange={(event) => setProjectName(event.target.value)} /><button className="w-full rounded-lg bg-violet-600 px-3 py-2 font-medium text-white disabled:opacity-50" type="button" disabled={!hasCanonicalGeometry || projectBusy !== null} onClick={() => void handleProjectSave()}>{projectBusy === 'save' ? '保存中…' : currentProject ? `保存项目（r${currentProject.revision}）` : '创建项目'}</button>{projectMessage && <p role="status" className="text-sm text-slate-700">{projectMessage}</p>}<div className="border-t border-slate-200 pt-4"><div className="mb-2 flex items-center justify-between"><h4 className="font-semibold">已保存项目</h4><button className="rounded-md border border-slate-300 px-2 py-1 text-xs" type="button" disabled={projectBusy !== null} onClick={() => void refreshProjects()}>{projectBusy === 'list' ? '刷新中…' : '刷新'}</button></div><ul className="space-y-2" aria-label="已保存项目">{projects.map((item) => <li key={item.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 p-2"><span>{item.name} <span className="text-slate-500">r{item.revision}</span></span><button className="rounded-md bg-sky-700 px-2 py-1 text-xs text-white" type="button" disabled={projectBusy !== null} onClick={() => void handleLoadProject(item.id)}>加载</button></li>)}{projects.length === 0 && <li className="text-sm text-slate-500">暂无已保存项目</li>}</ul></div></div></section>
-  )
+  const editorProps: FloorplanEditorPanelProps = {
+    editorRef,
+    viewport,
+    walls,
+    openings,
+    showSourceImage,
+    previewURL,
+    geometryValidationError,
+    selectedWallID,
+    selectedWallLabel: selectedWall?.id ?? null,
+    selectedOpeningID,
+    hoveredEndpoint,
+    draggedEndpoint,
+    hitRadius,
+    handleRadius,
+    activeHandleRadius,
+    wallHitStroke,
+    wallStroke,
+    activeWallStroke,
+    openingRadius,
+    openingStroke,
+    labelOffset,
+    labelSize,
+    onShowSourceImageChange: setShowSourceImage,
+    onCanvasPointerMove: handleCanvasPointerMove,
+    onCanvasPointerUp: handleCanvasPointerUp,
+    onCanvasPointerCancel: handleCanvasPointerCancel,
+    onEndpointPointerDown: handleCanvasPointerDown,
+    onWallPointerDown: handleWallPointerDown,
+    onOpeningPointerDown: handleOpeningPointerDown,
+  }
+  const inspectorProps: InspectorPanelProps = {
+    selectedWallID,
+    selectedOpening,
+    openingError,
+    canExport2D,
+    canExport3D,
+    exportingScope,
+    exportError,
+    canUndo: canUndo(wallEditor),
+    canRedo: canRedo(wallEditor),
+    onAddOpening: handleAddOpening,
+    onOpeningWidthChange: (width) => {
+      if (selectedOpening?.id) commitOpeningPatch(selectedOpening.id, { width })
+    },
+    onDeleteOpening: handleDeleteOpening,
+    onExport2D: () => { void handleExport2D() },
+    onExport3D: () => { void handleExport3D() },
+    onUndo: handleUndo,
+    onRedo: handleRedo,
+  }
+  const threeDPreviewProps: ThreeDPreviewPanelProps = {
+    canonicalRevision,
+    model: wallShellModel,
+    wasmGeometry,
+    wasmActive: wasmState === 'active',
+    webGLAvailable,
+    selectedWallID,
+    selectedOpeningID,
+    onSelectWall: selectWall,
+    onSelectOpening: selectOpening,
+    onRendererMount: mountRenderer,
+    onRendererUnmount: unmountRenderer,
+    onFrameRendered: acknowledgeFrame,
+    geometryValidationError,
+  }
 
   const completeAndAdvance = (step: ProductStep, next: ProductStep) => applyProductTransition({ type: 'complete', step, next })
 
@@ -1106,12 +1023,12 @@ export default function App() {
 
   return (
     <ProductShell activeStep={activeStep} completedSteps={completedSteps} flow={flow} hasDocument={Boolean(durableDocument)} onOpenStep={(step) => applyProductTransition({ type: 'open', step })} primaryAction={primaryAction}>
-        {activeStep === 1 && <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">导入真实户型图</h3><p className="mt-2 text-sm text-slate-500">从你的图纸开始，不套用示意户型。</p><label className="mt-6 block cursor-pointer rounded-xl border border-dashed border-slate-400 bg-slate-50 p-5 text-sm hover:border-violet-500"><span className="block font-medium">选择户型图</span><span className="mt-1 block text-xs text-slate-500">支持 PNG、JPEG、GIF、WebP；后端限制 10 MiB</span><input className="mt-3 block w-full text-xs" type="file" accept="image/png,image/jpeg,image/gif,image/webp" onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)} /></label>{sourcePreview}</section>}
-        {activeStep === 2 && <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">AI 识别</h3><p className="mt-2 text-sm text-slate-500">识别前请核对这张原图；识别完成后才会打开可校正的同源 2D 数据。</p>{sourcePreview}<button className="mt-6 w-full rounded-xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50" type="button" disabled={status === 'uploading' || !selectedFile} onClick={handleParse}>{status === 'uploading' ? 'AI 识别中…' : '开始 AI 识别'}</button><div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm"><span className="text-slate-500">识别状态：</span>{status === 'ready' ? '解析完成' : status === 'uploading' ? '解析中' : status === 'error' ? '失败' : '等待开始'}{error && <p role="alert" className="mt-2 text-red-700">{error}</p>}</div>{status === 'error' && selectedFile && <button type="button" className="mt-3 rounded-lg border border-violet-300 px-3 py-2 text-sm text-violet-700" onClick={handleParse}>重试 AI 识别</button>}</section>}
-        {activeStep === 3 && <TwoDWorkspace editor={twoDPanel} inspector={editorInspector} />}
-        {activeStep === 4 && <ThreeDConfirmation preview={threeDPanel} unavailable={threeDUnavailablePanel} previewAvailable={canRenderThreeDPreview} canOpenLinkedWorkspace={canOpenLinkedWorkspace} onBack={() => applyProductTransition({ type: 'open', step: 3 })} onComplete={() => completeAndAdvance(4, 5)} />}
-        {activeStep === 5 && <LinkedWorkspace editor={twoDPanel} preview={threeDPanel} inspector={editorInspector} previewAvailable={canRenderThreeDPreview} onBack={() => applyProductTransition({ type: 'open', step: 3 })} />}
-        {activeStep === 6 && savePanel}
+        {activeStep === 1 && <SourceImportView selectedFile={selectedFile} previewURL={previewURL} onFileChange={handleFileChange} />}
+        {activeStep === 2 && <AIParseView selectedFile={selectedFile} previewURL={previewURL} onFileChange={handleFileChange} status={status} error={error} onParse={handleParse} />}
+        {activeStep === 3 && <TwoDWorkspace editor={editorProps} inspector={inspectorProps} />}
+        {activeStep === 4 && <ThreeDConfirmation preview={threeDPreviewProps} previewAvailable={canRenderThreeDPreview} canOpenLinkedWorkspace={canOpenLinkedWorkspace} wasmState={wasmState} onBack={() => applyProductTransition({ type: 'open', step: 3 })} onComplete={() => completeAndAdvance(4, 5)} />}
+        {activeStep === 5 && <LinkedWorkspace editor={editorProps} preview={threeDPreviewProps} inspector={inspectorProps} previewAvailable={canRenderThreeDPreview} onBack={() => applyProductTransition({ type: 'open', step: 3 })} />}
+        {activeStep === 6 && <ProjectSaveView projectName={projectName} currentProject={currentProject} projects={projects} projectMessage={projectMessage} projectBusy={projectBusy} canSave={hasCanonicalGeometry} onProjectNameChange={setProjectName} onSave={() => { void saveProject() }} onRefresh={() => { void refreshProjects() }} onLoad={(id) => { void loadProject(id) }} />}
     </ProductShell>
   )
 }

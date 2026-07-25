@@ -1,8 +1,8 @@
-import { Suspense, useEffect } from 'react'
+import { Suspense, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { Canvas, useThree, type RootState } from '@react-three/fiber'
 import { Grid, Html, OrbitControls } from '@react-three/drei'
 import type { BufferGeometry } from 'three'
-import { buildWallShellPieces, frameWallShellModel, type WallShellModel } from './wallShell'
+import { buildWallShellPieces, frameWallShellModel, WINDOW_OPENING_HEIGHT, WINDOW_SILL_HEIGHT, type WallShellModel } from './wallShell'
 
 export type ThreeDRenderer = { state: RootState; generation: string }
 
@@ -14,10 +14,87 @@ type RendererLifecycleProps = {
 
 function RendererLifecycle({ generation, onMount, onUnmount }: RendererLifecycleProps) {
   const state = useThree()
+  const stateRef = useRef(state)
+  stateRef.current = state
   useEffect(() => {
-    onMount({ state, generation })
+    // useThree's root state can publish size/frame updates. Renderer admission
+    // is a generation lifecycle, not a per-frame lifecycle: remounting the
+    // same renderer must never clear an already acknowledged pixel frame.
+    onMount({ state: stateRef.current, generation })
     return () => onUnmount(generation)
-  }, [generation, onMount, onUnmount, state])
+  }, [generation, onMount, onUnmount])
+  return null
+}
+
+function RenderedFrameLifecycle({ generation, onFrameRendered }: {
+  generation: string
+  onFrameRendered: (generation: string) => void
+}) {
+  const { gl, invalidate } = useThree()
+  useEffect(() => {
+    let firstFrame = 0
+    let secondFrame = 0
+    // A keyed Canvas has already mounted the current scene, but its mount is
+    // not evidence that a user-visible pixel buffer exists. Ask R3F for a
+    // draw, cross two browser frame boundaries, then synchronously read a
+    // WebGL pixel. A successful read is an actual completed render pass for
+    // this canvas—not a renderer/effect lifecycle proxy or a wall-clock delay.
+    invalidate()
+    firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        if (gl.domElement.width < 2 || gl.domElement.height < 2) return
+        const width = gl.domElement.width
+        const height = gl.domElement.height
+        const pixels = new Uint8Array(width * height * 4)
+        const context = gl.getContext()
+        context.readPixels(
+          0,
+          0,
+          width,
+          height,
+          context.RGBA,
+          context.UNSIGNED_BYTE,
+          pixels,
+        )
+        if (context.getError() !== context.NO_ERROR) return
+        // Do not admit a background-only canvas. The off-white canonical
+        // pieces (or their violet selected state) must occupy real pixels in
+        // the current render buffer before Step 4/5 or export can proceed.
+        let wallPixels = 0
+        for (let index = 0; index < pixels.length; index += 4) {
+          const red = pixels[index]
+          const green = pixels[index + 1]
+          const blue = pixels[index + 2]
+          if ((red > 145 && green > 145 && blue > 150) || (red > 85 && blue > 135 && blue - green > 20)) {
+            wallPixels += 1
+            if (wallPixels >= Math.max(24, Math.floor(width * height * 0.00005))) {
+              onFrameRendered(generation)
+              return
+            }
+          }
+        }
+      })
+    })
+    return () => {
+      cancelAnimationFrame(firstFrame)
+      cancelAnimationFrame(secondFrame)
+    }
+  }, [generation, gl, invalidate, onFrameRendered])
+  return null
+}
+
+function CameraFramer({ model }: { model: WallShellModel }) {
+  const { camera, size, invalidate } = useThree()
+  const frame = useMemo(
+    () => frameWallShellModel(model, size.width > 0 && size.height > 0 ? size.width / size.height : undefined),
+    [model, size.height, size.width],
+  )
+  useLayoutEffect(() => {
+    camera.position.set(...frame.position)
+    camera.lookAt(...frame.target)
+    camera.updateProjectionMatrix()
+    invalidate()
+  }, [camera, frame, invalidate])
   return null
 }
 
@@ -33,6 +110,7 @@ export type ThreeDPreviewProps = {
   onSelectOpening: (openingID: string) => void
   onRendererMount: (renderer: ThreeDRenderer) => void
   onRendererUnmount: (generation: string) => void
+  onFrameRendered: (generation: string) => void
 }
 
 function CanonicalScene({
@@ -43,7 +121,7 @@ function CanonicalScene({
   selectedOpeningID,
   onSelectWall,
   onSelectOpening,
-}: Omit<ThreeDPreviewProps, 'canonicalRevision' | 'webGLAvailable' | 'onRendererMount' | 'onRendererUnmount'>) {
+}: Omit<ThreeDPreviewProps, 'canonicalRevision' | 'webGLAvailable' | 'onRendererMount' | 'onRendererUnmount' | 'onFrameRendered'>) {
   const pieces = buildWallShellPieces(model)
   return (
     <>
@@ -52,10 +130,10 @@ function CanonicalScene({
       {model.floor && (
         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[model.floor.x, 0, model.floor.z]} receiveShadow data-testid="wall-shell-floor">
           <planeGeometry args={[model.floor.width, model.floor.depth]} />
-          <meshStandardMaterial color="#25344d" roughness={0.86} />
+          <meshStandardMaterial color="#536d9d" roughness={0.82} />
         </mesh>
       )}
-      <Grid args={[18, 18]} cellSize={1} cellThickness={0.5} cellColor="#334155" sectionSize={5} sectionThickness={1} sectionColor="#64748b" fadeDistance={30} infiniteGrid />
+      <Grid args={[18, 18]} cellSize={1} cellThickness={0.45} cellColor="#425779" sectionSize={5} sectionThickness={0.8} sectionColor="#90a4c6" fadeDistance={24} infiniteGrid />
 
       {/* Keep the generated WASM mesh in the mounted scene for a single
           canonical/WASM/renderer revision. Canonical pieces are the visible
@@ -73,17 +151,22 @@ function CanonicalScene({
             onClick={(event) => { event.stopPropagation(); onSelectWall(piece.wallId) }}
           >
             <boxGeometry args={[piece.length, piece.height, piece.thickness]} />
-            <meshStandardMaterial color="#dce7f4" roughness={0.68} />
+            <meshStandardMaterial
+              color={selectedWallID === piece.wallId ? '#a78bfa' : '#e8eff9'}
+              emissive={selectedWallID === piece.wallId ? '#5b21b6' : '#0f172a'}
+              emissiveIntensity={selectedWallID === piece.wallId ? 0.58 : 0.04}
+              roughness={0.58}
+            />
           </mesh>
         </group>
       ))}
       {selectedWallID && model.walls.filter((wall) => wall.id === selectedWallID).map((wall) => (
         <group key={`wall-selection-${wall.id}`} position={[wall.x, wall.height + 0.12, wall.z]} rotation={[0, wall.rotationY, 0]}>
           <mesh data-testid={`three-wall-highlight-${wall.id}`}>
-            <boxGeometry args={[Math.min(wall.length, 0.72), 0.09, wall.thickness + 0.08]} />
-            <meshBasicMaterial color="#8b5cf6" toneMapped={false} />
+            <boxGeometry args={[Math.min(wall.length, 1.4), 0.12, wall.thickness + 0.11]} />
+            <meshBasicMaterial color="#c4b5fd" toneMapped={false} />
           </mesh>
-          <pointLight color="#a78bfa" intensity={2.2} distance={2.5} />
+          <pointLight color="#c4b5fd" intensity={2.7} distance={3.5} />
         </group>
       ))}
 
@@ -103,7 +186,10 @@ function CanonicalScene({
 
       {model.openings.map((opening) => {
         const isDoor = opening.kind === 'door'
-        const markerHeight = isDoor ? 3.2 : 3.7
+        // Put the stable-ID selector at the actual opening center instead of
+        // floating it above the wall. It makes the physical cut-out reviewable
+        // and keeps 2D/3D selection targets semantically aligned.
+        const markerHeight = isDoor ? 1.4 : WINDOW_SILL_HEIGHT + WINDOW_OPENING_HEIGHT / 2
         return (
           <group key={opening.id}>
             <mesh
@@ -139,12 +225,14 @@ export function ThreeDPreview(props: ThreeDPreviewProps) {
     return <div className="flex h-full w-full items-center justify-center px-8 text-center" role="status" aria-label="3D 渲染不可用"><div className="max-w-sm rounded-2xl border border-amber-400/25 bg-amber-950/30 px-5 py-4 text-sm leading-6 text-amber-100">当前浏览器无法显示 3D 预览。请在启用 WebGL 的浏览器中打开；2D 校正仍可继续。</div></div>
   }
   return (
-    <Canvas key={props.canonicalRevision ?? 'invalid'} className="absolute inset-0" camera={{ position: frame.position, fov: 38, near: 0.1, far: 100 }} shadows gl={{ antialias: true, preserveDrawingBuffer: true, alpha: false }} data-testid="three-render-surface">
-      <color attach="background" args={['#111a2f']} />
+    <Canvas key={props.canonicalRevision ?? 'invalid'} className="absolute inset-0 h-full w-full" camera={{ position: frame.position, fov: 38, near: 0.1, far: 100 }} shadows gl={{ antialias: true, preserveDrawingBuffer: true, alpha: false }} data-testid="three-render-surface">
+      <color attach="background" args={['#0c1325']} />
       <RendererLifecycle generation={props.canonicalRevision ?? 'invalid'} onMount={props.onRendererMount} onUnmount={props.onRendererUnmount} />
+      <RenderedFrameLifecycle generation={props.canonicalRevision ?? 'invalid'} onFrameRendered={props.onFrameRendered} />
       <Suspense fallback={null}>
+        <CameraFramer model={props.model} />
         <CanonicalScene {...props} />
-        <OrbitControls makeDefault target={frame.target} minDistance={frame.floorSpan * 0.65} maxDistance={frame.floorSpan * 2.4} />
+        <OrbitControls makeDefault target={frame.target} minDistance={frame.floorSpan * 0.56} maxDistance={frame.floorSpan * 2.2} />
       </Suspense>
     </Canvas>
   )

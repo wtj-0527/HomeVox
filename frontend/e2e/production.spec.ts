@@ -13,6 +13,13 @@ test.use({ baseURL, viewport: { width: 1440, height: 960 } })
 
 type E2EState = {
   geometry: { positionCount: number; normalCount: number; finite: boolean; fingerprint: number }
+  threeD: {
+    canonicalRevision: string | null
+    geometryRevision: string | null
+    rendererRevision: string | null
+    frameRevision: string | null
+    currentFrame: boolean
+  }
   walls: Array<{ id: string | null; x1: number; y1: number; x2: number; y2: number }>
   openings: Array<{ id: string | null; wallId: string | null; position: number | null; width: number | null }>
 }
@@ -59,7 +66,9 @@ async function screenshot(page: Page, testInfo: TestInfo, name: string): Promise
 
 /** Decode a Playwright PNG screenshot to assert what a person can see, rather
  * than treating canvas existence or an instrumented geometry object as proof. */
-function decodePngPixels(png: Buffer): { width: number; height: number; bytesPerPixel: number; pixels: Buffer } {
+type PixelImage = { width: number; height: number; bytesPerPixel: number; pixels: Buffer }
+
+function decodePngPixels(png: Buffer): PixelImage {
   let offset = 8
   let width = 0
   let height = 0
@@ -93,25 +102,152 @@ function decodePngPixels(png: Buffer): { width: number; height: number; bytesPer
   return { width, height, bytesPerPixel, pixels }
 }
 
-function visibleLightPixels(png: Buffer): number {
-  const { width, height, bytesPerPixel, pixels } = decodePngPixels(png)
-  const stride = width * bytesPerPixel
-  let visible = 0
-  for (let y = Math.floor(height * 0.2); y < Math.floor(height * 0.8); y += 1) {
-    for (let x = Math.floor(width * 0.2); x < Math.floor(width * 0.8); x += 1) {
-      const index = y * stride + x * bytesPerPixel
-      if (pixels[index] > 175 && pixels[index + 1] > 175 && pixels[index + 2] > 175 && (bytesPerPixel === 3 || pixels[index + 3] > 0)) visible += 1
-    }
-  }
-  return visible
+type PixelFootprint = {
+  coverage: number
+  widthRatio: number
+  heightRatio: number
+  count: number
 }
 
-async function assertThreeDRenderIsVisible(page: Page, testInfo: TestInfo, name: string): Promise<void> {
-  const path = testInfo.outputPath(name)
+function isWallRgb(red: number, green: number, blue: number): boolean {
+  // Off-white canonical walls and violet selected wall spans. This excludes
+  // the dark background/grid and does not accept a few Html control dots.
+  return (red > 150 && green > 150 && blue > 155) ||
+    (red > 95 && blue > 145 && blue - green > 20)
+}
+
+function wallFootprintFromImage({ width, height, bytesPerPixel, pixels }: PixelImage): PixelFootprint {
+  const stride = width * bytesPerPixel
+  let count = 0
+  let minX = width
+  let maxX = -1
+  let minY = height
+  let maxY = -1
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * stride + x * bytesPerPixel
+      if (!isWallRgb(pixels[index], pixels[index + 1], pixels[index + 2])) continue
+      count += 1
+      minX = Math.min(minX, x)
+      maxX = Math.max(maxX, x)
+      minY = Math.min(minY, y)
+      maxY = Math.max(maxY, y)
+    }
+  }
+  return {
+    coverage: count / (width * height),
+    widthRatio: maxX >= minX ? (maxX - minX + 1) / width : 0,
+    heightRatio: maxY >= minY ? (maxY - minY + 1) / height : 0,
+    count,
+  }
+}
+
+function openingVoidCoverage(image: PixelImage, centerX: number, centerY: number): number {
+  const outerRadius = 28
+  const innerRadius = 11 // excludes the small stable-ID WebGL selection marker.
+  let samples = 0
+  let voidPixels = 0
+  for (let y = Math.max(0, Math.floor(centerY - outerRadius)); y <= Math.min(image.height - 1, Math.ceil(centerY + outerRadius)); y += 1) {
+    for (let x = Math.max(0, Math.floor(centerX - outerRadius)); x <= Math.min(image.width - 1, Math.ceil(centerX + outerRadius)); x += 1) {
+      const distance = Math.hypot(x - centerX, y - centerY)
+      if (distance < innerRadius || distance > outerRadius) continue
+      samples += 1
+      const index = (y * image.width + x) * image.bytesPerPixel
+      if (!isWallRgb(image.pixels[index], image.pixels[index + 1], image.pixels[index + 2])) voidPixels += 1
+    }
+  }
+  return samples === 0 ? 0 : voidPixels / samples
+}
+
+function wallFootprint(png: Buffer): PixelFootprint {
+  return wallFootprintFromImage(decodePngPixels(png))
+}
+
+function changedFootprint(before: Buffer, after: Buffer): PixelFootprint {
+  const first = decodePngPixels(before)
+  const second = decodePngPixels(after)
+  expect(second.width).toBe(first.width)
+  expect(second.height).toBe(first.height)
+  expect(second.bytesPerPixel).toBe(first.bytesPerPixel)
+  let count = 0
+  let minX = first.width
+  let maxX = -1
+  let minY = first.height
+  let maxY = -1
+  for (let y = 0; y < first.height; y += 1) {
+    for (let x = 0; x < first.width; x += 1) {
+      const index = (y * first.width + x) * first.bytesPerPixel
+      if (
+        Math.abs(first.pixels[index] - second.pixels[index]) <= 8 &&
+        Math.abs(first.pixels[index + 1] - second.pixels[index + 1]) <= 8 &&
+        Math.abs(first.pixels[index + 2] - second.pixels[index + 2]) <= 8
+      ) continue
+      count += 1
+      minX = Math.min(minX, x)
+      maxX = Math.max(maxX, x)
+      minY = Math.min(minY, y)
+      maxY = Math.max(maxY, y)
+    }
+  }
+  return {
+    coverage: count / (first.width * first.height),
+    widthRatio: maxX >= minX ? (maxX - minX + 1) / first.width : 0,
+    heightRatio: maxY >= minY ? (maxY - minY + 1) / first.height : 0,
+    count,
+  }
+}
+
+function cropPageToCanvas(pageImage: Buffer, box: { x: number; y: number; width: number; height: number }): PixelImage {
+  const image = decodePngPixels(pageImage)
+  const left = Math.max(0, Math.floor(box.x))
+  const top = Math.max(0, Math.floor(box.y))
+  const right = Math.min(image.width, Math.ceil(box.x + box.width))
+  const bottom = Math.min(image.height, Math.ceil(box.y + box.height))
+  const width = right - left
+  const height = bottom - top
+  const stride = width * image.bytesPerPixel
+  const pixels = Buffer.alloc(stride * height)
+  for (let y = 0; y < height; y += 1) {
+    image.pixels.copy(
+      pixels,
+      y * stride,
+      ((top + y) * image.width + left) * image.bytesPerPixel,
+      ((top + y) * image.width + right) * image.bytesPerPixel,
+    )
+  }
+  return { width, height, bytesPerPixel: image.bytesPerPixel, pixels }
+}
+
+function expectReviewableFootprint(footprint: PixelFootprint, source: string): void {
+  expect(footprint.count, `${source}: no canonical wall pixels`).toBeGreaterThan(1_400)
+  expect(footprint.coverage, `${source}: wall coverage is too sparse to review`).toBeGreaterThan(0.018)
+  expect(footprint.widthRatio, `${source}: model is too narrow`).toBeGreaterThan(0.42)
+  expect(footprint.heightRatio, `${source}: model is too short`).toBeGreaterThan(0.34)
+}
+
+async function waitForCurrentFrame(page: Page): Promise<void> {
+  await page.waitForFunction(() => window.__homevoxE2E?.threeD?.currentFrame === true, undefined, { timeout: 5_000 })
+}
+
+async function assertReviewableThreeD(page: Page, testInfo: TestInfo, name: string, minimumWidth: number): Promise<string> {
+  const canvas = page.getByTestId('three-render-surface')
+  await waitForCurrentFrame(page)
+  const box = await canvas.boundingBox()
+  expect(box).not.toBeNull()
+  if (!box) throw new Error('3D canvas is not laid out')
+  expect(box.width).toBeGreaterThan(minimumWidth)
+  expect(box.height).toBeGreaterThan(460)
+
+  const canvasPath = testInfo.outputPath(`${name}-canvas.png`)
   await expect.poll(async () => {
-    await page.getByTestId('three-render-surface').screenshot({ path })
-    return visibleLightPixels(await readFile(path))
-  }, { timeout: 5_000 }).toBeGreaterThan(120)
+    await canvas.screenshot({ path: canvasPath })
+    return wallFootprint(await readFile(canvasPath)).coverage
+  }).toBeGreaterThan(0.018)
+  expectReviewableFootprint(wallFootprint(await readFile(canvasPath)), `${name} canvas`)
+
+  const fullPath = await screenshot(page, testInfo, `${name}.png`)
+  expectReviewableFootprint(wallFootprintFromImage(cropPageToCanvas(await readFile(fullPath), box)), `${name} full page`)
+  return fullPath
 }
 
 async function assertSelectingOpeningWallKeepsCanvasPixels(page: Page, testInfo: TestInfo): Promise<void> {
@@ -122,18 +258,28 @@ async function assertSelectingOpeningWallKeepsCanvasPixels(page: Page, testInfo:
   await page.getByTestId('three-wall-wall-2').click()
   await expect(page.getByTestId('three-wall-wall-2')).toHaveAttribute('aria-pressed', 'true')
   await canvas.screenshot({ path: afterPath })
-  const before = decodePngPixels(await readFile(beforePath))
-  const after = decodePngPixels(await readFile(afterPath))
-  expect(after.width).toBe(before.width)
-  expect(after.height).toBe(before.height)
-  expect(after.bytesPerPixel).toBe(before.bytesPerPixel)
-  let changed = 0
-  for (let index = 0; index < before.pixels.length; index += before.bytesPerPixel) {
-    if (Math.abs(before.pixels[index] - after.pixels[index]) > 8 || Math.abs(before.pixels[index + 1] - after.pixels[index + 1]) > 8 || Math.abs(before.pixels[index + 2] - after.pixels[index + 2]) > 8) changed += 1
-  }
-  // wall-2 owns window-1. Selecting its stable wallId must not repaint the
-  // WASM canvas with an uncut shell over the real opening.
-  expect(changed / (before.width * before.height)).toBeLessThan(0.01)
+  const before = await readFile(beforePath)
+  const after = await readFile(afterPath)
+  const changed = changedFootprint(before, after)
+  // wall-2 owns window-1. Selection must be materially visible along the
+  // actual wall spans while remaining far below a solid whole-canvas repaint.
+  expect(changed.coverage).toBeGreaterThan(0.008)
+  expect(changed.coverage).toBeLessThan(0.18)
+  expect(changed.widthRatio).toBeGreaterThan(0.2)
+  expect(changed.heightRatio).toBeGreaterThan(0.34)
+  expectReviewableFootprint(wallFootprint(after), 'selected wall canvas')
+
+  // window-1's selector is now located at the actual physical opening center.
+  // Canvas screenshots omit the DOM selector, letting this verify that the
+  // surrounding WebGL pixels remain a real hole after wall highlighting.
+  const openingBox = await page.getByTestId('three-opening-button-window-1').boundingBox()
+  const canvasBox = await canvas.boundingBox()
+  expect(openingBox).not.toBeNull()
+  expect(canvasBox).not.toBeNull()
+  if (!openingBox || !canvasBox) throw new Error('window opening selector is not laid out')
+  const openingCenterX = openingBox.x + openingBox.width / 2 - canvasBox.x
+  const openingCenterY = openingBox.y + openingBox.height / 2 - canvasBox.y
+  expect(openingVoidCoverage(decodePngPixels(after), openingCenterX, openingCenterY), 'window-1 opening was painted over by selection').toBeGreaterThan(0.4)
 }
 
 async function e2eState(page: Page): Promise<E2EState> {
@@ -199,13 +345,13 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await expect(page.getByText('已生成可审阅的同源 3D 几何')).toBeVisible()
   await expect(page.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
   await expect(page.getByLabel('2D 墙体编辑器')).toHaveCount(0)
-  await assertThreeDRenderIsVisible(page, testInfo, 'issue-19-3d-user-visible.png')
-  captures.push(await screenshot(page, testInfo, 'issue-19-3d-confirm.png'))
+  captures.push(await assertReviewableThreeD(page, testInfo, 'issue-19-3d-confirm', 700))
 
   await page.getByRole('button', { name: '完成并打开 3D' }).click()
   await expect(page.getByRole('button', { name: /生成 3D，已完成/ })).toBeVisible()
   await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
   await expect(page.getByLabel('3D 户型预览')).toBeVisible()
+  await assertReviewableThreeD(page, testInfo, 'issue-19-linked-workspace-initial', 500)
   await assertSelectingOpeningWallKeepsCanvasPixels(page, testInfo)
   await expect(page.getByTestId('selected-wall-id')).toHaveText('wall-2')
   await expect(page.getByTestId('wall-hit-wall-2')).toHaveAttribute('data-selected', 'true')
@@ -221,29 +367,44 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await expect(page.getByTestId('wall-hit-wall-2')).toHaveAttribute('data-selected', 'true')
   await expect(page.getByTestId('opening-width')).toHaveValue('64')
   await page.getByTestId('opening-width').fill('60')
+  await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
+  await waitForCurrentFrame(page)
+  await expect(page.getByLabel('导出3D白模PNG')).toBeEnabled()
   await page.getByRole('button', { name: '撤销（Ctrl/Cmd + Z）' }).click()
   await expect(page.getByTestId('opening-width')).toHaveValue('64')
+  await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
+  await waitForCurrentFrame(page)
   await page.getByRole('button', { name: '重做（Ctrl/Cmd + Shift+Z 或 Ctrl/Cmd + Y）' }).click()
   await expect(page.getByTestId('opening-width')).toHaveValue('60')
+  await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
+  await waitForCurrentFrame(page)
+  await expect(page.getByLabel('导出3D白模PNG')).toBeEnabled()
 
   const geometryBeforeEndpointEdit = await e2eState(page)
   expect(geometryBeforeEndpointEdit.geometry.finite).toBe(true)
   expect(geometryBeforeEndpointEdit.geometry.positionCount).toBeGreaterThan(0)
   await dragEndpoint(page, 'endpoint-handle-0-start', 30, 20)
+  await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
   await page.waitForFunction((before) => {
     const current = window.__homevoxE2E
     return Boolean(current?.geometry.finite && current.geometry.fingerprint !== before)
   }, geometryBeforeEndpointEdit.geometry.fingerprint)
+  await waitForCurrentFrame(page)
+  await expect(page.getByLabel('导出3D白模PNG')).toBeEnabled()
   const geometryAfterEndpointEdit = await e2eState(page)
   const editedWall = geometryAfterEndpointEdit.walls.find((wall) => wall.id === 'wall-1')
   expect(editedWall).toBeDefined()
   expect(editedWall).not.toEqual({ id: 'wall-1', x1: 80, y1: 80, x2: 520, y2: 80 })
   await page.getByRole('button', { name: '撤销（Ctrl/Cmd + Z）' }).click()
+  await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
   await page.waitForFunction((before) => window.__homevoxE2E?.geometry.fingerprint === before, geometryBeforeEndpointEdit.geometry.fingerprint)
+  await waitForCurrentFrame(page)
   await page.getByRole('button', { name: '重做（Ctrl/Cmd + Shift+Z 或 Ctrl/Cmd + Y）' }).click()
+  await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
   await page.waitForFunction((after) => window.__homevoxE2E?.geometry.fingerprint === after, geometryAfterEndpointEdit.geometry.fingerprint)
+  await waitForCurrentFrame(page)
   await expect(page.getByRole('button', { name: /2D\/3D 联动，当前步骤/ })).toBeVisible()
-  captures.push(await screenshot(page, testInfo, 'issue-19-linked-workspace.png'))
+  captures.push(await assertReviewableThreeD(page, testInfo, 'issue-19-linked-workspace', 500))
   await page.getByRole('button', { name: '继续' }).click()
   await expect(page.getByRole('button', { name: /2D\/3D 联动，已完成/ })).toBeVisible()
   await expect(page.getByRole('button', { name: /保存项目，当前步骤/ })).toBeVisible()
@@ -408,6 +569,39 @@ test('does not export stale 3D after current canonical geometry becomes invalid'
   await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
   let downloads = 0
   page.on('download', () => { downloads += 1 })
-  await page.waitForTimeout(150)
+  await page.getByLabel('导出3D白模PNG').evaluate((element) => (element as HTMLButtonElement).click())
   expect(downloads).toBe(0)
+})
+
+test('disables export for a valid canonical edit until the matching WASM, renderer, and visible frame arrive', async ({ page }) => {
+  await page.goto('/?e2e=instrument')
+  await uploadAndParse(page)
+  await page.getByRole('button', { name: '继续' }).click()
+  await expect(page.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
+  await page.getByRole('button', { name: '完成并打开 3D' }).click()
+  await waitForCurrentFrame(page)
+  const exportButton = page.getByLabel('导出3D白模PNG')
+  await expect(exportButton).toBeEnabled()
+  const before = await e2eState(page)
+
+  await page.getByRole('button', { name: '3D 选择窗 window-1' }).click()
+  await page.getByTestId('opening-width').fill('60')
+  const during = await e2eState(page)
+  expect(during.threeD.canonicalRevision).not.toBe(before.threeD.canonicalRevision)
+  expect(during.threeD.currentFrame).toBe(false)
+  await expect(exportButton).toBeDisabled()
+  let downloads = 0
+  page.on('download', () => { downloads += 1 })
+  await exportButton.evaluate((element) => (element as HTMLButtonElement).click())
+  expect(downloads).toBe(0)
+
+  await page.waitForFunction((revision) => {
+    const current = window.__homevoxE2E
+    return current?.threeD.canonicalRevision === revision &&
+      current.threeD.geometryRevision === revision &&
+      current.threeD.rendererRevision === revision &&
+      current.threeD.frameRevision === revision &&
+      current.threeD.currentFrame === true
+  }, during.threeD.canonicalRevision)
+  await expect(exportButton).toBeEnabled()
 })

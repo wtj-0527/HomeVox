@@ -132,10 +132,13 @@ describe('3D wall shell model', () => {
 
 describe('3D scene framing', () => {
   it('fits the normalized floorplan rather than relying on a fixed camera distance', () => {
-    const frame = frameWallShellModel(buildWallShellModel(rectangleWalls, [], []))
+    const model = buildWallShellModel(rectangleWalls, [], [])
+    const frame = frameWallShellModel(model)
+    const narrowFrame = frameWallShellModel(model, 0.85)
     expect(frame.floorSpan).toBeGreaterThan(8)
-    expect(frame.position[0]).toBeGreaterThan(frame.floorSpan)
+    expect(frame.position[0]).toBeGreaterThan(frame.floorSpan * 0.9)
     expect(frame.target[1]).toBeGreaterThan(0)
+    expect(narrowFrame.position[0]).toBeGreaterThan(frame.position[0])
   })
 })
 

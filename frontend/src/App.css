@@ -71,7 +71,7 @@
 }
 
 .product-workspace-linked {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(280px, .75fr) minmax(500px, 1.55fr) minmax(260px, .65fr);
 }
 
 .workspace-card {
@@ -86,8 +86,9 @@
 }
 
 .three-card {
-  min-height: 480px;
-  background: #18213e;
+  height: min(68vh, 680px);
+  min-height: 520px;
+  background: #0c1325;
 }
 
 .inspector-card {
@@ -108,7 +109,7 @@
   color: #845d19;
 }
 
-@media (max-width: 1024px) {
+@media (max-width: 1280px) {
   .homevox-app {
     min-height: 100%;
   }
