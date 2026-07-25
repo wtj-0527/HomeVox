@@ -18,3 +18,23 @@ export function nextProductStep(step: ProductStep, hasDocument: boolean): Produc
   const next = PRODUCT_STEPS.find((item) => item.id === step + 1)
   return next && canOpenStep(next.id, hasDocument) ? next.id : step
 }
+
+/** Completion is only set by a user-visible success transition, never merely
+ * because a later document-gated view happens to be reachable. */
+export function completeProductStep(completed: readonly ProductStep[], step: ProductStep): ProductStep[] {
+  return Array.from(new Set([...completed, step])).sort((a, b) => a - b) as ProductStep[]
+}
+
+/** A reloaded persisted canonical document proves import and parsing occurred;
+ * persistence itself also proves a previous explicit save. It does not invent
+ * completion for the intermediate 2D/3D review transitions. */
+export function initialCompletedSteps({
+  hasCanonicalDocument,
+  isSavedProject,
+}: {
+  hasCanonicalDocument: boolean
+  isSavedProject: boolean
+}): ProductStep[] {
+  if (!hasCanonicalDocument) return []
+  return isSavedProject ? [1, 2, 6] : [1, 2]
+}

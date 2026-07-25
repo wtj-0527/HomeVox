@@ -49,7 +49,7 @@ import {
   type ProjectDetail,
   type ProjectSummary,
 } from './projects'
-import { PRODUCT_STEPS, canOpenStep, type ProductStep } from './productFlow'
+import { PRODUCT_STEPS, canOpenStep, completeProductStep, initialCompletedSteps, type ProductStep } from './productFlow'
 import { e2EProjectID, e2EWasmLoader, isE2EInstrumentationEnabled, publishE2EState } from '@homevox-e2e'
 import './App.css'
 
@@ -219,19 +219,21 @@ function Scene({ model, wasmGeometry, wasmActive, selectedWallID, selectedOpenin
           <mesh
             position={[wall.x, wall.height / 2, wall.z]}
             rotation={[0, wall.rotationY, 0]}
-            castShadow
-            receiveShadow
+            castShadow={!wasmActive}
+            receiveShadow={!wasmActive}
             userData={{ wallId: wall.id }}
             onPointerDown={(event) => { event.stopPropagation(); onSelectWall(wall.id) }}
             onClick={(event) => { event.stopPropagation(); onSelectWall(wall.id) }}
           >
             <boxGeometry args={[wall.length, wall.height, wall.thickness]} />
-            <meshStandardMaterial
-              color={selectedWallID === wall.id ? '#7c3aed' : '#e2e8f0'}
-              roughness={0.72}
-              transparent={wasmActive && selectedWallID !== wall.id}
-              opacity={wasmActive && selectedWallID !== wall.id ? 0.08 : 1}
-            />
+            {wasmActive ? (
+              <meshBasicMaterial transparent opacity={0} depthWrite={false} colorWrite={false} />
+            ) : (
+              <meshStandardMaterial
+                color={selectedWallID === wall.id ? '#7c3aed' : '#e2e8f0'}
+                roughness={0.72}
+              />
+            )}
           </mesh>
           <Html position={[wall.x, wall.height + 0.32, wall.z]} center>
             <button
@@ -240,7 +242,7 @@ function Scene({ model, wasmGeometry, wasmActive, selectedWallID, selectedOpenin
               aria-label={`3D 选择墙体 ${wall.id}`}
               aria-pressed={selectedWallID === wall.id}
               data-selected={selectedWallID === wall.id ? 'true' : 'false'}
-              className="h-4 w-4 rounded border border-white bg-slate-950/45 p-0 shadow"
+              className={`h-4 w-4 rounded border border-white p-0 shadow ${selectedWallID === wall.id ? 'bg-violet-500' : 'bg-slate-950/45'}`}
               onClick={() => onSelectWall(wall.id)}
             />
           </Html>
@@ -364,6 +366,7 @@ function hasWebGLSupport(): boolean {
 
 export default function App() {
   const [activeStep, setActiveStep] = useState<ProductStep>(1)
+  const [completedSteps, setCompletedSteps] = useState<ProductStep[]>([])
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [previewURL, setPreviewURL] = useState<string>('')
   const [parseResponse, setParseResponse] = useState<ParseResponse | null>(null)
@@ -717,6 +720,7 @@ export default function App() {
       if (parseRequestRef.current?.id !== requestId) return
 
       setParseResponse(body)
+      setCompletedSteps((current) => completeProductStep(current, 2))
       setActiveStep(3)
       setCurrentProject(null)
       setProjectName((current) => current || body.filename)
@@ -762,6 +766,7 @@ export default function App() {
     setStatus('idle')
     setImageDimFallback(null)
     setCurrentProject(null)
+    setCompletedSteps(file ? [1] : [])
     setActiveStep(file ? 2 : 1)
 
     setPreviewURL((currentURL) => {
@@ -821,6 +826,7 @@ export default function App() {
       setCurrentProject(saved)
       setProjectName(saved.name)
       setProjectMessage(currentProject ? '项目已保存' : '项目已创建')
+      setCompletedSteps((current) => completeProductStep(current, 6))
       setProjects((items) => [saved, ...items.filter((item) => item.id !== saved.id)])
     } catch (err) {
       if (!request.controller.signal.aborted && projectRequestRef.current?.id === request.id) {
@@ -849,6 +855,8 @@ export default function App() {
       })
       setSelectedFile(null)
       setParseResponse(loaded.document)
+      setCompletedSteps(initialCompletedSteps({ hasCanonicalDocument: true, isSavedProject: true }))
+      setActiveStep(3)
       setCurrentProject(loaded)
       setProjectName(loaded.name)
       setStatus('ready')
@@ -1224,21 +1232,26 @@ export default function App() {
     <section className="workspace-card mx-auto w-full max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">保存项目</h3><p className="mt-2 text-sm text-slate-500">手动保存当前同源 2D 与 3D 数据。保存不可用时会保留当前编辑，不会假装成功。</p><div className="mt-6 space-y-3"><input aria-label="项目名称" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900" value={projectName} maxLength={120} placeholder="项目名称" onChange={(event) => setProjectName(event.target.value)} /><button className="w-full rounded-lg bg-violet-600 px-3 py-2 font-medium text-white disabled:opacity-50" type="button" disabled={!hasCanonicalGeometry || projectBusy !== null} onClick={() => void handleProjectSave()}>{projectBusy === 'save' ? '保存中…' : currentProject ? `保存项目（r${currentProject.revision}）` : '创建项目'}</button>{projectMessage && <p role="status" className="text-sm text-slate-700">{projectMessage}</p>}<div className="border-t border-slate-200 pt-4"><div className="mb-2 flex items-center justify-between"><h4 className="font-semibold">已保存项目</h4><button className="rounded-md border border-slate-300 px-2 py-1 text-xs" type="button" disabled={projectBusy !== null} onClick={() => void refreshProjects()}>{projectBusy === 'list' ? '刷新中…' : '刷新'}</button></div><ul className="space-y-2" aria-label="已保存项目">{projects.map((item) => <li key={item.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 p-2"><span>{item.name} <span className="text-slate-500">r{item.revision}</span></span><button className="rounded-md bg-sky-700 px-2 py-1 text-xs text-white" type="button" disabled={projectBusy !== null} onClick={() => void handleLoadProject(item.id)}>加载</button></li>)}{projects.length === 0 && <li className="text-sm text-slate-500">暂无已保存项目</li>}</ul></div></div></section>
   )
 
+  const completeAndAdvance = (step: ProductStep, next: ProductStep) => {
+    setCompletedSteps((current) => completeProductStep(current, step))
+    setActiveStep(next)
+  }
+
   const goNext = () => {
-    if (activeStep === 1 && selectedFile) setActiveStep(2)
-    else if (activeStep === 3) setActiveStep(4)
-    else if (activeStep === 5) setActiveStep(6)
+    if (activeStep === 1 && selectedFile) completeAndAdvance(1, 2)
+    else if (activeStep === 3) completeAndAdvance(3, 4)
+    else if (activeStep === 5) completeAndAdvance(5, 6)
   }
 
   return (
     <div className="homevox-app"><div className="homevox-layout min-h-screen lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
-      <aside className="product-sidebar flex flex-col px-4 py-6"><div className="mb-8 px-2"><p className="text-xs font-semibold tracking-[0.22em] text-indigo-200">HOMEVOX</p><h1 className="mt-2 text-xl font-bold">筑居</h1><p className="mt-2 text-xs leading-5 text-indigo-100/75">从真实户型图到可编辑空间</p></div><nav className="space-y-2" aria-label="产品步骤">{PRODUCT_STEPS.map((step) => { const unlocked = canOpenStep(step.id, Boolean(durableDocument)) && (step.id < 4 || hasCanonicalGeometry) && (step.id !== 5 || canOpenLinkedWorkspace); return <button key={step.id} className="product-step flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium disabled:cursor-not-allowed" type="button" data-active={activeStep === step.id} data-locked={!unlocked} aria-current={activeStep === step.id ? 'step' : undefined} disabled={!unlocked} onClick={() => setActiveStep(step.id)}><span className="step-dot">{step.id}</span><span>{step.label}</span></button> })}</nav><div className="mt-auto rounded-xl border border-white/10 bg-white/8 p-3 text-xs leading-5 text-indigo-100/80">空间设计沟通工具，不是施工 CAD。未知建筑属性会保持未知，需现场实测。</div></aside>
+      <aside className="product-sidebar flex flex-col px-4 py-6"><div className="mb-8 px-2"><p className="text-xs font-semibold tracking-[0.22em] text-indigo-200">HOMEVOX</p><h1 className="mt-2 text-xl font-bold">筑居</h1><p className="mt-2 text-xs leading-5 text-indigo-100/75">从真实户型图到可编辑空间</p></div><nav className="space-y-2" aria-label="产品步骤">{PRODUCT_STEPS.map((step) => { const unlocked = canOpenStep(step.id, Boolean(durableDocument)) && (step.id < 4 || hasCanonicalGeometry) && (step.id !== 5 || canOpenLinkedWorkspace); const completed = completedSteps.includes(step.id); const stateLabel = [activeStep === step.id ? '当前步骤' : '', completed ? '已完成' : '', !completed && activeStep !== step.id ? (unlocked ? '可进入' : '未解锁') : ''].filter(Boolean).join('，'); return <button key={step.id} className="product-step flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium disabled:cursor-not-allowed" type="button" data-active={activeStep === step.id} data-completed={completed} data-locked={!unlocked} aria-current={activeStep === step.id ? 'step' : undefined} aria-label={`${step.label}，${stateLabel}`} disabled={!unlocked} onClick={() => setActiveStep(step.id)}><span className="step-dot" aria-hidden="true">{completed ? '✓' : step.id}</span><span>{step.label}</span><span className="sr-only">{stateLabel}</span></button> })}</nav><div className="mt-auto rounded-xl border border-white/10 bg-white/8 p-3 text-xs leading-5 text-indigo-100/80">空间设计沟通工具，不是施工 CAD。未知建筑属性会保持未知，需现场实测。</div></aside>
       <div className="flex min-h-screen min-w-0 flex-col"><header className="product-topbar flex min-h-[72px] items-center justify-between border-b border-slate-200 bg-white px-5 lg:px-8"><div><p className="text-xs font-medium text-violet-600">步骤 {activeStep} / 6</p><h2 className="mt-1 text-lg font-bold text-slate-900">{PRODUCT_STEPS[activeStep - 1].label}</h2></div><div className="flex items-center gap-2">{durableDocument && <span className="status-chip px-3 py-1.5 text-xs font-medium">同一份空间数据</span>}{(activeStep === 1 || activeStep === 3 || activeStep === 5) && <button className="rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50" type="button" disabled={activeStep === 1 ? !selectedFile : !hasCanonicalGeometry} onClick={goNext}>{activeStep === 1 ? '继续到 AI 识别' : '继续'}</button>}</div></header>
       <div className="min-h-0 flex-1 p-4">
         {activeStep === 1 && <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">导入真实户型图</h3><p className="mt-2 text-sm text-slate-500">从你的图纸开始，不套用示意户型。</p><label className="mt-6 block cursor-pointer rounded-xl border border-dashed border-slate-400 bg-slate-50 p-5 text-sm hover:border-violet-500"><span className="block font-medium">选择户型图</span><span className="mt-1 block text-xs text-slate-500">支持 PNG、JPEG、GIF、WebP；后端限制 10 MiB</span><input className="mt-3 block w-full text-xs" type="file" accept="image/png,image/jpeg,image/gif,image/webp" onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)} /></label>{sourcePreview}</section>}
         {activeStep === 2 && <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">AI 识别</h3><p className="mt-2 text-sm text-slate-500">识别前请核对这张原图；识别完成后才会打开可校正的同源 2D 数据。</p>{sourcePreview}<button className="mt-6 w-full rounded-xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50" type="button" disabled={status === 'uploading' || !selectedFile} onClick={handleParse}>{status === 'uploading' ? 'AI 识别中…' : '开始 AI 识别'}</button><div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm"><span className="text-slate-500">识别状态：</span>{status === 'ready' ? '解析完成' : status === 'uploading' ? '解析中' : status === 'error' ? '失败' : '等待开始'}{error && <p role="alert" className="mt-2 text-red-700">{error}</p>}</div>{status === 'error' && selectedFile && <button type="button" className="mt-3 rounded-lg border border-violet-300 px-3 py-2 text-sm text-violet-700" onClick={handleParse}>重试 AI 识别</button>}</section>}
         {activeStep === 3 && <div className="workspace-grid product-workspace">{twoDPanel}{editorInspector}</div>}
-        {activeStep === 4 && <section className="mx-auto max-w-5xl"><div className="mb-4 flex items-center justify-between rounded-xl bg-white p-4 shadow-sm"><div><h3 className="font-semibold text-slate-900">确认 3D 空间</h3><p className="mt-1 text-sm text-slate-500">这是同一份已校正 2D 数据生成的真实 3D 预览。</p></div><div className="flex gap-2"><button type="button" className="rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => setActiveStep(3)}>返回 2D 校正</button>{canOpenLinkedWorkspace && <button type="button" className="rounded-lg bg-violet-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => setActiveStep(5)}>完成并打开 3D</button>}</div></div>{canOpenLinkedWorkspace ? threeDPanel : threeDUnavailablePanel}</section>}
+        {activeStep === 4 && <section className="mx-auto max-w-5xl"><div className="mb-4 flex items-center justify-between rounded-xl bg-white p-4 shadow-sm"><div><h3 className="font-semibold text-slate-900">确认 3D 空间</h3><p className="mt-1 text-sm text-slate-500">这是同一份已校正 2D 数据生成的真实 3D 预览。</p></div><div className="flex gap-2"><button type="button" className="rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => setActiveStep(3)}>返回 2D 校正</button>{canOpenLinkedWorkspace && <button type="button" className="rounded-lg bg-violet-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => completeAndAdvance(4, 5)}>完成并打开 3D</button>}</div></div>{canOpenLinkedWorkspace ? threeDPanel : threeDUnavailablePanel}</section>}
         {activeStep === 5 && (canOpenLinkedWorkspace ? <div className="workspace-grid product-workspace product-workspace-linked">{twoDPanel}{threeDPanel}{editorInspector}</div> : <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800" role="alert"><h3 className="text-lg font-semibold">当前 3D 预览不可用</h3><p className="mt-2 text-sm text-slate-600">联动工作台已关闭，请先返回 2D 校正。</p><button type="button" className="mt-4 rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={() => setActiveStep(3)}>返回 2D 校正</button></section>)}
         {activeStep === 6 && savePanel}
       </div></div>

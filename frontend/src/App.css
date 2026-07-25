@@ -27,6 +27,21 @@
   background: rgb(255 255 255 / 13%);
 }
 
+.product-step[data-completed='true'] {
+  color: #f0edff;
+}
+
+.product-step[data-completed='true'] .step-dot {
+  border-color: #7ee7bf;
+  background: #16775b;
+  color: #fff;
+}
+
+.product-step[data-active='true'][data-completed='true'] .step-dot {
+  border-color: #c6bdff;
+  background: #7767ef;
+}
+
 .product-step[data-locked='true'] {
   opacity: .48;
 }

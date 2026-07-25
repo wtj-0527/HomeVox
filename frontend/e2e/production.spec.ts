@@ -59,7 +59,7 @@ async function screenshot(page: Page, testInfo: TestInfo, name: string): Promise
 
 /** Decode a Playwright PNG screenshot to assert what a person can see, rather
  * than treating canvas existence or an instrumented geometry object as proof. */
-function visibleLightPixels(png: Buffer): number {
+function decodePngPixels(png: Buffer): { width: number; height: number; bytesPerPixel: number; pixels: Buffer } {
   let offset = 8
   let width = 0
   let height = 0
@@ -90,6 +90,12 @@ function visibleLightPixels(png: Buffer): number {
       pixels[y * stride + x] = (raw + (filter === 0 ? 0 : filter === 1 ? left : filter === 2 ? up : filter === 3 ? Math.floor((left + up) / 2) : paeth())) & 0xff
     }
   }
+  return { width, height, bytesPerPixel, pixels }
+}
+
+function visibleLightPixels(png: Buffer): number {
+  const { width, height, bytesPerPixel, pixels } = decodePngPixels(png)
+  const stride = width * bytesPerPixel
   let visible = 0
   for (let y = Math.floor(height * 0.2); y < Math.floor(height * 0.8); y += 1) {
     for (let x = Math.floor(width * 0.2); x < Math.floor(width * 0.8); x += 1) {
@@ -104,6 +110,28 @@ async function assertThreeDRenderIsVisible(page: Page, testInfo: TestInfo, name:
   const path = testInfo.outputPath(name)
   await page.getByTestId('three-render-surface').screenshot({ path })
   expect(visibleLightPixels(await readFile(path))).toBeGreaterThan(120)
+}
+
+async function assertSelectingOpeningWallKeepsCanvasPixels(page: Page, testInfo: TestInfo): Promise<void> {
+  const canvas = page.getByTestId('three-render-surface')
+  const beforePath = testInfo.outputPath('opening-wall-before-selection.png')
+  const afterPath = testInfo.outputPath('opening-wall-after-selection.png')
+  await canvas.screenshot({ path: beforePath })
+  await page.getByTestId('three-wall-wall-2').click()
+  await expect(page.getByTestId('three-wall-wall-2')).toHaveAttribute('aria-pressed', 'true')
+  await canvas.screenshot({ path: afterPath })
+  const before = decodePngPixels(await readFile(beforePath))
+  const after = decodePngPixels(await readFile(afterPath))
+  expect(after.width).toBe(before.width)
+  expect(after.height).toBe(before.height)
+  expect(after.bytesPerPixel).toBe(before.bytesPerPixel)
+  let changed = 0
+  for (let index = 0; index < before.pixels.length; index += before.bytesPerPixel) {
+    if (Math.abs(before.pixels[index] - after.pixels[index]) > 8 || Math.abs(before.pixels[index + 1] - after.pixels[index + 1]) > 8 || Math.abs(before.pixels[index + 2] - after.pixels[index + 2]) > 8) changed += 1
+  }
+  // wall-2 owns window-1. Selecting its stable wallId must not repaint the
+  // WASM canvas with an uncut shell over the real opening.
+  expect(changed / (before.width * before.height)).toBeLessThan(0.01)
 }
 
 async function e2eState(page: Page): Promise<E2EState> {
@@ -151,13 +179,18 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await page.goto('/?e2e=instrument')
   await expect(page.getByRole('heading', { name: '导入真实户型图' })).toBeVisible()
   await selectFile(page)
+  await expect(page.locator('.product-step[data-completed="true"]')).toHaveCount(1)
+  await expect(page.getByRole('button', { name: /导入户型图，已完成/ })).toBeVisible()
   const captures = [await screenshot(page, testInfo, 'issue-19-import-ai.png')]
   await parseSelectedFile(page)
+  await expect(page.getByRole('button', { name: /AI 识别，已完成/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /校正 2D，当前步骤/ })).toBeVisible()
   await page.getByTestId('wall-hit-wall-1').click({ position: { x: 80, y: 1 }, force: true })
   await expect(page.getByTestId('selected-wall-id')).toHaveText('wall-1')
   captures.push(await screenshot(page, testInfo, 'issue-19-2d-correction.png'))
 
   await page.getByRole('button', { name: '继续' }).click()
+  await expect(page.getByRole('button', { name: /校正 2D，已完成/ })).toBeVisible()
   await expect(page.getByRole('heading', { name: '确认 3D 空间' })).toBeVisible()
   await expect(page.getByLabel('3D 户型预览')).toBeVisible()
   await expect(page.locator('canvas')).toBeVisible()
@@ -168,9 +201,10 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   captures.push(await screenshot(page, testInfo, 'issue-19-3d-confirm.png'))
 
   await page.getByRole('button', { name: '完成并打开 3D' }).click()
+  await expect(page.getByRole('button', { name: /生成 3D，已完成/ })).toBeVisible()
   await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
   await expect(page.getByLabel('3D 户型预览')).toBeVisible()
-  await page.getByTestId('three-wall-wall-2').click()
+  await assertSelectingOpeningWallKeepsCanvasPixels(page, testInfo)
   await expect(page.getByTestId('selected-wall-id')).toHaveText('wall-2')
   await expect(page.getByTestId('wall-hit-wall-2')).toHaveAttribute('data-selected', 'true')
   await expect(page.getByTestId('three-wall-wall-2')).toHaveAttribute('aria-pressed', 'true')
@@ -206,6 +240,9 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await page.waitForFunction((before) => window.__homevoxE2E?.geometry.fingerprint === before, geometryBeforeEndpointEdit.geometry.fingerprint)
   await page.getByRole('button', { name: '重做（Ctrl/Cmd + Shift+Z 或 Ctrl/Cmd + Y）' }).click()
   await page.waitForFunction((after) => window.__homevoxE2E?.geometry.fingerprint === after, geometryAfterEndpointEdit.geometry.fingerprint)
+  await page.getByRole('button', { name: '继续' }).click()
+  await expect(page.getByRole('button', { name: /2D\/3D 联动，已完成/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /保存项目，当前步骤/ })).toBeVisible()
   captures.push(await screenshot(page, testInfo, 'issue-19-linked-workspace.png'))
   const hashes = await Promise.all(captures.map(async (path) => createHash('sha256').update(await readFile(path)).digest('hex')))
   expect(new Set(hashes).size).toBe(4)
@@ -219,6 +256,7 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   const savedProject = await saved.json() as { id: string; revision: number; document: { result: { walls: Array<{ id: string; x1: number; y1: number; x2: number; y2: number }>; windows: Array<{ id: string; wallId: string; position: number; width: number }> } } }
   expect(savedProject.id).toMatch(/^[0-9a-f-]{36}$/i)
   expect(savedProject.revision).toBe(1)
+  await expect(page.getByRole('button', { name: /保存项目.*已完成/ })).toBeVisible()
   expect(savedProject.document.result.walls.find((wall) => wall.id === 'wall-1')).toEqual(editedWall)
   expect(savedProject.document.result.windows).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'window-1', wallId: 'wall-2', width: 60 })]))
 
@@ -229,8 +267,11 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   expect(pids.newPid).not.toBe(pids.oldPid)
 
   await page.goto(`/?e2e=instrument&project=${savedProject.id}`)
-  await expect(page.getByRole('button', { name: '校正 2D' })).toBeEnabled()
-  await page.getByRole('button', { name: '校正 2D' }).click()
+  await expect(page.getByRole('button', { name: /校正 2D，当前步骤/ })).toBeEnabled()
+  await expect(page.getByRole('button', { name: /导入户型图，已完成/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /AI 识别，已完成/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /保存项目，已完成/ })).toBeVisible()
+  await page.getByRole('button', { name: /校正 2D，当前步骤/ }).click()
   await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
   await page.getByTestId('opening-handle-window-1').click({ force: true })
   await expect(page.getByTestId('opening-width')).toHaveValue('60')
@@ -311,6 +352,7 @@ test('makes parse retry and persistence-unavailable states actionable', async ({
   await page.getByRole('button', { name: '开始 AI 识别' }).click()
   await expect(page.getByRole('alert')).toContainText('HTTP 503')
   await expect(page.getByRole('button', { name: '重试 AI 识别' })).toBeVisible()
+  await expect(page.getByRole('button', { name: /AI 识别，已完成/ })).toHaveCount(0)
   await page.unroute('**/api/floorplans/parse')
   await parseSelectedFile(page)
   await page.route('**/api/projects', (route) => route.request().method() === 'POST'
