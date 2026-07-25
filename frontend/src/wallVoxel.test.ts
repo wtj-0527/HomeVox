@@ -9,7 +9,7 @@ function voxelAt(model: NonNullable<ReturnType<typeof buildWallVoxelModel>>, xIn
 
 describe('buildWallVoxelModel', () => {
   it('creates a finite, controlled 17³ field from editable walls', () => {
-    const model = buildWallVoxelModel([{ x1: 0, y1: 0, x2: 300, y2: 0 }])
+    const model = buildWallVoxelModel([{ id: 'wall-a', x1: 0, y1: 0, x2: 300, y2: 0 }])
 
     expect(model).not.toBeNull()
     expect(model?.dimensions).toEqual([WALL_VOXEL_GRID_SIZE, WALL_VOXEL_GRID_SIZE, WALL_VOXEL_GRID_SIZE])

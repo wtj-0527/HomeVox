@@ -19,6 +19,8 @@ export type ParseResponse = { filename: string; contentType: string; size: numbe
 export type Viewport = { minX: number; minY: number; width: number; height: number }
 export type CanvasSize = { width: number; height: number }
 export const MIN_OPENING_WIDTH = 8
+/** Reject numerically collapsed walls before geometry and persistence diverge. */
+export const MIN_CANONICAL_WALL_LENGTH = 1e-3
 
 function record(v: unknown): v is Record<string, unknown> { return typeof v === 'object' && v !== null && !Array.isArray(v) }
 function finite(v: unknown): v is number { return typeof v === 'number' && Number.isFinite(v) }
@@ -41,6 +43,24 @@ export function wallLength(wall: WallSegment): number { return Math.hypot(wall.x
 function finiteWallGeometry(wall: WallSegment): boolean { return [wall.x1, wall.y1, wall.x2, wall.y2].every(finite) }
 export function openingPoint(wall: WallSegment, item: ParsedOpening): {x:number;y:number}|null { if (!finite(item.position) || !finite(wall.x1) || !finite(wall.y1) || !finite(wall.x2) || !finite(wall.y2)) return null; return {x: wall.x1+(wall.x2-wall.x1)*item.position, y:wall.y1+(wall.y2-wall.y1)*item.position} }
 /** Reject invalid state before it enters persistence or geometry. */
+/**
+ * The sole admission gate for a durable canonical floorplan.  2D may retain
+ * an invalid edit so a user can correct it, but 3D and persistence must never
+ * consume a partial, anonymous, or degenerate document.
+ */
+export function validateCanonicalFloorplan(walls: readonly WallSegment[], openings: readonly ParsedOpening[]): string | null {
+ if (walls.length === 0) return 'floorplan must contain at least one wall'
+ const wallIDs = new Set<string>()
+ for (const item of walls) {
+  if (!id(item.id)) return 'wall must have a stable id'
+  if (wallIDs.has(item.id)) return 'wall id must be unique'
+  wallIDs.add(item.id)
+  if (!finiteWallGeometry(item)) return 'wall coordinates must be finite'
+  if (!(wallLength(item) > MIN_CANONICAL_WALL_LENGTH)) return 'wall length must be strictly greater than zero'
+ }
+ return validateOpenings(walls, openings)
+}
+
 export function validateOpenings(walls: readonly WallSegment[], openings: readonly ParsedOpening[]): string | null {
  const explicitWallIDs=new Set<string>()
  for(const wall of walls) {

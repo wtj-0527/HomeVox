@@ -4,6 +4,7 @@ import {
   canvasUnitsForCssPixels,
   isParseResponse,
   openingLabel,
+  validateCanonicalFloorplan,
 } from './floorplanUi'
 
 const validResponse = {
@@ -102,5 +103,14 @@ describe('durable local wall openings', () => {
 
     expect(isParseResponse(loadedDocument)).toBe(true)
     expect(validateOpenings(loadedDocument.result.walls, [...loadedDocument.result.doors, ...loadedDocument.result.windows])).toContain('wall id must be unique')
+  })
+})
+
+
+describe('canonical floorplan admission', () => {
+  it('rejects any missing stable ID, non-finite coordinate, or zero-length wall before 3D or persistence', () => {
+    expect(validateCanonicalFloorplan([{ id: 'wall-a', x1: 0, y1: 0, x2: 0, y2: 0 }], [])).toContain('strictly greater than zero')
+    expect(validateCanonicalFloorplan([{ x1: 0, y1: 0, x2: 100, y2: 0 }], [])).toContain('stable id')
+    expect(validateCanonicalFloorplan([{ id: 'wall-a', x1: 0, y1: 0, x2: Number.NaN, y2: 0 }], [])).toContain('finite')
   })
 })

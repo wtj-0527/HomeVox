@@ -23,7 +23,7 @@ import {
   isParseResponse,
   openingLabel,
   openingPoint,
-  validateOpenings,
+  validateCanonicalFloorplan,
   MIN_OPENING_WIDTH,
   type ParsedOpening,
   type ParseResponse,
@@ -417,7 +417,7 @@ export default function App() {
     parseResponse ? { ...parseResponse, result: { ...parseResponse.result, walls, doors, windows } } : null
   ), [parseResponse, walls, doors, windows])
   const geometryValidationError = useMemo(
-    () => validateOpenings(walls, openings),
+    () => validateCanonicalFloorplan(walls, openings),
     [walls, openings],
   )
   const hasCanonicalGeometry = Boolean(durableDocument) && !geometryValidationError
@@ -798,6 +798,10 @@ export default function App() {
       setProjectMessage('请先完成户型解析后再创建项目')
       return
     }
+    if (geometryValidationError) {
+      setProjectMessage('当前户型几何无效，请返回 2D 校正后再保存')
+      return
+    }
     if (!projectName.trim()) {
       setProjectMessage('请输入项目名称')
       return
@@ -918,15 +922,10 @@ export default function App() {
     if (draggedEndpoint) {
       const moveResult = moveEndpoint(wallEditor, draggedEndpoint, cursor)
       const openingValidationError = moveResult.changed
-        ? validateOpenings(moveResult.walls, wallEditor.openings)
+        ? validateCanonicalFloorplan(moveResult.walls, wallEditor.openings)
         : null
-      if (openingValidationError) {
-        setDragPreviewWalls(null)
-        setOpeningError(openingValidationError)
-        return
-      }
       setDragPreviewWalls(moveResult.changed ? moveResult.walls : null)
-      setOpeningError('')
+      setOpeningError(openingValidationError ?? '')
       return
     }
 
@@ -1034,13 +1033,9 @@ export default function App() {
       return
     }
     if (draggedEndpoint && dragPreviewWalls) {
-      const openingValidationError = validateOpenings(dragPreviewWalls, wallEditor.openings)
-      if (openingValidationError) {
-        setOpeningError(openingValidationError)
-      } else {
-        setWallEditor(pushWallSnapshot(wallEditor, dragPreviewWalls, wallEditor.openings))
-        setOpeningError('')
-      }
+      const openingValidationError = validateCanonicalFloorplan(dragPreviewWalls, wallEditor.openings)
+      setWallEditor(pushWallSnapshot(wallEditor, dragPreviewWalls, wallEditor.openings))
+      setOpeningError(openingValidationError ?? '')
     }
     if (draggedOpeningID && dragPreviewOpenings) setWallEditor(pushWallSnapshot(wallEditor, wallEditor.walls, dragPreviewOpenings))
     setDraggedEndpoint(null)
@@ -1129,6 +1124,7 @@ export default function App() {
           <span>{draggedEndpoint ? '拖拽中' : selectedWall ? `已选择 ${selectedWall.id}` : hoveredEndpoint ? '可拖拽端点（鼠标悬停）' : '选择墙体或拖拽端点'}</span>
         </div>
       </div>
+      {geometryValidationError && <p className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900" role="alert">当前户型几何无法生成 3D 或保存：{geometryValidationError}。请继续在 2D 校正。</p>}
       <div className="h-[calc(100%-32px)] overflow-hidden rounded-xl border border-slate-200 bg-slate-950">
         <svg ref={editorRef} className="h-full w-full touch-none" viewBox={`${viewport.minX} ${viewport.minY} ${viewport.width} ${viewport.height}`} role="img" aria-label="户型图墙体端点编辑区" onPointerMove={handleCanvasPointerMove} onPointerUp={handleCanvasPointerUp} onPointerCancel={handleCanvasPointerCancel} onPointerLeave={handleCanvasPointerCancel} preserveAspectRatio="xMinYMin meet">
           <rect x={viewport.minX} y={viewport.minY} width={viewport.width} height={viewport.height} fill="#0f172a" />
@@ -1175,8 +1171,8 @@ export default function App() {
         {geometryValidationError && <p className="mt-1 max-w-xs text-[11px] text-amber-200" role="alert">当前开口数据无法生成 3D，请返回 2D 校正后重试。</p>}
       </div>
       <div className="h-full w-full">
-        {webGLAvailable ? <Canvas camera={{ position: [8, 7, 8], fov: 50 }} shadows gl={{ antialias: true, preserveDrawingBuffer: true }} onCreated={setThreeRenderer}>
-          <Suspense fallback={null}><Scene model={wallShellModel} wasmGeometry={wasmGeometry} wasmActive={wasmState === 'active'} selectedWallID={selectedWallID} selectedOpeningID={selectedOpeningID} onSelectWall={selectWall} onSelectOpening={selectOpening} /><OrbitControls makeDefault /></Suspense>
+        {webGLAvailable ? <Canvas className="absolute inset-0" camera={{ position: [11, 9, 11], fov: 42, near: 0.1, far: 100 }} shadows gl={{ antialias: true, preserveDrawingBuffer: true }} onCreated={setThreeRenderer} data-testid="three-render-surface">
+          <Suspense fallback={null}><Scene model={wallShellModel} wasmGeometry={wasmGeometry} wasmActive={wasmState === 'active'} selectedWallID={selectedWallID} selectedOpeningID={selectedOpeningID} onSelectWall={selectWall} onSelectOpening={selectOpening} /><OrbitControls makeDefault target={[0, 1.15, 0]} /></Suspense>
         </Canvas> : <div className="flex h-full w-full items-center justify-center px-8 text-center" role="status" aria-label="3D 渲染不可用"><div className="max-w-sm rounded-2xl border border-amber-400/25 bg-amber-950/30 px-5 py-4 text-sm leading-6 text-amber-100">当前浏览器无法显示 3D 预览。请在启用 WebGL 的浏览器中打开；2D 校正仍可继续。</div></div>}
       </div>
       <div className="pointer-events-none absolute bottom-3 left-3 right-3 rounded-xl bg-black/55 px-3 py-2 text-center text-xs text-white/50">墙体高度为示意；精确高度、承重属性、墙厚与窗台高度需实测。</div>
@@ -1225,7 +1221,7 @@ export default function App() {
   )
 
   const savePanel = (
-    <section className="workspace-card mx-auto w-full max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">保存项目</h3><p className="mt-2 text-sm text-slate-500">手动保存当前同源 2D 与 3D 数据。保存不可用时会保留当前编辑，不会假装成功。</p><div className="mt-6 space-y-3"><input aria-label="项目名称" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900" value={projectName} maxLength={120} placeholder="项目名称" onChange={(event) => setProjectName(event.target.value)} /><button className="w-full rounded-lg bg-violet-600 px-3 py-2 font-medium text-white disabled:opacity-50" type="button" disabled={!durableDocument || projectBusy !== null} onClick={() => void handleProjectSave()}>{projectBusy === 'save' ? '保存中…' : currentProject ? `保存项目（r${currentProject.revision}）` : '创建项目'}</button>{projectMessage && <p role="status" className="text-sm text-slate-700">{projectMessage}</p>}<div className="border-t border-slate-200 pt-4"><div className="mb-2 flex items-center justify-between"><h4 className="font-semibold">已保存项目</h4><button className="rounded-md border border-slate-300 px-2 py-1 text-xs" type="button" disabled={projectBusy !== null} onClick={() => void refreshProjects()}>{projectBusy === 'list' ? '刷新中…' : '刷新'}</button></div><ul className="space-y-2" aria-label="已保存项目">{projects.map((item) => <li key={item.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 p-2"><span>{item.name} <span className="text-slate-500">r{item.revision}</span></span><button className="rounded-md bg-sky-700 px-2 py-1 text-xs text-white" type="button" disabled={projectBusy !== null} onClick={() => void handleLoadProject(item.id)}>加载</button></li>)}{projects.length === 0 && <li className="text-sm text-slate-500">暂无已保存项目</li>}</ul></div></div></section>
+    <section className="workspace-card mx-auto w-full max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">保存项目</h3><p className="mt-2 text-sm text-slate-500">手动保存当前同源 2D 与 3D 数据。保存不可用时会保留当前编辑，不会假装成功。</p><div className="mt-6 space-y-3"><input aria-label="项目名称" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900" value={projectName} maxLength={120} placeholder="项目名称" onChange={(event) => setProjectName(event.target.value)} /><button className="w-full rounded-lg bg-violet-600 px-3 py-2 font-medium text-white disabled:opacity-50" type="button" disabled={!hasCanonicalGeometry || projectBusy !== null} onClick={() => void handleProjectSave()}>{projectBusy === 'save' ? '保存中…' : currentProject ? `保存项目（r${currentProject.revision}）` : '创建项目'}</button>{projectMessage && <p role="status" className="text-sm text-slate-700">{projectMessage}</p>}<div className="border-t border-slate-200 pt-4"><div className="mb-2 flex items-center justify-between"><h4 className="font-semibold">已保存项目</h4><button className="rounded-md border border-slate-300 px-2 py-1 text-xs" type="button" disabled={projectBusy !== null} onClick={() => void refreshProjects()}>{projectBusy === 'list' ? '刷新中…' : '刷新'}</button></div><ul className="space-y-2" aria-label="已保存项目">{projects.map((item) => <li key={item.id} className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 p-2"><span>{item.name} <span className="text-slate-500">r{item.revision}</span></span><button className="rounded-md bg-sky-700 px-2 py-1 text-xs text-white" type="button" disabled={projectBusy !== null} onClick={() => void handleLoadProject(item.id)}>加载</button></li>)}{projects.length === 0 && <li className="text-sm text-slate-500">暂无已保存项目</li>}</ul></div></div></section>
   )
 
   const goNext = () => {
@@ -1236,8 +1232,8 @@ export default function App() {
 
   return (
     <div className="homevox-app"><div className="homevox-layout min-h-screen lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
-      <aside className="product-sidebar flex flex-col px-4 py-6"><div className="mb-8 px-2"><p className="text-xs font-semibold tracking-[0.22em] text-indigo-200">HOMEVOX</p><h1 className="mt-2 text-xl font-bold">筑居</h1><p className="mt-2 text-xs leading-5 text-indigo-100/75">从真实户型图到可编辑空间</p></div><nav className="space-y-2" aria-label="产品步骤">{PRODUCT_STEPS.map((step) => { const unlocked = canOpenStep(step.id, Boolean(durableDocument)) && (step.id !== 5 || canOpenLinkedWorkspace); return <button key={step.id} className="product-step flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium disabled:cursor-not-allowed" type="button" data-active={activeStep === step.id} data-locked={!unlocked} aria-current={activeStep === step.id ? 'step' : undefined} disabled={!unlocked} onClick={() => setActiveStep(step.id)}><span className="step-dot">{step.id}</span><span>{step.label}</span></button> })}</nav><div className="mt-auto rounded-xl border border-white/10 bg-white/8 p-3 text-xs leading-5 text-indigo-100/80">空间设计沟通工具，不是施工 CAD。未知建筑属性会保持未知，需现场实测。</div></aside>
-      <div className="flex min-h-screen min-w-0 flex-col"><header className="product-topbar flex min-h-[72px] items-center justify-between border-b border-slate-200 bg-white px-5 lg:px-8"><div><p className="text-xs font-medium text-violet-600">步骤 {activeStep} / 6</p><h2 className="mt-1 text-lg font-bold text-slate-900">{PRODUCT_STEPS[activeStep - 1].label}</h2></div><div className="flex items-center gap-2">{durableDocument && <span className="status-chip px-3 py-1.5 text-xs font-medium">同一份空间数据</span>}{(activeStep === 1 || activeStep === 3 || activeStep === 5) && <button className="rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50" type="button" disabled={activeStep === 1 ? !selectedFile : !durableDocument} onClick={goNext}>{activeStep === 1 ? '继续到 AI 识别' : '继续'}</button>}</div></header>
+      <aside className="product-sidebar flex flex-col px-4 py-6"><div className="mb-8 px-2"><p className="text-xs font-semibold tracking-[0.22em] text-indigo-200">HOMEVOX</p><h1 className="mt-2 text-xl font-bold">筑居</h1><p className="mt-2 text-xs leading-5 text-indigo-100/75">从真实户型图到可编辑空间</p></div><nav className="space-y-2" aria-label="产品步骤">{PRODUCT_STEPS.map((step) => { const unlocked = canOpenStep(step.id, Boolean(durableDocument)) && (step.id < 4 || hasCanonicalGeometry) && (step.id !== 5 || canOpenLinkedWorkspace); return <button key={step.id} className="product-step flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium disabled:cursor-not-allowed" type="button" data-active={activeStep === step.id} data-locked={!unlocked} aria-current={activeStep === step.id ? 'step' : undefined} disabled={!unlocked} onClick={() => setActiveStep(step.id)}><span className="step-dot">{step.id}</span><span>{step.label}</span></button> })}</nav><div className="mt-auto rounded-xl border border-white/10 bg-white/8 p-3 text-xs leading-5 text-indigo-100/80">空间设计沟通工具，不是施工 CAD。未知建筑属性会保持未知，需现场实测。</div></aside>
+      <div className="flex min-h-screen min-w-0 flex-col"><header className="product-topbar flex min-h-[72px] items-center justify-between border-b border-slate-200 bg-white px-5 lg:px-8"><div><p className="text-xs font-medium text-violet-600">步骤 {activeStep} / 6</p><h2 className="mt-1 text-lg font-bold text-slate-900">{PRODUCT_STEPS[activeStep - 1].label}</h2></div><div className="flex items-center gap-2">{durableDocument && <span className="status-chip px-3 py-1.5 text-xs font-medium">同一份空间数据</span>}{(activeStep === 1 || activeStep === 3 || activeStep === 5) && <button className="rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50" type="button" disabled={activeStep === 1 ? !selectedFile : !hasCanonicalGeometry} onClick={goNext}>{activeStep === 1 ? '继续到 AI 识别' : '继续'}</button>}</div></header>
       <div className="min-h-0 flex-1 p-4">
         {activeStep === 1 && <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">导入真实户型图</h3><p className="mt-2 text-sm text-slate-500">从你的图纸开始，不套用示意户型。</p><label className="mt-6 block cursor-pointer rounded-xl border border-dashed border-slate-400 bg-slate-50 p-5 text-sm hover:border-violet-500"><span className="block font-medium">选择户型图</span><span className="mt-1 block text-xs text-slate-500">支持 PNG、JPEG、GIF、WebP；后端限制 10 MiB</span><input className="mt-3 block w-full text-xs" type="file" accept="image/png,image/jpeg,image/gif,image/webp" onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)} /></label>{sourcePreview}</section>}
         {activeStep === 2 && <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800"><h3 className="text-xl font-semibold">AI 识别</h3><p className="mt-2 text-sm text-slate-500">识别前请核对这张原图；识别完成后才会打开可校正的同源 2D 数据。</p>{sourcePreview}<button className="mt-6 w-full rounded-xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50" type="button" disabled={status === 'uploading' || !selectedFile} onClick={handleParse}>{status === 'uploading' ? 'AI 识别中…' : '开始 AI 识别'}</button><div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm"><span className="text-slate-500">识别状态：</span>{status === 'ready' ? '解析完成' : status === 'uploading' ? '解析中' : status === 'error' ? '失败' : '等待开始'}{error && <p role="alert" className="mt-2 text-red-700">{error}</p>}</div>{status === 'error' && selectedFile && <button type="button" className="mt-3 rounded-lg border border-violet-300 px-3 py-2 text-sm text-violet-700" onClick={handleParse}>重试 AI 识别</button>}</section>}

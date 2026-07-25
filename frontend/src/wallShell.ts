@@ -1,5 +1,5 @@
 import type { WallSegment } from './floorplanEditor'
-import { openingLabel, validateOpenings, type ParsedOpening } from './floorplanUi'
+import { openingLabel, validateCanonicalFloorplan, type ParsedOpening } from './floorplanUi'
 
 export const WALL_SHELL_HEIGHT = 2.8
 export const WALL_SHELL_THICKNESS = 0.18
@@ -78,9 +78,14 @@ export function buildWallShellModel(
   doors: readonly ParsedOpening[],
   windows: readonly ParsedOpening[],
 ): WallShellModel {
+  const validationError = validateCanonicalFloorplan(walls, [...doors, ...windows])
+  if (validationError) {
+    return { ...emptyWallShellModel(), validationError }
+  }
+
   const valid = validWalls(walls)
   if (valid.length === 0) {
-    return emptyWallShellModel()
+    return { ...emptyWallShellModel(), validationError: 'floorplan must contain at least one wall' }
   }
 
   const xs = valid.flatMap((wall) => [wall.x1, wall.x2])
@@ -128,14 +133,6 @@ export function buildWallShellModel(
   )
   if (!wallsAreFinite || !allFinite([floor.x, floor.z, floor.width, floor.depth])) {
     return emptyWallShellModel()
-  }
-
-  // This is the single geometry admission gate. Never normalize, voxelize, or
-  // pass an opening to WASM unless the same durable document accepted by editing
-  // and persistence passes the canonical validator.
-  const validationError = validateOpenings(walls, [...doors, ...windows])
-  if (validationError) {
-    return { walls: normalizedWalls, openings: [], floor, scale, validationError }
   }
 
   const normalizedOpenings: WallShellOpening[] = []

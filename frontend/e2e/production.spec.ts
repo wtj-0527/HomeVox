@@ -1,5 +1,6 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
+import { inflateSync } from 'node:zlib'
 import { createHash } from 'node:crypto'
 
 const baseURL = process.env.HOMEVOX_E2E_BASE_URL ?? 'http://127.0.0.1:18088'
@@ -54,6 +55,55 @@ async function screenshot(page: Page, testInfo: TestInfo, name: string): Promise
   expect(image.readUInt32BE(16)).toBe(1440)
   expect(image.readUInt32BE(20)).toBe(960)
   return path
+}
+
+/** Decode a Playwright PNG screenshot to assert what a person can see, rather
+ * than treating canvas existence or an instrumented geometry object as proof. */
+function visibleLightPixels(png: Buffer): number {
+  let offset = 8
+  let width = 0
+  let height = 0
+  let colorType = -1
+  const chunks: Buffer[] = []
+  while (offset < png.length) {
+    const length = png.readUInt32BE(offset)
+    const type = png.subarray(offset + 4, offset + 8).toString('ascii')
+    const data = png.subarray(offset + 8, offset + 8 + length)
+    if (type === 'IHDR') { width = data.readUInt32BE(0); height = data.readUInt32BE(4); colorType = data[9] }
+    if (type === 'IDAT') chunks.push(data)
+    offset += length + 12
+  }
+  expect([2, 6]).toContain(colorType) // RGB/RGBA 8-bit screenshots from Chromium.
+  const bytesPerPixel = colorType === 6 ? 4 : 3
+  const stride = width * bytesPerPixel
+  const compressed = inflateSync(Buffer.concat(chunks))
+  const pixels = Buffer.alloc(stride * height)
+  let input = 0
+  for (let y = 0; y < height; y += 1) {
+    const filter = compressed[input++]
+    for (let x = 0; x < stride; x += 1) {
+      const raw = compressed[input++]
+      const left = x >= bytesPerPixel ? pixels[y * stride + x - bytesPerPixel] : 0
+      const up = y > 0 ? pixels[(y - 1) * stride + x] : 0
+      const upperLeft = y > 0 && x >= bytesPerPixel ? pixels[(y - 1) * stride + x - bytesPerPixel] : 0
+      const paeth = () => { const p = left + up - upperLeft; const a = Math.abs(p - left); const b = Math.abs(p - up); const c = Math.abs(p - upperLeft); return a <= b && a <= c ? left : b <= c ? up : upperLeft }
+      pixels[y * stride + x] = (raw + (filter === 0 ? 0 : filter === 1 ? left : filter === 2 ? up : filter === 3 ? Math.floor((left + up) / 2) : paeth())) & 0xff
+    }
+  }
+  let visible = 0
+  for (let y = Math.floor(height * 0.2); y < Math.floor(height * 0.8); y += 1) {
+    for (let x = Math.floor(width * 0.2); x < Math.floor(width * 0.8); x += 1) {
+      const index = y * stride + x * bytesPerPixel
+      if (pixels[index] > 175 && pixels[index + 1] > 175 && pixels[index + 2] > 175 && (bytesPerPixel === 3 || pixels[index + 3] > 0)) visible += 1
+    }
+  }
+  return visible
+}
+
+async function assertThreeDRenderIsVisible(page: Page, testInfo: TestInfo, name: string): Promise<void> {
+  const path = testInfo.outputPath(name)
+  await page.getByTestId('three-render-surface').screenshot({ path })
+  expect(visibleLightPixels(await readFile(path))).toBeGreaterThan(120)
 }
 
 async function e2eState(page: Page): Promise<E2EState> {
@@ -114,6 +164,7 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await expect(page.getByText('已生成可审阅的同源 3D 几何')).toBeVisible()
   await expect(page.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
   await expect(page.getByLabel('2D 墙体编辑器')).toHaveCount(0)
+  await assertThreeDRenderIsVisible(page, testInfo, 'issue-19-3d-user-visible.png')
   captures.push(await screenshot(page, testInfo, 'issue-19-3d-confirm.png'))
 
   await page.getByRole('button', { name: '完成并打开 3D' }).click()
@@ -199,12 +250,11 @@ test('keeps invalid and duplicate canonical identity failures closed', async ({ 
   await page.route('**/api/floorplans/parse', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(invalid) }))
   await page.goto('/?e2e=instrument')
   await uploadAndParse(page)
-  await page.getByRole('button', { name: '继续' }).click()
-  await expect(page.getByRole('alert')).toContainText('当前开口数据无法生成 3D')
+  await expect(page.getByRole('alert')).toContainText('opening references a missing or degenerate wall')
+  await expect(page.getByRole('button', { name: '继续' })).toBeDisabled()
   await expect(page.getByLabel('3D 户型预览')).toHaveCount(0)
   await expect(page.getByRole('button', { name: '完成并打开 3D' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '2D/3D 联动' })).toBeDisabled()
-  await page.getByRole('button', { name: '返回 2D 校正' }).first().click()
   await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
   await page.unroute('**/api/floorplans/parse')
 
@@ -212,11 +262,34 @@ test('keeps invalid and duplicate canonical identity failures closed', async ({ 
   await page.route('**/api/floorplans/parse', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(duplicate) }))
   await page.goto('/?e2e=instrument')
   await uploadAndParse(page)
-  await page.getByRole('button', { name: '继续' }).click()
-  await expect(page.getByRole('alert')).toContainText('当前开口数据无法生成 3D')
+  await expect(page.getByRole('alert')).toContainText('wall id must be unique')
+  await expect(page.getByRole('button', { name: '继续' })).toBeDisabled()
   await expect(page.getByLabel('3D 户型预览')).toHaveCount(0)
   await expect(page.getByRole('button', { name: '完成并打开 3D' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '2D/3D 联动' })).toBeDisabled()
+})
+
+test('fails closed after a 2D endpoint is dragged into a zero-length wall', async ({ page }) => {
+  const withoutOpenings: ParseFixture = { ...canonicalFixture, result: { ...canonicalFixture.result, doors: [], windows: [] } }
+  await page.route('**/api/floorplans/parse', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(withoutOpenings) }))
+  await page.goto('/?e2e=instrument')
+  await uploadAndParse(page)
+  const start = await page.getByTestId('endpoint-handle-0-start').boundingBox()
+  const end = await page.getByTestId('endpoint-handle-0-end').boundingBox()
+  expect(start).not.toBeNull()
+  expect(end).not.toBeNull()
+  if (!start || !end) throw new Error('missing wall endpoint handles')
+  await dragEndpoint(page, 'endpoint-handle-0-start', end.x - start.x, end.y - start.y)
+  const afterDrag = await e2eState(page)
+  const zeroLengthWall = afterDrag.walls.find((wall) => wall.id === 'wall-1')
+  expect(zeroLengthWall).toBeDefined()
+  expect(Math.hypot((zeroLengthWall?.x2 ?? 0) - (zeroLengthWall?.x1 ?? 0), (zeroLengthWall?.y2 ?? 0) - (zeroLengthWall?.y1 ?? 0))).toBeLessThan(1e-3)
+  await expect(page.getByText('wall length must be strictly greater than zero', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '继续' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '生成 3D' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '2D/3D 联动' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '保存项目' })).toBeDisabled()
+  await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
 })
 
 test('keeps an unavailable Rust/WASM geometry result fail-closed', async ({ page }) => {

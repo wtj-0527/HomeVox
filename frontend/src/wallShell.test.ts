@@ -3,10 +3,10 @@ import { buildWallShellModel } from './wallShell'
 import type { ParsedOpening } from './floorplanUi'
 
 const rectangleWalls = [
-  { x1: 0, y1: 0, x2: 100, y2: 0 },
-  { x1: 100, y1: 0, x2: 100, y2: 80 },
-  { x1: 100, y1: 80, x2: 0, y2: 80 },
-  { x1: 0, y1: 80, x2: 0, y2: 0 },
+  { id: 'wall-1', x1: 0, y1: 0, x2: 100, y2: 0 },
+  { id: 'wall-2', x1: 100, y1: 0, x2: 100, y2: 80 },
+  { id: 'wall-3', x1: 100, y1: 80, x2: 0, y2: 80 },
+  { id: 'wall-4', x1: 0, y1: 80, x2: 0, y2: 0 },
 ]
 
 describe('3D wall shell model', () => {
@@ -23,7 +23,7 @@ describe('3D wall shell model', () => {
   })
 
   it('calculates diagonal wall length, center, and rotation from the edited segment', () => {
-    const model = buildWallShellModel([{ x1: 10, y1: 20, x2: 40, y2: 60 }], [], [])
+    const model = buildWallShellModel([{ id: 'wall-diagonal', x1: 10, y1: 20, x2: 40, y2: 60 }], [], [])
 
     expect(model.walls).toHaveLength(1)
     expect(model.walls[0].x).toBeCloseTo(0)
@@ -32,20 +32,19 @@ describe('3D wall shell model', () => {
     expect(model.walls[0].rotationY).toBeCloseTo(-Math.atan2(40, 30))
   })
 
-  it('ignores invalid and zero-length walls without producing non-finite geometry', () => {
+  it('fails closed instead of silently omitting invalid or zero-length walls', () => {
     const model = buildWallShellModel(
       [
-        { x1: 0, y1: 0, x2: 0, y2: 0 },
-        { x1: 0, y1: 0, x2: Number.NaN, y2: 10 },
-        { x1: 0, y1: 0, x2: 10, y2: 0 },
+        { id: 'wall-zero', x1: 0, y1: 0, x2: 0, y2: 0 },
+        { id: 'wall-nan', x1: 0, y1: 0, x2: Number.NaN, y2: 10 },
+        { id: 'wall-valid', x1: 0, y1: 0, x2: 10, y2: 0 },
       ],
       [],
       [],
     )
 
-    expect(model.walls).toHaveLength(1)
-    expect(model.walls[0].sourceIndex).toBe(2)
-    expect(Object.values(model.walls[0]).filter((value) => typeof value === 'number').every(Number.isFinite)).toBe(true)
+    expect(model.walls).toEqual([])
+    expect(model.validationError).toContain('strictly greater than zero')
   })
 
   it('keeps legacy parse-only markers out of durable opening geometry', () => {
@@ -55,7 +54,7 @@ describe('3D wall shell model', () => {
       [{ type: 'window', x: 100, y: 40 }],
     )
 
-    expect(model.walls).toHaveLength(4)
+    expect(model.walls).toEqual([])
     expect(model.openings).toEqual([])
     expect(model.validationError).toContain('opening id')
   })
@@ -72,7 +71,7 @@ describe('3D wall shell model', () => {
   ])('fails closed for finite but illegal %s openings', (_caseName, openings, error) => {
     const model = buildWallShellModel([{ id: 'wall-a', x1: 0, y1: 0, x2: 100, y2: 0 }], openings, [])
 
-    expect(model.walls).toHaveLength(1)
+    expect(model.walls).toEqual([])
     expect(model.openings).toEqual([])
     expect(model.validationError).toContain(error)
   })
@@ -87,27 +86,27 @@ describe('3D wall shell model', () => {
       [],
     )
 
-    expect(model.walls).toHaveLength(2)
+    expect(model.walls).toEqual([])
     expect(model.openings).toEqual([])
     expect(model.validationError).toContain('wall id must be unique')
   })
 
   it('rejects finite inputs whose normalization would overflow', () => {
     const model = buildWallShellModel(
-      [{ x1: 0, y1: 0, x2: Number.MIN_VALUE, y2: 0 }],
-      [{ type: 'door', x: Number.MIN_VALUE, y: 0 }],
+      [{ id: 'wall-tiny', x1: 0, y1: 0, x2: Number.MIN_VALUE, y2: 0 }],
+      [],
       [],
     )
 
-    expect(model).toEqual({ walls: [], openings: [], floor: null, scale: null, validationError: null })
+    expect(model).toEqual({ walls: [], openings: [], floor: null, scale: null, validationError: 'wall length must be strictly greater than zero' })
   })
 
   it('keeps all outputs finite for very large finite coordinates', () => {
     const start = Number.MAX_VALUE / 4
     const delta = 1e292
     const model = buildWallShellModel(
-      [{ x1: start, y1: start, x2: start + delta, y2: start }],
-      [{ type: 'door', x: start, y: start }],
+      [{ id: 'wall-large', x1: start, y1: start, x2: start + delta, y2: start }],
+      [],
       [],
     )
 
@@ -127,5 +126,6 @@ describe('3D wall shell model', () => {
     expect(model.walls).toEqual([])
     expect(model.openings).toEqual([])
     expect(model.floor).toBeNull()
+    expect(model.validationError).toContain('at least one wall')
   })
 })
