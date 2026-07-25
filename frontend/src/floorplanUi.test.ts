@@ -22,8 +22,8 @@ const validResponse = {
     walls: [{ x1: 0, y1: 0, x2: 100, y2: 0 }],
     doors: [{ type: 'door', x: 50, y: 0 }],
     windows: [{ from: '客厅', to: '室外', x: 80, y: 0 }],
-    scale: { unit: 'px' },
-    metadata: { source: 'test', image_width: 4000, image_height: 3000 },
+    scale: { unit: 'px', pixel_to_unit: null },
+    metadata: { source: 'test', confidence: 0.5, image_width: 4000, image_height: 3000 },
   },
 }
 
@@ -48,7 +48,23 @@ describe('2D editor view helpers', () => {
 
   it('accepts only a complete finite parse response', () => {
     expect(isParseResponse(validResponse)).toBe(true)
+    expect(isParseResponse({
+      ...validResponse,
+      result: { ...validResponse.result, scale: { unit: 'px', pixel_to_unit: null } },
+    })).toBe(true)
     expect(isParseResponse({ ...validResponse, result: undefined })).toBe(false)
+    expect(isParseResponse({
+      ...validResponse,
+      result: { ...validResponse.result, scale: { unit: 'px' } },
+    })).toBe(false)
+    expect(isParseResponse({
+      ...validResponse,
+      result: { ...validResponse.result, scale: { unit: 'px', pixel_to_unit: 'unknown' } },
+    })).toBe(false)
+    expect(isParseResponse({
+      ...validResponse,
+      result: { ...validResponse.result, metadata: { source: 'test', image_width: 4000, image_height: 3000 } },
+    })).toBe(false)
     expect(
       isParseResponse({
         ...validResponse,

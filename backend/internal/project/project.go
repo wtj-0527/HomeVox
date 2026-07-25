@@ -82,14 +82,24 @@ func validateDocumentEnvelope(doc floorplan.ParseResponse) error {
 	if strings.TrimSpace(doc.Result.Scale.Unit) == "" {
 		return errors.New("document scale unit is required")
 	}
+	if !doc.Result.Scale.HasPixelToUnit() || !doc.Result.Metadata.HasRequiredFields() {
+		return errors.New("document has missing required scale or metadata fields")
+	}
 	if strings.TrimSpace(doc.Result.Metadata.Source) == "" {
 		return errors.New("document metadata source is required")
 	}
 	if doc.Result.Metadata.ImageWidth < 0 || doc.Result.Metadata.ImageHeight < 0 {
 		return errors.New("document metadata image dimensions must not be negative")
 	}
-	if isNotFinite(doc.Result.Metadata.Confidence) || isNotFinite(doc.Result.Scale.PixelToUnit) {
+	if isNotFinite(doc.Result.Metadata.Confidence) {
 		return errors.New("document has invalid numeric metadata")
+	}
+	if conversion := doc.Result.Scale.PixelToUnit; conversion == nil {
+		if doc.Result.Scale.Unit != "px" {
+			return errors.New("unknown document scale must use pixel coordinates")
+		}
+	} else if isNotFinite(*conversion) || *conversion <= 0 {
+		return errors.New("document has invalid scale conversion")
 	}
 	if err := validateSegmentSet(doc.Result.Walls); err != nil {
 		return err

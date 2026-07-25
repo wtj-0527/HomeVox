@@ -6,7 +6,7 @@ const document = {
   filename: 'plan.png',
   contentType: 'image/png',
   size: 12,
-  result: { rooms: [], walls: [], doors: [], windows: [], scale: { unit: 'px' }, metadata: { source: 'fixture' } },
+  result: { rooms: [], walls: [], doors: [], windows: [], scale: { unit: 'px', pixel_to_unit: null }, metadata: { source: 'fixture', confidence: 0.5, image_width: 100, image_height: 80 } },
 }
 
 const project: ProjectDetail = {

@@ -28,7 +28,7 @@ type fakeProjectRepo struct {
 	getCalls       int
 }
 
-const validProjectDocument = `{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px"},"metadata":{"source":"fixture","image_width":100,"image_height":80}}}`
+const validProjectDocument = `{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"fixture","confidence":0.5,"image_width":100,"image_height":80}}}`
 
 func projectDocumentForSourceImage(t testing.TB) string {
 	t.Helper()
@@ -568,7 +568,7 @@ func TestProjectDependenciesReadinessMatrix(t *testing.T) {
 }
 
 func TestProjectDocumentValidationBounds(t *testing.T) {
-	_, err := project.NormalizeDocument([]byte(`{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[{"name":"a","type":"room","approximate_bounds":{"x1":0,"y1":0,"x2":1,"y2":2}}],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px"},"metadata":{"source":"fixture"}}}`))
+	_, err := project.NormalizeDocument([]byte(`{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[{"name":"a","type":"room","approximate_bounds":{"x1":0,"y1":0,"x2":1,"y2":2}}],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"fixture","confidence":0.5,"image_width":100,"image_height":80}}}`))
 	if err != nil {
 		t.Fatalf("unexpected document validation error: %v", err)
 	}

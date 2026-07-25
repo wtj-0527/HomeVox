@@ -14,7 +14,7 @@ export type ParsedOpening = {
   // Legacy parse-only marker fields, converted before persistence.
   type?: string; x?: number; y?: number; from?: string; to?: string
 }
-export type ParseResult = { rooms: Room[]; walls: WallSegment[]; doors: ParsedOpening[]; windows: ParsedOpening[]; scale: { unit: string; pixel_to_unit?: number }; metadata: { source: string; confidence?: number; image_width?: number; image_height?: number } }
+export type ParseResult = { rooms: Room[]; walls: WallSegment[]; doors: ParsedOpening[]; windows: ParsedOpening[]; scale: { unit: string; pixel_to_unit: number | null }; metadata: { source: string; confidence: number; image_width: number; image_height: number } }
 export type ParseResponse = { filename: string; contentType: string; size: number; result: ParseResult }
 export type Viewport = { minX: number; minY: number; width: number; height: number }
 export type CanvasSize = { width: number; height: number }
@@ -25,6 +25,9 @@ export const MIN_CANONICAL_WALL_LENGTH = 1e-3
 function record(v: unknown): v is Record<string, unknown> { return typeof v === 'object' && v !== null && !Array.isArray(v) }
 function finite(v: unknown): v is number { return typeof v === 'number' && Number.isFinite(v) }
 function optional(v: unknown): boolean { return v === undefined || finite(v) }
+function nullableFinite(v: unknown): boolean { return v === null || finite(v) }
+function has(object: Record<string, unknown>, key: string): boolean { return Object.prototype.hasOwnProperty.call(object, key) }
+function integer(v: unknown): v is number { return finite(v) && Number.isInteger(v) }
 function id(v: unknown): v is string { return typeof v === 'string' && /^[A-Za-z0-9_-]+$/.test(v) }
 function wall(v: unknown): v is WallSegment { return record(v) && finite(v.x1) && finite(v.y1) && finite(v.x2) && finite(v.y2) && (v.id === undefined || id(v.id)) }
 function opening(v: unknown): v is ParsedOpening { return record(v) && (v.id === undefined || id(v.id)) && (v.kind === undefined || v.kind === 'door' || v.kind === 'window') && (v.wallId === undefined || id(v.wallId)) && optional(v.position) && optional(v.width) && (v.confirmed === undefined || typeof v.confirmed === 'boolean') && optional(v.x) && optional(v.y) }
@@ -33,7 +36,7 @@ function room(v: unknown): v is Room { return record(v) && typeof v.name === 'st
 export function isParseResponse(value: unknown): value is ParseResponse {
  if (!record(value) || typeof value.filename !== 'string' || typeof value.contentType !== 'string' || !finite(value.size) || value.size < 0 || !record(value.result)) return false
  const r=value.result
- return Array.isArray(r.rooms) && r.rooms.every(room) && Array.isArray(r.walls) && r.walls.every(wall) && Array.isArray(r.doors) && r.doors.every(opening) && Array.isArray(r.windows) && r.windows.every(opening) && record(r.scale) && typeof r.scale.unit === 'string' && optional(r.scale.pixel_to_unit) && record(r.metadata) && typeof r.metadata.source === 'string' && optional(r.metadata.confidence) && optional(r.metadata.image_width) && optional(r.metadata.image_height)
+ return Array.isArray(r.rooms) && r.rooms.every(room) && Array.isArray(r.walls) && r.walls.every(wall) && Array.isArray(r.doors) && r.doors.every(opening) && Array.isArray(r.windows) && r.windows.every(opening) && record(r.scale) && typeof r.scale.unit === 'string' && has(r.scale, 'pixel_to_unit') && nullableFinite(r.scale.pixel_to_unit) && record(r.metadata) && typeof r.metadata.source === 'string' && has(r.metadata, 'confidence') && finite(r.metadata.confidence) && has(r.metadata, 'image_width') && integer(r.metadata.image_width) && r.metadata.image_width >= 0 && has(r.metadata, 'image_height') && integer(r.metadata.image_height) && r.metadata.image_height >= 0
 }
 export function canvasScale(size: CanvasSize, viewport: Viewport): number | null { if (![size.width,size.height,viewport.width,viewport.height].every(finite) || size.width<=0 || size.height<=0 || viewport.width<=0 || viewport.height<=0) return null; const scale=Math.min(size.width/viewport.width,size.height/viewport.height); return finite(scale)&&scale>0?scale:null }
 export function canvasUnitsForCssPixels(cssPixels:number, scale:number|null):number { return !finite(cssPixels)||cssPixels<=0||!scale||!finite(scale)||scale<=0?cssPixels:cssPixels/scale }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -162,6 +163,67 @@ func TestParseFloorplanReportsMissingAIConfig(t *testing.T) {
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("parse status = %d, want %d; body=%s", w.Code, http.StatusServiceUnavailable, w.Body.String())
+	}
+}
+
+func TestParseFloorplanClassifiesInvalidAIOutputWithoutLeakingDiagnostics(t *testing.T) {
+	tests := map[string]struct {
+		content  string
+		wantCode string
+		wantText string
+	}{
+		"schema": {
+			content:  `{"rooms":[],"walls":[{"id":"wall-1","x1":0,"y1":0,"x2":100,"y2":0}],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":"unknown"},"metadata":{"source":"vision","confidence":0.8,"image_width":100,"image_height":80}}`,
+			wantCode: "ai_schema_invalid",
+			wantText: "格式不完整",
+		},
+		"unreliable topology": {
+			content:  `{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"vision","confidence":0.2,"image_width":100,"image_height":80}}`,
+			wantCode: "ai_content_unreliable",
+			wantText: "裁切",
+		},
+	}
+	for name, testCase := range tests {
+		t.Run(name, func(t *testing.T) {
+			vision := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"content":%q}}]}`, testCase.content)
+			}))
+			defer vision.Close()
+			router := NewRouter(config.Config{AIBaseURL: vision.URL, AIAPIKey: "test-key", AIModel: "test-model"})
+			body := &bytes.Buffer{}
+			writer := multipart.NewWriter(body)
+			part, err := writer.CreateFormFile("floorplan", "plan.png")
+			if err != nil {
+				t.Fatalf("create form file: %v", err)
+			}
+			_, _ = part.Write(validPNG(t))
+			if err := writer.Close(); err != nil {
+				t.Fatalf("close multipart writer: %v", err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/api/floorplans/parse", body)
+			request.Header.Set("Content-Type", writer.FormDataContentType())
+			response := httptest.NewRecorder()
+
+			router.ServeHTTP(response, request)
+
+			if response.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
+			}
+			var payload struct {
+				Code  string `json:"code"`
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if payload.Code != testCase.wantCode || !strings.Contains(payload.Error, testCase.wantText) {
+				t.Fatalf("payload = %#v", payload)
+			}
+			if strings.Contains(payload.Error, "pixel_to_unit") || strings.Contains(payload.Error, "decode ai") {
+				t.Fatalf("internal parser diagnostics leaked: %q", payload.Error)
+			}
+		})
 	}
 }
 

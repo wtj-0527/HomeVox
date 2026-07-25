@@ -111,11 +111,30 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 		imageDataURL := fmt.Sprintf("data:%s;base64,%s", contentType, base64.StdEncoding.EncodeToString(data))
 		result, err := parser.Parse(c.Request.Context(), imageDataURL)
 		if err != nil {
-			status := http.StatusBadGateway
 			if cfg.AIAPIKey == "" || cfg.AIBaseURL == "" || cfg.AIModel == "" {
-				status = http.StatusServiceUnavailable
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"code":  "ai_transport_unavailable",
+					"error": "识别服务暂时不可用，请稍后重试。",
+				})
+				return
 			}
-			c.JSON(status, gin.H{"error": err.Error()})
+			switch floorplan.ErrorCode(err) {
+			case floorplan.ParseErrorSchema:
+				c.JSON(http.StatusUnprocessableEntity, gin.H{
+					"code":  "ai_schema_invalid",
+					"error": "识别结果格式不完整，未生成可编辑户型。请裁切后上传更清晰的纯户型图。",
+				})
+			case floorplan.ParseErrorContent:
+				c.JSON(http.StatusUnprocessableEntity, gin.H{
+					"code":  "ai_content_unreliable",
+					"error": "这张图片中的户型边界无法可靠识别。请裁切到单个户型或上传更清晰的平面图。",
+				})
+			default:
+				c.JSON(http.StatusBadGateway, gin.H{
+					"code":  "ai_transport_unavailable",
+					"error": "识别服务暂时不可用，请稍后重试。",
+				})
+			}
 			return
 		}
 
@@ -127,7 +146,10 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 		}
 		canonical, err := project.NormalizeDocument(mustJSON(document))
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "ai returned an invalid floorplan document"})
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"code":  "ai_schema_invalid",
+				"error": "识别结果格式不完整，未生成可编辑户型。请裁切后上传更清晰的纯户型图。",
+			})
 			return
 		}
 		c.JSON(http.StatusOK, canonical)

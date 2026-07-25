@@ -55,6 +55,7 @@ import { useThreeDGenerationController } from './useThreeDGenerationController'
 import { canExportCurrentThreeD } from './threeDExport'
 import { exportCurrentThreeDRevision, type ThreeDExportRevision } from './threeDExportSession'
 import { canonicalRevisionToken } from './floorplanSession'
+import { parseFailureMessage, parseNetworkFailureMessage } from './parseFeedback'
 import { e2EProjectID, e2EWasmLoader, isE2EInstrumentationEnabled, publishE2EState } from '@homevox-e2e'
 import './App.css'
 
@@ -632,11 +633,16 @@ export default function App() {
     formData.append('floorplan', selectedFile)
 
     try {
-      const response = await fetch(API_PARSE_URL, {
-        method: 'POST',
-        body: formData,
-        signal: controller.signal,
-      })
+      let response: Response
+      try {
+        response = await fetch(API_PARSE_URL, {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal,
+        })
+      } catch {
+        throw new Error(parseNetworkFailureMessage())
+      }
       const responseText = await response.text()
       let body: unknown = null
       try {
@@ -645,7 +651,7 @@ export default function App() {
         // Reverse proxies and upstream failures can return non-JSON error pages.
       }
       if (!response.ok) {
-        throw new Error('暂时无法完成识别，请检查网络或稍后重试。')
+        throw new Error(parseFailureMessage(response.status, body))
       }
       if (!isParseResponse(body)) {
         throw new Error('识别结果暂时无法使用，请重新选择图纸后再试。')
@@ -668,7 +674,7 @@ export default function App() {
       setExportError('')
     } catch (err) {
       if (controller.signal.aborted || parseRequestRef.current?.id !== requestId) return
-      setError(err instanceof Error ? err.message : '解析失败')
+      setError(err instanceof Error ? err.message : parseNetworkFailureMessage())
       setStatus('error')
     } finally {
       if (parseRequestRef.current?.id === requestId) {

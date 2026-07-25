@@ -55,7 +55,11 @@ func TestParseUsesOpenAICompatibleVisionContractAndRejectsInvalidOpeningGeometry
 		if request.Model != "vision-test" || len(request.Messages) != 2 {
 			t.Fatalf("vision request = %#v", request)
 		}
-		if request.Messages[0].Role != "system" || string(request.Messages[0].Content) != `"`+visionSystemPrompt+`"` {
+		expectedSystem, err := json.Marshal(visionSystemPrompt)
+		if err != nil {
+			t.Fatalf("marshal expected system prompt: %v", err)
+		}
+		if request.Messages[0].Role != "system" || string(request.Messages[0].Content) != string(expectedSystem) {
 			t.Fatalf("system message = %s", request.Messages[0].Content)
 		}
 		if request.Messages[1].Role != "user" {
@@ -110,6 +114,8 @@ func TestParseRejectsNonCanonicalAIJSON(t *testing.T) {
 		"partial metadata":   strings.Replace(valid, `,"image_height":80`, ``, 1),
 		"null object":        strings.Replace(valid, `"scale":{"unit":"px","pixel_to_unit":1}`, `"scale":null`, 1),
 		"null array":         strings.Replace(valid, `"doors":[`, `"doors":null`, 1),
+		"unknown as string":  strings.Replace(valid, `"pixel_to_unit":1`, `"pixel_to_unit":"unknown"`, 1),
+		"null confidence":    strings.Replace(valid, `"confidence":0.9`, `"confidence":null`, 1),
 		"wrong type":         strings.Replace(valid, `"width":40`, `"width":"40"`, 1),
 		"duplicate key":      strings.Replace(valid, `"id":"wall-1"`, `"id":"wall-1","id":"wall-2"`, 1),
 		"trailing JSON":      valid + ` {"ignored":true}`,
@@ -134,8 +140,33 @@ func TestParseAcceptsOnlyCompleteCanonicalAIJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if result.Walls[0].ID != "wall-1" || result.Doors[0].Source != "ai" || result.Scale.PixelToUnit != 1 || result.Windows[0].Confirmed {
+	if result.Walls[0].ID != "wall-1" || result.Doors[0].Source != "ai" || result.Scale.PixelToUnit == nil || *result.Scale.PixelToUnit != 1 || result.Windows[0].Confirmed {
 		t.Fatalf("unexpected canonical result: %#v", result)
+	}
+}
+
+func TestParseAcceptsExplicitUnknownPixelScaleWithoutInventingMeasurement(t *testing.T) {
+	unknownScale := strings.Replace(canonicalParseJSON, `"unit":"px","pixel_to_unit":1`, `"unit":"px","pixel_to_unit":null`, 1)
+	server := visionServer(t, unknownScale, nil)
+	defer server.Close()
+
+	result, err := NewParser(ai.NewClient(server.URL+"/v1", "test-key", "vision-test")).Parse(context.Background(), "data:image/png;base64,cG5n")
+	if err != nil {
+		t.Fatalf("Parse() rejected explicit unknown pixel scale: %v", err)
+	}
+	if result.Scale.Unit != "px" || result.Scale.PixelToUnit != nil {
+		t.Fatalf("scale = %#v, want pixel coordinates with no fabricated conversion", result.Scale)
+	}
+}
+
+func TestParseRejectsUnknownScaleWithNonPixelUnit(t *testing.T) {
+	unknownScale := strings.Replace(canonicalParseJSON, `"unit":"px","pixel_to_unit":1`, `"unit":"m","pixel_to_unit":null`, 1)
+	server := visionServer(t, unknownScale, nil)
+	defer server.Close()
+
+	_, err := NewParser(ai.NewClient(server.URL+"/v1", "test-key", "vision-test")).Parse(context.Background(), "data:image/png;base64,cG5n")
+	if err == nil || ErrorCode(err) != ParseErrorContent {
+		t.Fatalf("error = %v, code = %s; want invalid semantic scale content error", err, ErrorCode(err))
 	}
 }
 

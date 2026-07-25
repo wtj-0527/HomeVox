@@ -3,6 +3,7 @@ package floorplan
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -11,8 +12,32 @@ import (
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/ai"
 )
 
-const visionSystemPrompt = "You extract residential floor-plan structure. Return only one strict JSON object matching this schema: {rooms:[{name,type,approximate_bounds:{x1,y1,x2,y2},area_ratio}], walls:[{id,x1,y1,x2,y2}], doors:[{id,kind,wallId,position,width,source,confirmed}], windows:[{id,kind,wallId,position,width,source,confirmed}], scale:{unit,pixel_to_unit}, metadata:{source,confidence,image_width,image_height}}. Every listed field is required, no additional fields are accepted, and arrays may be empty. Use pixel coordinates when exact scale is unknown. Never infer or fabricate wall associations, opening widths, architectural dimensions, scale, orientation, height, thickness, or load-bearing status."
+const visionSystemPrompt = "You extract residential floor-plan structure. Return only one strict JSON object matching this schema: {rooms:[{name,type,approximate_bounds:{x1,y1,x2,y2},area_ratio}], walls:[{id,x1,y1,x2,y2}], doors:[{id,kind,wallId,position,width,source,confirmed}], windows:[{id,kind,wallId,position,width,source,confirmed}], scale:{unit,pixel_to_unit}, metadata:{source,confidence,image_width,image_height}}. Every listed field is required, no additional fields are accepted, and arrays may be empty. All coordinates and opening widths are image pixels. scale.pixel_to_unit must be either a finite number or null, never a string: when no physical scale is explicitly visible, return exactly scale:{unit:\"px\",pixel_to_unit:null}; do not infer a conversion, orientation, height, thickness, or load-bearing status. metadata.confidence must be a finite number and image_width/image_height must be integers."
 const visionUserPrompt = "Parse this floor-plan image into the required JSON structure. Do not include markdown fences. Omit an opening if its wall-local position or width cannot be established."
+
+type ParseErrorCode string
+
+const (
+	ParseErrorTransport ParseErrorCode = "transport"
+	ParseErrorSchema    ParseErrorCode = "schema"
+	ParseErrorContent   ParseErrorCode = "content"
+)
+
+type ParseError struct {
+	Code ParseErrorCode
+	Err  error
+}
+
+func (e *ParseError) Error() string { return e.Err.Error() }
+func (e *ParseError) Unwrap() error { return e.Err }
+
+func ErrorCode(err error) ParseErrorCode {
+	var parseError *ParseError
+	if errors.As(err, &parseError) {
+		return parseError.Code
+	}
+	return ParseErrorTransport
+}
 
 type Parser struct {
 	client *ai.Client
@@ -46,19 +71,19 @@ func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, e
 
 	response, err := p.client.Chat(ctx, messages)
 	if err != nil {
-		return ParseResult{}, err
+		return ParseResult{}, &ParseError{Code: ParseErrorTransport, Err: err}
 	}
 	content, err := firstChoiceContent(response)
 	if err != nil {
-		return ParseResult{}, err
+		return ParseResult{}, &ParseError{Code: ParseErrorSchema, Err: err}
 	}
 
 	result, err := decodeCanonicalParseResult(content)
 	if err != nil {
-		return ParseResult{}, err
+		return ParseResult{}, &ParseError{Code: ParseErrorSchema, Err: err}
 	}
 	if err := validateParsedResult(result); err != nil {
-		return ParseResult{}, err
+		return ParseResult{}, &ParseError{Code: ParseErrorContent, Err: err}
 	}
 	// Vision output is an unmeasured interpretation, never an architectural
 	// confirmation. Preserve only explicit manual/measurement confirmations.
@@ -72,11 +97,22 @@ func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, e
 }
 
 func validateParsedResult(result ParseResult) error {
-	if strings.TrimSpace(result.Metadata.Source) == "" || strings.TrimSpace(result.Scale.Unit) == "" {
+	if strings.TrimSpace(result.Metadata.Source) == "" || strings.TrimSpace(result.Scale.Unit) == "" ||
+		!result.Scale.HasPixelToUnit() || !result.Metadata.HasRequiredFields() {
 		return fmt.Errorf("ai result is missing required schema fields")
 	}
-	if !finite(result.Metadata.Confidence) || !finite(result.Scale.PixelToUnit) {
+	if !finite(result.Metadata.Confidence) {
 		return fmt.Errorf("ai result has invalid numeric metadata")
+	}
+	if result.Scale.PixelToUnit == nil {
+		if result.Scale.Unit != "px" {
+			return fmt.Errorf("unknown scale must use pixel coordinates")
+		}
+	} else if !finite(*result.Scale.PixelToUnit) || *result.Scale.PixelToUnit <= 0 {
+		return fmt.Errorf("ai result has invalid scale conversion")
+	}
+	if len(result.Walls) == 0 {
+		return fmt.Errorf("ai result has no reliable wall topology")
 	}
 	wallIDs := make(map[string]Segment, len(result.Walls))
 	for i, wall := range result.Walls {
@@ -294,6 +330,13 @@ func validateNumber(raw json.RawMessage) error {
 	return nil
 }
 
+func validateNullableNumber(raw json.RawMessage) error {
+	if string(raw) == "null" {
+		return nil
+	}
+	return validateNumber(raw)
+}
+
 func validateInteger(raw json.RawMessage) error {
 	var value any
 	if err := json.Unmarshal(raw, &value); err != nil {
@@ -370,7 +413,7 @@ func validateScale(raw json.RawMessage) error {
 	if err != nil {
 		return err
 	}
-	return validateObject(object, map[string]rawValidator{"unit": validateString, "pixel_to_unit": validateNumber})
+	return validateObject(object, map[string]rawValidator{"unit": validateString, "pixel_to_unit": validateNullableNumber})
 }
 
 func validateMetadata(raw json.RawMessage) error {

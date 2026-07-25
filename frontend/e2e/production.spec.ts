@@ -35,8 +35,8 @@ type ParseFixture = {
     walls: Array<{ id: string; x1: number; y1: number; x2: number; y2: number }>
     doors: Array<{ id: string; kind: 'door'; wallId: string; position: number; width: number; source: string; confirmed: boolean }>
     windows: Array<{ id: string; kind: 'window'; wallId: string; position: number; width: number; source: string; confirmed: boolean }>
-    scale: { unit: string }
-    metadata: { source: string; image_width: number; image_height: number }
+    scale: { unit: string; pixel_to_unit: number | null }
+    metadata: { source: string; confidence: number; image_width: number; image_height: number }
   }
 }
 
@@ -52,7 +52,7 @@ const canonicalFixture: ParseFixture = {
     ],
     doors: [{ id: 'door-1', kind: 'door', wallId: 'wall-1', position: 0.5, width: 72, source: 'test-route', confirmed: false }],
     windows: [{ id: 'window-1', kind: 'window', wallId: 'wall-2', position: 0.5, width: 64, source: 'test-route', confirmed: false }],
-    scale: { unit: 'px' }, metadata: { source: 'test-route', image_width: 600, image_height: 440 },
+    scale: { unit: 'px', pixel_to_unit: null }, metadata: { source: 'test-route', confidence: 1, image_width: 600, image_height: 440 },
   },
 }
 
@@ -544,7 +544,7 @@ test('makes parse retry and persistence-unavailable states actionable', async ({
   await selectFile(page)
   await page.route('**/api/floorplans/parse', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'controlled parse outage' }) }))
   await page.getByRole('button', { name: '开始 AI 识别' }).click()
-  await expect(page.getByRole('alert')).toContainText('暂时无法完成识别')
+  await expect(page.getByRole('alert')).toContainText('识别服务暂时不可用')
   await expect(page.getByRole('button', { name: '重试 AI 识别' })).toBeVisible()
   await expect(page.getByRole('button', { name: /AI 识别，已完成/ })).toHaveCount(0)
   await page.unroute('**/api/floorplans/parse')
