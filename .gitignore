@@ -22,3 +22,8 @@ Thumbs.db
 
 wasm/target/
 wasm/pkg/
+
+# LazyCat production release output
+dist/lpk/
+*.lpk
+.lzc-cli-cache/

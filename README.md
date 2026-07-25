@@ -59,6 +59,23 @@ npm --prefix frontend run test:e2e
 
 构建会生成忽略的 `wasm/pkg/` bindings 与 `frontend/dist/`；不要提交它们。生产浏览器验收由 Go 在 `0.0.0.0:18088` 提供 production assets，加载实际 `.wasm`（`application/wasm`），并使用受控 17³ fixture 验证 Rust 调用、有限几何、拖拽/Undo/Redo、3D PNG 下载及 reload 后重建。Playwright 首次使用前执行 `npm --prefix frontend exec playwright install chromium`。
 
+## 本地开发与 LazyCat 生产发布
+
+本地开发与 LazyCat 生产发布是两条独立链路。HomeVox 在开发机和生产容器内都固定监听 `0.0.0.0:18088`。
+
+本地开发直接启动 Go 单端口服务，并通过开发机的 18088 端口前缀域名访问；不运行 `lzc-cli project deploy`，也不安装开发 LPK：
+
+```bash
+npm --prefix frontend ci
+npm --prefix frontend run build
+HOMEVOX_FRONTEND_DIR="$PWD/frontend/dist" go -C backend run ./cmd/server
+# 浏览器访问开发机的 18088 端口前缀域名
+```
+
+仓库中的 `lzc-manifest.yml`、`lzc-build.yml`、`lzc-deploy-params.yml`、`package.yml`、`lzc-icon.png` 与 `images/Dockerfile` 只定义生产 LPK。生产发布使用 `lzc-cli project release -o <仓库外绝对路径>`，LPK 将入口转发至正式的 `homevox:18088` 容器，并包含 PostgreSQL 与 MinIO。任何 `.lpk` 都不得提交到仓库；LPK 的构建、验包、安装和发布需要单独授权。
+
+部署包含 PostgreSQL 与 MinIO 持久服务，数据分别保存在 `/lzcapp/var/postgres` 和 `/lzcapp/var/minio`。数据库和对象存储使用 LazyCat `stable_secret` 生成实例内稳定密码；AI Provider 凭据不写入仓库或安装包，未配置时识别链路保持 fail-closed。
+
 ## 许可
 
 本项目采用 **GNU Affero General Public License v3.0 (AGPL-3.0)**。

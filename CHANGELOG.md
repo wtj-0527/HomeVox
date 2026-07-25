@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add repository-owned LazyCat production LPK configuration: local development remains a direct `0.0.0.0:18088` process reached through the development machine's port-prefix URL, while the production LPK runs HomeVox on container port `18088`, persists PostgreSQL and MinIO under `/lzcapp/var`, and keeps every `.lpk` artifact ignored.
 - 修复真实高干扰营销户型图验收发现的比例尺合同矛盾：`scale.pixel_to_unit` 现在是**必填的有限 number 或显式 null**；比例未知时只能持久化为 `{ "unit": "px", "pixel_to_unit": null }`，绝不猜测物理尺寸。严格 JSON、项目保存/重载、前端 guard 与 fake vision 合同同步收紧，缺失字段、字符串 unknown、null confidence/图像尺寸、重复键和尾随 JSON 仍失败关闭。
 - AI 识别失败现在区分服务不可用、模型输出格式不完整和图片中无可靠户型拓扑；复杂营销复合图会明确提示裁切到单个户型或上传更清晰的平面图，不再误报为网络问题。
 
