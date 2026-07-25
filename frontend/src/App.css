@@ -1,11 +1,11 @@
 .homevox-app {
   min-height: 100%;
-  color: #16213d;
-  background: #f4f7fc;
+  color: #182033;
+  background: #f4f6fa;
 }
 
 .product-sidebar {
-  background: linear-gradient(180deg, #14285d 0%, #1c2461 100%);
+  background: #182033;
   color: #fff;
 }
 
@@ -18,28 +18,28 @@
 
 .product-step {
   border: 1px solid transparent;
-  color: #cbd6ff;
+  color: #aeb7c8;
 }
 
 .product-step[data-active='true'] {
-  border-color: rgb(255 255 255 / 18%);
+  border-color: transparent;
   color: #fff;
-  background: rgb(255 255 255 / 13%);
+  background: #2a3454;
 }
 
 .product-step[data-completed='true'] {
-  color: #f0edff;
+  color: #d7f4e8;
 }
 
 .product-step[data-completed='true'] .step-dot {
-  border-color: #7ee7bf;
-  background: #16775b;
+  border-color: #1f9d70;
+  background: #1f9d70;
   color: #fff;
 }
 
 .product-step[data-active='true'][data-completed='true'] .step-dot {
-  border-color: #c6bdff;
-  background: #7767ef;
+  border-color: #5b5ce2;
+  background: #5b5ce2;
 }
 
 .product-step[data-locked='true'] {
@@ -48,19 +48,31 @@
 
 .step-dot {
   display: grid;
-  width: 25px;
-  height: 25px;
+  width: 12px;
+  height: 12px;
   flex: 0 0 auto;
   place-items: center;
-  border: 1px solid rgb(255 255 255 / 30%);
+  border: 0;
   border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
+  background: #566078;
+  color: transparent;
+  font-size: 0;
 }
 
 .product-step[data-active='true'] .step-dot {
-  border-color: #a99cff;
-  background: #7767ef;
+  border-color: #5b5ce2;
+  background: #5b5ce2;
+}
+
+.brand-mark {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 9px;
+  background: #5b5ce2;
+  color: #fff;
+  font-size: 18px;
 }
 
 .workspace-grid {
@@ -71,7 +83,7 @@
 }
 
 .product-workspace-linked {
-  grid-template-columns: minmax(280px, .75fr) minmax(500px, 1.55fr) minmax(260px, .65fr);
+  grid-template-columns: minmax(280px, .9fr) minmax(420px, 1.24fr) minmax(260px, .66fr);
 }
 
 .workspace-card {
@@ -82,12 +94,13 @@
 }
 
 .canvas-card {
-  min-height: 480px;
+  min-height: 620px;
+  box-shadow: none;
 }
 
 .three-card {
-  height: min(68vh, 680px);
-  min-height: 520px;
+  height: 620px;
+  min-height: 620px;
   background: #0c1325;
 }
 
@@ -96,10 +109,18 @@
 }
 
 .status-chip {
-  border: 1px solid #e1e5f3;
+  border: 0;
   border-radius: 999px;
-  background: #f6f4ff;
+  background: #eef0ff;
   color: #6251d8;
+}
+
+.autosave-chip {
+  min-width: 104px;
+  border-radius: 999px;
+  background: #eaf8f2;
+  color: #1f9d70;
+  text-align: center;
 }
 
 .unknown-note {
@@ -107,6 +128,89 @@
   border-radius: 10px;
   background: #fffbeb;
   color: #845d19;
+}
+
+.import-workspace .workspace-card {
+  min-height: 0;
+}
+
+.import-fact {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 46px;
+  padding: 0 16px;
+  border-radius: 9px;
+  background: #eaf8f2;
+}
+
+.import-fact dt {
+  font-weight: 600;
+  color: #182033;
+}
+
+.import-fact dd {
+  font-size: 12px;
+  font-weight: 500;
+  text-align: right;
+}
+
+.product-workspace-shell {
+  min-height: 800px;
+  padding: 20px;
+}
+
+.three-generation .three-card {
+  height: 570px;
+  min-height: 570px;
+}
+
+.workspace-toolbar {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 0 12px 0 16px;
+  border-radius: 10px;
+  background: #f8f9fc;
+}
+
+.toolbar-chip {
+  border-radius: 999px;
+  background: #eef0ff;
+  padding: 7px 12px;
+  color: #5b5ce2;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.toolbar-button,
+.toolbar-primary {
+  border-radius: 10px;
+  padding: 9px 14px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.toolbar-button {
+  border: 1px solid #dde2ea;
+  background: #fff;
+  color: #5b5ce2;
+}
+
+.toolbar-primary {
+  border: 1px solid #5b5ce2;
+  background: #5b5ce2;
+  color: #fff;
+}
+
+.toolbar-button:disabled,
+.toolbar-primary:disabled {
+  cursor: not-allowed;
+  opacity: .45;
 }
 
 @media (max-width: 1280px) {
@@ -137,5 +241,19 @@
 
   .product-workspace-linked {
     grid-template-columns: 1fr;
+  }
+
+  .import-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .three-generation {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 12px;
   }
 }

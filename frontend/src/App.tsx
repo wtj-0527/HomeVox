@@ -624,6 +624,7 @@ export default function App() {
     const controller = new AbortController()
     parseRequestRef.current = { id: requestId, controller }
 
+    applyProductTransition({ type: 'complete', step: 1, next: 2 }, { hasDocument: false, hasCanonicalGeometry: false, hasThreeDGeometry: false })
     setStatus('uploading')
     setError('')
     const formData = new FormData()
@@ -701,7 +702,6 @@ export default function App() {
     setImageDimFallback(null)
     clearCurrentProject()
     applyProductTransition({ type: 'reload', completed: file ? [1] : [] }, { hasDocument: false, hasCanonicalGeometry: false, hasThreeDGeometry: false })
-    if (file) applyProductTransition({ type: 'open', step: 2 }, { hasDocument: false, hasCanonicalGeometry: false, hasThreeDGeometry: false })
 
     setPreviewURL((currentURL) => {
       if (currentURL) URL.revokeObjectURL(currentURL)
@@ -1032,29 +1032,28 @@ export default function App() {
   const completeAndAdvance = (step: ProductStep, next: ProductStep) => applyProductTransition({ type: 'complete', step, next })
 
   const goNext = () => {
-    if (activeStep === 1 && selectedFile) completeAndAdvance(1, 2)
-    else if (activeStep === 3) completeAndAdvance(3, 4)
+    if (activeStep === 3) completeAndAdvance(3, 4)
     else if (activeStep === 5) completeAndAdvance(5, 6)
   }
 
   const flow: ProductFlowContext = { completed: completedSteps, ...productFlowContext }
-  const pendingCompletion = activeStep === 1 || activeStep === 3 || activeStep === 5
+  const pendingCompletion = activeStep === 3 || activeStep === 5
     ? { type: 'complete' as const, step: activeStep, next: (activeStep + 1) as ProductStep }
     : null
   const canAdvance = Boolean(pendingCompletion && canApplyProductFlowEvent(
     { activeStep, completed: completedSteps },
     pendingCompletion,
     productFlowContext,
-  ) && (activeStep !== 1 || selectedFile))
-  const primaryAction = pendingCompletion && <button className="rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50" type="button" disabled={!canAdvance} onClick={goNext}>{activeStep === 1 ? '继续到 AI 识别' : '继续'}</button>
+  ))
+  const primaryAction = undefined
 
   return (
     <ProductShell activeStep={activeStep} completedSteps={completedSteps} flow={flow} hasDocument={Boolean(durableDocument)} onOpenStep={(step) => applyProductTransition({ type: 'open', step })} primaryAction={primaryAction}>
-        {activeStep === 1 && <SourceImportView selectedFile={selectedFile} previewURL={previewURL} onFileChange={handleFileChange} />}
+        {activeStep === 1 && <SourceImportView selectedFile={selectedFile} previewURL={previewURL} onFileChange={handleFileChange} status={status} error={error} onParse={handleParse} />}
         {activeStep === 2 && <AIParseView selectedFile={selectedFile} previewURL={previewURL} onFileChange={handleFileChange} status={status} error={error} onParse={handleParse} />}
-        {activeStep === 3 && <TwoDWorkspace editor={editorProps} inspector={inspectorProps} />}
+        {activeStep === 3 && <TwoDWorkspace editor={editorProps} inspector={inspectorProps} canAdvance={canAdvance} onAdvance={goNext} />}
         {activeStep === 4 && <ThreeDConfirmation preview={threeDPreviewProps} previewAvailable={canRenderThreeDPreview} canOpenLinkedWorkspace={canOpenLinkedWorkspace} wasmState={wasmState} onBack={() => applyProductTransition({ type: 'open', step: 3 })} onComplete={() => completeAndAdvance(4, 5)} />}
-        {activeStep === 5 && <LinkedWorkspace editor={editorProps} preview={threeDPreviewProps} inspector={inspectorProps} previewAvailable={canRenderThreeDPreview} onBack={() => applyProductTransition({ type: 'open', step: 3 })} />}
+        {activeStep === 5 && <LinkedWorkspace editor={editorProps} preview={threeDPreviewProps} inspector={inspectorProps} previewAvailable={canRenderThreeDPreview} canAdvance={canAdvance} onAdvance={goNext} onBack={() => applyProductTransition({ type: 'open', step: 3 })} />}
         {activeStep === 6 && <ProjectSaveView projectName={projectName} currentProject={currentProject} projects={projects} projectMessage={projectMessage} projectBusy={projectBusy} canSave={hasCanonicalGeometry} onProjectNameChange={setProjectName} onSave={() => { void saveProject() }} onRefresh={() => { void refreshProjects() }} onLoad={(id) => { void loadProject(id) }} />}
     </ProductShell>
   )

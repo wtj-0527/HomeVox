@@ -4,6 +4,15 @@
 
 ### Added
 
+- 完成 Issue #19 的 Penpot 产品化闭环：直接通过已配置的 Streamable HTTP Penpot MCP 回读当前 live file/page 与 6 个 1440 × 960 Board，并将 232px 侧栏、72px 顶栏、Inter 字体层级、颜色、圆角、工作区与 unknown 语义固化为前端产品设计合同和 production layout gate。
+- 导入页现在在真实浏览器上传后保持在用户可理解的「导入真实户型图」两栏确认界面；主 CTA 才会调用 `/api/floorplans/parse` 并进入 AI 识别状态，避免选择文件即跳到工程流程页。
+- 校正、生成 3D、联动和保存页面改为对应 Penpot 的产品工作区；保留真实 canonical、R3F/Rust-WASM、双向选择、Undo/Redo、保存/reload 和 stale-export fail-closed 链路，同时不在普通界面暴露原始 ID、WASM/端口/时序或 JSON 诊断信息。
+- 为 Vite 8 开发模式补齐 React Refresh 浏览器 preamble；独立 5173 HMR 服务器可在不替换 18088 production preview 的情况下真实热更新 CSS 产品变更。
+
+### Verification
+
+- 新增 `productDesign` Vitest 合同和 production Playwright shell geometry gate（232px/72px）；固定 1440 × 960 screenshot、像素与交互门禁继续覆盖 01/03/04/05。
+
 - 完成 Issue #17 的受控 Vision 合同闭环：生产 Go multipart parse API 以 OpenAI-compatible `/chat/completions` 多模态请求处理浏览器图片，并对空/非 JSON envelope、schema-invalid opening geometry、timeout、429 与 5xx fail-closed；上游错误正文不会回显给浏览器。
 - AI 解析不再把缺少 `wallId`、局部 `position` 或 `width` 的 opening 推断为已确认结构；这些候选直接拒绝，避免最近墙体或预览默认值污染 durable document。
 - AI canonical 输出现在要求完整且唯一的 JSON object：拒绝未知字段、重复键、缺失或部分嵌套字段、`null`、错误 JSON 类型、legacy opening 字段及尾随第二个 JSON 值；parse 路径不再生成 ID、kind、source 或空集合。

@@ -9,33 +9,68 @@ type SourceFileProps = {
 function SourcePreview({ selectedFile, previewURL, onFileChange }: SourceFileProps) {
   if (!selectedFile || !previewURL) return null
   return (
-    <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-3" aria-label="已选择的户型图">
+    <section className="source-preview h-full rounded-[10px] border border-slate-200 bg-slate-50 p-3" aria-label="已选择的户型图">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="font-medium text-slate-800">原图预览</p>
-          <p className="mt-1 text-xs text-slate-500">{selectedFile.name} · {selectedFile.type || '未知类型'} · {selectedFile.size.toLocaleString()} bytes</p>
+          <p className="text-lg font-bold text-slate-800">已选择的户型图</p>
+          <p className="mt-1 text-xs text-slate-500">{selectedFile.name}</p>
         </div>
-        <label className="cursor-pointer rounded-lg border border-violet-300 px-3 py-1.5 text-xs font-medium text-violet-700">
-          重新选择
+        <label className="cursor-pointer rounded-[10px] border border-violet-300 bg-white px-3 py-2 text-xs font-semibold text-violet-700">
+          重新选择图纸
           <input className="sr-only" type="file" accept="image/png,image/jpeg,image/gif,image/webp" onChange={(event) => onFileChange(event.target.files?.[0] ?? null)} />
         </label>
       </div>
-      <img className="mt-3 max-h-72 w-full rounded-lg bg-white object-contain" src={previewURL} alt="上传户型图预览" />
+      <img className="mt-4 h-[min(56vh,560px)] w-full rounded-[10px] bg-white object-contain" src={previewURL} alt="上传户型图预览" />
+      <p className="mt-3 text-sm font-medium text-slate-600">图纸包含外轮廓、房间名称、门窗与尺寸链；识别后都可以逐项校正。</p>
     </section>
   )
 }
 
-export function SourceImportView({ selectedFile, previewURL, onFileChange }: SourceFileProps) {
+export type SourceImportViewProps = SourceFileProps & {
+  status: ParseViewStatus
+  error: string
+  onParse: () => void
+}
+
+function ImportFacts() {
+  return <div className="mt-7 space-y-3 border-t border-slate-200 pt-5">
+    <h4 className="text-sm font-semibold text-slate-800">本次识别内容</h4>
+    <dl className="space-y-2 text-sm">
+      <div className="import-fact"><dt>外轮廓与房间</dt><dd className="text-emerald-700">将在图纸中查找</dd></div>
+      <div className="import-fact"><dt>门洞与开口</dt><dd className="text-emerald-700">待你校正</dd></div>
+      <div className="import-fact"><dt>图纸尺寸链</dt><dd className="text-sky-700">保留原值，不猜语义</dd></div>
+      <div className="import-fact"><dt>朝向</dt><dd className="text-amber-700">unknown</dd></div>
+      <div className="import-fact"><dt>层高 / 墙高</dt><dd className="text-amber-700">unknown</dd></div>
+    </dl>
+  </div>
+}
+
+export function SourceImportView({ selectedFile, previewURL, onFileChange, status, error, onParse }: SourceImportViewProps) {
+  if (!selectedFile || !previewURL) {
+    return (
+      <section className="workspace-card mx-auto w-full max-w-[760px] p-7 text-slate-800">
+        <h3 className="text-xl font-bold">导入真实户型图</h3>
+        <p className="mt-2 text-sm text-slate-500">从你的图纸开始，不套用示意户型。</p>
+        <label className="mt-7 block cursor-pointer rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-10 text-center hover:border-violet-500">
+          <span className="block text-base font-semibold">选择户型图</span>
+          <span className="mt-2 block text-sm text-slate-500">支持 PNG、JPEG、GIF、WebP；文件不超过 10 MiB</span>
+          <input className="sr-only" type="file" accept="image/png,image/jpeg,image/gif,image/webp" onChange={(event) => onFileChange(event.target.files?.[0] ?? null)} />
+        </label>
+      </section>
+    )
+  }
   return (
-    <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800">
-      <h3 className="text-xl font-semibold">导入真实户型图</h3>
-      <p className="mt-2 text-sm text-slate-500">从你的图纸开始，不套用示意户型。</p>
-      <label className="mt-6 block cursor-pointer rounded-xl border border-dashed border-slate-400 bg-slate-50 p-5 text-sm hover:border-violet-500">
-        <span className="block font-medium">选择户型图</span>
-        <span className="mt-1 block text-xs text-slate-500">支持 PNG、JPEG、GIF、WebP；后端限制 10 MiB</span>
-        <input className="mt-3 block w-full text-xs" type="file" accept="image/png,image/jpeg,image/gif,image/webp" onChange={(event) => onFileChange(event.target.files?.[0] ?? null)} />
-      </label>
-      <SourcePreview selectedFile={selectedFile} previewURL={previewURL} onFileChange={onFileChange} />
+    <section className="import-workspace mx-auto grid w-full max-w-[1124px] grid-cols-[minmax(0,700px)_396px] gap-7 text-slate-800">
+      <div className="workspace-card h-[780px] p-7"><SourcePreview selectedFile={selectedFile} previewURL={previewURL} onFileChange={onFileChange} /></div>
+      <aside className="workspace-card h-[780px] p-7">
+        <h3 className="text-xl font-bold">把这张图变成可编辑空间</h3>
+        <p className="mt-2 text-sm leading-6 text-slate-500">HomeVox 会先识别 2D 结构，再由你确认后生成同一空间的 3D。</p>
+        <ImportFacts />
+        <p className="mt-7 text-sm font-medium leading-6 text-violet-600">只围绕你的户型建立项目；2D 与 3D 始终共用同一份空间数据。</p>
+        {error && <p role="alert" className="mt-4 rounded-[10px] bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+        <button className="mt-8 w-full rounded-[10px] bg-violet-600 px-4 py-3 text-sm font-semibold text-white disabled:opacity-50" type="button" disabled={status === 'uploading'} onClick={onParse}>{status === 'uploading' ? 'AI 识别中…' : '开始 AI 识别'}</button>
+        <label className="mt-3 block cursor-pointer rounded-[10px] border border-violet-300 px-4 py-3 text-center text-sm font-semibold text-violet-700">重新选择图纸<input className="sr-only" type="file" accept="image/png,image/jpeg,image/gif,image/webp" onChange={(event) => onFileChange(event.target.files?.[0] ?? null)} /></label>
+      </aside>
     </section>
   )
 }
