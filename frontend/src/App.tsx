@@ -48,10 +48,12 @@ import { ProjectSaveView } from './ProjectSaveView'
 import { LinkedWorkspace, ThreeDConfirmation, TwoDWorkspace } from './ProductViews'
 import { SourceImportView, AIParseView, type ParseViewStatus } from './SourceImportView'
 import type { ThreeDPreviewPanelProps } from './ThreeDPreviewPanel'
+import type { ThreeDRenderer } from './ThreeDPreview'
 import { useProductFlowController } from './useProductFlowController'
 import { useProjectSession } from './useProjectSession'
 import { useThreeDGenerationController } from './useThreeDGenerationController'
 import { canExportCurrentThreeD } from './threeDExport'
+import { exportCurrentThreeDRevision, type ThreeDExportRevision } from './threeDExportSession'
 import { canonicalRevisionToken } from './floorplanSession'
 import { e2EProjectID, e2EWasmLoader, isE2EInstrumentationEnabled, publishE2EState } from '@homevox-e2e'
 import './App.css'
@@ -227,6 +229,13 @@ export default function App() {
   const [, setWasmGeneration] = useState(0)
   const wasmGeometryRef = useRef<BufferGeometry | null>(null)
   const wasmCallsRef = useRef(0)
+  const threeDExportRevisionRef = useRef<ThreeDExportRevision<ThreeDRenderer>>({
+    canonicalRevision: null,
+    geometryRevision: null,
+    rendererRevision: null,
+    frameRevision: null,
+    renderer: null,
+  })
 
   const result = parseResponse?.result ?? null
   const walls = dragPreviewWalls ?? wallEditor?.walls ?? result?.walls ?? EMPTY_WALLS
@@ -356,6 +365,16 @@ export default function App() {
     frameGeneration: frameRevision,
     canonicalGeneration: canonicalRevision,
   })
+  // This ref is updated during every render instead of in an effect so an
+  // event that starts a toBlob export always compares against the latest
+  // canonical/WASM/renderer/frame identity after any legal edit.
+  threeDExportRevisionRef.current = {
+    canonicalRevision,
+    geometryRevision,
+    rendererRevision: threeRenderer?.generation ?? null,
+    frameRevision,
+    renderer: threeRenderer,
+  }
 
   useEffect(() => {
     if (!isE2EInstrumentationEnabled()) return
@@ -910,7 +929,9 @@ export default function App() {
   }
 
   async function handleExport3D() {
-    if (!canExport3D || !threeRenderer) {
+    const revision = threeDExportRevisionRef.current
+    const renderer = revision.renderer
+    if (!canExport3D || !renderer) {
       return
     }
 
@@ -918,16 +939,22 @@ export default function App() {
     setExportError('')
 
     try {
-      const rendererState = threeRenderer.state
-      rendererState.gl.render(rendererState.scene, rendererState.camera)
       const fileName = buildScopeFileName('3d')
-      const exportResult = await exportWebGLCanvasToPng(rendererState.gl, fileName)
-      if (!exportResult.ok) {
-        setExportError(exportResult.error.message)
+      const result = await exportCurrentThreeDRevision({
+        revision,
+        readCurrent: () => threeDExportRevisionRef.current,
+        render: () => {
+          const rendererState = renderer.state
+          rendererState.gl.render(rendererState.scene, rendererState.camera)
+        },
+        exportPng: () => exportWebGLCanvasToPng(renderer.state.gl, fileName),
+        download: downloadBlobAsPng,
+        onStale: () => setExportError('模型已更新，请重新导出。'),
+      })
+      if (result.status === 'failure') {
+        setExportError(result.error.message)
         return
       }
-
-      downloadBlobAsPng(exportResult.value)
     } catch (error) {
       setExportError(`3D 导出失败：${error instanceof Error ? error.message : '未知错误'}`)
     } finally {

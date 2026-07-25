@@ -32,6 +32,36 @@ export function projectSaveIssue({
 
 type Request = { id: number; controller: AbortController }
 
+export type ProjectSessionDependencies = {
+  listProjects: (signal?: AbortSignal) => Promise<ProjectSummary[]>
+  getProject: (id: string, signal?: AbortSignal) => Promise<ProjectDetail>
+  createProject: (
+    name: string,
+    document: ParseResponse,
+    sourceImage: File,
+    signal?: AbortSignal,
+  ) => Promise<ProjectDetail>
+  updateProject: (
+    id: string,
+    name: string,
+    document: ParseResponse,
+    expectedRevision: number,
+    signal?: AbortSignal,
+  ) => Promise<ProjectDetail>
+  fetchSourceImage: (
+    url: string,
+    init: { signal: AbortSignal },
+  ) => Promise<Response>
+}
+
+const defaultProjectSessionDependencies: ProjectSessionDependencies = {
+  listProjects,
+  getProject,
+  createProject,
+  updateProject,
+  fetchSourceImage: (url, init) => fetch(url, init),
+}
+
 export type ProjectSession = {
   projectName: string
   currentProject: ProjectDetail | null
@@ -69,25 +99,28 @@ export function createProjectSession({
   onProjectSaved: () => void
   onProjectLoaded: (project: ProjectDetail, sourceImage: Blob) => void
   onState: (next: Partial<Pick<ProjectSession, 'projectName' | 'currentProject' | 'projects' | 'projectMessage' | 'projectBusy'>>) => void
-}): Omit<ProjectSession, 'projectName' | 'currentProject' | 'projects' | 'projectMessage' | 'projectBusy' | 'setProjectName' | 'clearCurrentProject'> {
+}, dependencies: ProjectSessionDependencies = defaultProjectSessionDependencies): Omit<ProjectSession, 'projectName' | 'currentProject' | 'projects' | 'projectMessage' | 'projectBusy' | 'setProjectName' | 'clearCurrentProject'> {
   let request: Request | null = null
   let sequence = 0
-  const beginRequest = (): Request => {
+  let disposed = false
+  const beginRequest = (): Request | null => {
+    if (disposed) return null
     request?.controller.abort()
     const next = { id: sequence + 1, controller: new AbortController() }
     sequence = next.id
     request = next
     return next
   }
-  const isCurrent = (next: Request): boolean => request?.id === next.id
+  const isCurrent = (next: Request): boolean => !disposed && request?.id === next.id
 
   return {
     async refreshProjects() {
       const active = beginRequest()
+      if (!active) return
       onState({ projectBusy: 'list' })
       try {
-        const projects = await listProjects(active.controller.signal)
-        if (isCurrent(active)) onState({ projects })
+        const nextProjects = await dependencies.listProjects(active.controller.signal)
+        if (isCurrent(active)) onState({ projects: nextProjects })
       } catch (error) {
         if (!active.controller.signal.aborted && isCurrent(active)) onState({ projectMessage: `项目列表加载失败：${error instanceof Error ? error.message : '未知错误'}` })
       } finally {
@@ -107,14 +140,15 @@ export function createProjectSession({
         return
       }
       const active = beginRequest()
+      if (!active) return
       const durableDocument = document()
       const existing = currentProject()
       const name = projectName()
       onState({ projectBusy: 'save', projectMessage: '' })
       try {
         const saved = existing
-          ? await updateProject(existing.id, name, durableDocument!, existing.revision, active.controller.signal)
-          : await createProject(name, durableDocument!, sourceFile()!, active.controller.signal)
+          ? await dependencies.updateProject(existing.id, name, durableDocument!, existing.revision, active.controller.signal)
+          : await dependencies.createProject(name, durableDocument!, sourceFile()!, active.controller.signal)
         if (!isCurrent(active)) return
         onState({
           currentProject: saved,
@@ -131,13 +165,16 @@ export function createProjectSession({
     },
     async loadProject(id: string) {
       const active = beginRequest()
+      if (!active) return
       onState({ projectBusy: 'load', projectMessage: '' })
       try {
-        const loaded = await getProject(id, active.controller.signal)
-        const imageResponse = await fetch(loaded.sourceImageURL, { signal: active.controller.signal })
+        const loaded = await dependencies.getProject(id, active.controller.signal)
+        if (!isCurrent(active)) return
+        const imageResponse = await dependencies.fetchSourceImage(loaded.sourceImageURL, { signal: active.controller.signal })
         if (!imageResponse.ok) throw new Error(`HTTP ${imageResponse.status}: 无法加载原始户型图`)
+        const contentType = imageResponse.headers.get('content-type')?.toLowerCase() ?? ''
+        if (!contentType.startsWith('image/')) throw new Error('原始户型图不是受支持的图片')
         const sourceImage = await imageResponse.blob()
-        if (!sourceImage.type.startsWith('image/')) throw new Error('原始户型图不是受支持的图片')
         if (!isCurrent(active)) return
         onState({ currentProject: loaded, projectName: loaded.name, projectMessage: '项目已加载' })
         onProjectLoaded(loaded, sourceImage)
@@ -148,6 +185,7 @@ export function createProjectSession({
       }
     },
     dispose() {
+      disposed = true
       request?.controller.abort()
       request = null
     },

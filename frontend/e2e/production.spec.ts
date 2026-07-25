@@ -110,8 +110,10 @@ type PixelFootprint = {
 }
 
 function isWallRgb(red: number, green: number, blue: number): boolean {
-  // Off-white canonical walls and violet selected wall spans. This excludes
-  // the dark background/grid and does not accept a few Html control dots.
+  // Screenshot evidence is intentionally limited to the bright visible wall
+  // faces/selected spans. Explicitly exclude section grid #90a4c6 and floor
+  // #536d9d before applying the review-oriented material thresholds.
+  if (blue - red >= 28 && green - red >= 5) return false
   return (red > 150 && green > 150 && blue > 155) ||
     (red > 95 && blue > 145 && blue - green > 20)
 }
@@ -604,4 +606,56 @@ test('disables export for a valid canonical edit until the matching WASM, render
       current.threeD.currentFrame === true
   }, during.threeD.canonicalRevision)
   await expect(exportButton).toBeEnabled()
+})
+
+test('drops an in-flight old 3D canvas blob after a legal canonical edit', async ({ page }) => {
+  await page.goto('/?e2e=instrument')
+  await uploadAndParse(page)
+  await page.getByRole('button', { name: '继续' }).click()
+  await expect(page.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
+  await page.getByRole('button', { name: '完成并打开 3D' }).click()
+  await waitForCurrentFrame(page)
+  const exportButton = page.getByLabel('导出3D白模PNG')
+  await expect(exportButton).toBeEnabled()
+
+  await page.evaluate(() => {
+    type PendingBlobGate = { started: boolean; release: (() => void) | null }
+    const target = window as typeof window & { __homevoxPendingBlobGate?: PendingBlobGate }
+    const surface = document.querySelector('[data-testid="three-render-surface"]')
+    const canvas = surface instanceof HTMLCanvasElement
+      ? surface
+      : surface?.querySelector('canvas') ?? null
+    if (!canvas) throw new Error('missing 3D canvas')
+    const originalToBlob = canvas.toBlob.bind(canvas)
+    const gate: PendingBlobGate = { started: false, release: null }
+    target.__homevoxPendingBlobGate = gate
+    canvas.toBlob = (callback, type, quality) => {
+      gate.started = true
+      gate.release = () => originalToBlob(callback, type, quality)
+    }
+  })
+  let downloads = 0
+  page.on('download', () => { downloads += 1 })
+  await exportButton.click()
+  await page.waitForFunction(() => {
+    const target = window as typeof window & { __homevoxPendingBlobGate?: { started: boolean } }
+    return target.__homevoxPendingBlobGate?.started === true
+  })
+
+  const beforeEdit = await e2eState(page)
+  await page.getByRole('button', { name: '3D 选择窗 window-1' }).click()
+  await page.getByTestId('opening-width').fill('60')
+  const duringEdit = await e2eState(page)
+  expect(duringEdit.threeD.canonicalRevision).not.toBe(beforeEdit.threeD.canonicalRevision)
+  await expect(exportButton).toBeDisabled()
+
+  await page.evaluate(() => {
+    const target = window as typeof window & { __homevoxPendingBlobGate?: { release: (() => void) | null } }
+    const release = target.__homevoxPendingBlobGate?.release
+    if (!release) throw new Error('3D canvas blob export did not start')
+    release()
+  })
+  await expect(page.getByRole('alert')).toContainText('模型已更新，请重新导出。')
+  await expect(exportButton).toHaveText('导出3D PNG')
+  expect(downloads).toBe(0)
 })

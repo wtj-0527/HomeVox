@@ -3,6 +3,7 @@ import { Canvas, useThree, type RootState } from '@react-three/fiber'
 import { Grid, Html, OrbitControls } from '@react-three/drei'
 import type { BufferGeometry } from 'three'
 import { buildWallShellPieces, frameWallShellModel, WINDOW_OPENING_HEIGHT, WINDOW_SILL_HEIGHT, type WallShellModel } from './wallShell'
+import { analyzeCurrentThreeDFrame } from './threeDFrameAnalysis'
 
 export type ThreeDRenderer = { state: RootState; generation: string }
 
@@ -57,22 +58,10 @@ function RenderedFrameLifecycle({ generation, onFrameRendered }: {
           pixels,
         )
         if (context.getError() !== context.NO_ERROR) return
-        // Do not admit a background-only canvas. The off-white canonical
-        // pieces (or their violet selected state) must occupy real pixels in
-        // the current render buffer before Step 4/5 or export can proceed.
-        let wallPixels = 0
-        for (let index = 0; index < pixels.length; index += 4) {
-          const red = pixels[index]
-          const green = pixels[index + 1]
-          const blue = pixels[index + 2]
-          if ((red > 145 && green > 145 && blue > 150) || (red > 85 && blue > 135 && blue - green > 20)) {
-            wallPixels += 1
-            if (wallPixels >= Math.max(24, Math.floor(width * height * 0.00005))) {
-              onFrameRendered(generation)
-              return
-            }
-          }
-        }
+        // Do not admit a background-only or grid-only canvas. The analyzer
+        // requires structurally sized, distributed canonical wall spans (or
+        // their selected-violet state), not a small marker or bright grid.
+        if (analyzeCurrentThreeDFrame(width, height, pixels).accepted) onFrameRendered(generation)
       })
     })
     return () => {
