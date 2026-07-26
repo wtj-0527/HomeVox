@@ -23,6 +23,15 @@ export function parseFailureMessage(status: number, body: unknown): string {
   }
 }
 
+/** Feedback after the user has already confirmed a crop. Avoid telling them to
+ * repeat the same action; explain the actual reliability boundary instead. */
+export function parseRetryFailureMessage(status: number, body: unknown): string {
+  if (errorCode(body) === 'ai_content_unreliable') {
+    return '当前裁切区域仍缺少完整、无遮挡的墙体边界，无法可靠生成可编辑户型。请继续调整裁切区域，或上传原始、清晰且无遮挡的平面图。'
+  }
+  return parseFailureMessage(status, body)
+}
+
 export function parseNetworkFailureMessage(): string {
   return '网络连接暂时不可用，请检查连接后重试。'
 }

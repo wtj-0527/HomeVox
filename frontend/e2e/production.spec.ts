@@ -530,6 +530,63 @@ test('keeps a selected composite candidate and adjusted crop after parse failure
   }
 })
 
+test('shows an explicit judging process while a confirmed crop is being parsed', async ({ page }) => {
+  let releaseParse!: () => void
+  const parseReleased = new Promise<void>((resolve) => { releaseParse = resolve })
+  await page.route('**/api/floorplans/candidates', (route) => route.fulfill({
+    status: 422,
+    contentType: 'application/json',
+    body: JSON.stringify({ code: 'ai_content_unreliable' }),
+  }))
+  await page.route('**/api/floorplans/parse', async (route) => {
+    await parseReleased
+    await route.fulfill({
+      status: 422,
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 'ai_content_unreliable' }),
+    })
+  })
+  await page.goto('/?e2e=instrument')
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'controlled-production-floorplan.png', mimeType: 'image/png', buffer: fixturePNG,
+  })
+  await expect(page.getByRole('alert')).toContainText('手动全图裁切')
+  await expect(page.getByLabel('户型裁切区域')).toBeVisible()
+  await page.getByRole('button', { name: '确认裁切并判断' }).click()
+
+  await expect(page.getByRole('status')).toContainText('正在判断当前裁切区域')
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(page.getByText('无法可靠判断户型区域')).toHaveCount(0)
+  await expect(page.getByLabel('户型裁切区域')).toHaveAttribute('aria-disabled', 'true')
+  await expect(page.getByText('当前裁切区域已锁定，判断完成后可继续调整。')).toBeVisible()
+  await expect(page.getByTestId('crop-selection')).toHaveCSS('opacity', '0.35')
+  await expect(page.locator('[data-crop-handle]')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '全图裁切' })).toBeDisabled()
+  const judgingButton = page.getByRole('button', { name: '正在判断…' })
+  await expect(judgingButton).toBeDisabled()
+  await expect(judgingButton).toHaveCSS('background-color', 'rgb(203, 213, 225)')
+
+  releaseParse()
+  await expect(page.getByRole('alert')).toContainText('当前裁切区域')
+  await expect(page.getByRole('alert')).toContainText('完整、无遮挡')
+})
+
+test('does not describe an automatic single crop as user-confirmed after parse failure', async ({ page }) => {
+  await page.route('**/api/floorplans/parse', (route) => route.fulfill({
+    status: 422,
+    contentType: 'application/json',
+    body: JSON.stringify({ code: 'ai_content_unreliable' }),
+  }))
+  await page.goto('/?e2e=instrument')
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'controlled-production-floorplan.png', mimeType: 'image/png', buffer: fixturePNG,
+  })
+
+  await expect(page.getByRole('alert')).toContainText('裁切到单个户型')
+  await expect(page.getByRole('alert')).not.toContainText('当前裁切区域')
+  await expect(page.getByLabel('户型裁切区域')).toBeVisible()
+})
+
 test('falls back to an adjustable full-image crop when candidate analysis fails', async ({ page }) => {
   await page.route('**/api/floorplans/candidates', (route) => route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ code: 'ai_transport_unavailable', error: 'controlled analysis outage' }) }))
   await page.goto('/?e2e=instrument')

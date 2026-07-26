@@ -57,7 +57,7 @@ import { useThreeDGenerationController } from './useThreeDGenerationController'
 import { canExportCurrentThreeD } from './threeDExport'
 import { exportCurrentThreeDRevision, type ThreeDExportRevision } from './threeDExportSession'
 import { canonicalRevisionToken } from './floorplanSession'
-import { parseFailureMessage, parseNetworkFailureMessage } from './parseFeedback'
+import { parseFailureMessage, parseNetworkFailureMessage, parseRetryFailureMessage } from './parseFeedback'
 import { e2EProjectID, e2EWasmLoader, isE2EInstrumentationEnabled, publishE2EState } from '@homevox-e2e'
 import './App.css'
 
@@ -650,7 +650,12 @@ export default function App() {
     }
   }, [wallEditor])
 
-  async function handleParse(fileToParse: File | null, parsedPreviewURL: string, operation?: OperationToken): Promise<boolean> {
+  async function handleParse(
+    fileToParse: File | null,
+    parsedPreviewURL: string,
+    operation?: OperationToken,
+    source: 'automatic' | 'confirmed-crop' = 'automatic',
+  ): Promise<boolean> {
     if (!fileToParse) {
       setError('请先选择 PNG / JPG / WebP 户型图')
       setStatus('error')
@@ -688,7 +693,9 @@ export default function App() {
         // Reverse proxies and upstream failures can return non-JSON error pages.
       }
       if (!response.ok) {
-        throw new Error(parseFailureMessage(response.status, body))
+        throw new Error(source === 'confirmed-crop'
+          ? parseRetryFailureMessage(response.status, body)
+          : parseFailureMessage(response.status, body))
       }
       if (!isParseResponse(body)) {
         throw new Error('识别结果暂时无法使用，请重新选择图纸后再试。')
@@ -769,6 +776,7 @@ export default function App() {
     const operation = cropOperationRef.current.begin()
     parseRequestRef.current?.controller.abort()
     setStatus('uploading')
+    setError('')
     // A changed crop defines a new coordinate system. Invalidate the previous
     // canonical/effective pair before starting recognition so a failed retry
     // can never leave new crop controls attached to stale 2D/3D geometry.
@@ -798,7 +806,7 @@ export default function App() {
         URL.revokeObjectURL(croppedURL)
         return
       }
-      if (!await handleParse(cropped, croppedURL, operation)) URL.revokeObjectURL(croppedURL)
+      if (!await handleParse(cropped, croppedURL, operation, 'confirmed-crop')) URL.revokeObjectURL(croppedURL)
     } catch (err) {
       if (!operation.isCurrent() || originalSourceRef.current !== source) return
       setStatus('error'); setError(err instanceof Error ? err.message : '无法生成裁切图。')
