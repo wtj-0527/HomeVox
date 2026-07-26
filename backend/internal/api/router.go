@@ -109,7 +109,7 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 		}
 
 		imageDataURL := fmt.Sprintf("data:%s;base64,%s", contentType, base64.StdEncoding.EncodeToString(data))
-		result, err := parser.Parse(c.Request.Context(), imageDataURL)
+		result, err := parser.ParseAtDimensions(c.Request.Context(), imageDataURL, width, height)
 		if err != nil {
 			if cfg.AIAPIKey == "" || cfg.AIBaseURL == "" || cfg.AIModel == "" {
 				c.JSON(http.StatusServiceUnavailable, gin.H{
@@ -137,14 +137,6 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 			}
 			return
 		}
-		if result.Metadata.ImageWidth != width || result.Metadata.ImageHeight != height {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{
-				"code":  "ai_content_unreliable",
-				"error": "识别结果与当前裁切图不一致，未生成可编辑户型。请重新确认裁切区域后再试。",
-			})
-			return
-		}
-
 		document := floorplan.ParseResponse{
 			Filename:    header.Filename,
 			ContentType: contentType,

@@ -4,6 +4,7 @@
 
 ### Added
 
+- 修复真实 Vision Provider 默认按内部预处理尺寸回报 `metadata.image_width/image_height`，导致有效裁切被错误拒绝的问题：解析请求现在显式绑定后端已解码的原图精确尺寸与坐标网格；Provider 必须确认使用同一网格，durable metadata 才采用上传字节的真实宽高，尺寸不一致或任何房间/墙体坐标越界仍失败关闭。真实懒猫浏览器以 `4701 × 4501` 裁切验证 `/api/floorplans/parse` 返回 200，并进入同尺寸、可编辑墙体覆盖可见的 2D 校正页。
 - 裁切确认后的真实 Provider 等待阶段现在显示动态“正在判断当前裁切区域…”状态并禁用重复提交；若裁切图仍缺少完整、无遮挡的墙体边界，失败说明会明确要求继续调整或更换原始无遮挡图，不再重复泛化提示“裁切到单个户型”。
 - Issue #19 milestone C：导入链路改为自动候选判断；single 候选自动裁切后解析，composite/uncertain 和分析失败进入可继续的手动裁切。有效裁切图是解析、2D 底图和项目 source-image 的唯一来源，原图不持久化。生产 Playwright/fake-vision 合同验证受控提示词返回的真实矩形、裁切后的尺寸/内容及 parse 失败后的重试保留状态。
 - Issue #19 parity 的权威原型更新为 File `7622c4ac-2f6b-802b-8008-5f15321d47e8` / Page `7622c4ac-2f6b-802b-8008-5f15321d47e9`，版本 **HomeVox · 主流程 · 自动判断与裁切 · 草稿 04 · 视觉验收**，共 8 个 Board。

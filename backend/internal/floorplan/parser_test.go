@@ -84,6 +84,32 @@ func TestParseUsesOpenAICompatibleVisionContractAndRejectsInvalidOpeningGeometry
 	}
 }
 
+func TestParseAtDimensionsRejectsGeometryOutsideDecodedImage(t *testing.T) {
+	body := strings.Replace(canonicalParseJSON, `"x2":200,"y2":0`, `"x2":201,"y2":0`, 1)
+	server := visionServer(t, body, nil)
+	defer server.Close()
+
+	_, err := NewParser(ai.NewClient(server.URL+"/v1", "test-key", "vision-test")).ParseAtDimensions(
+		context.Background(), "data:image/png;base64,cG5n", 200, 80,
+	)
+	if err == nil || ErrorCode(err) != ParseErrorContent || !strings.Contains(err.Error(), "source image bounds") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestParseAtDimensionsRejectsProviderCoordinateGridMismatch(t *testing.T) {
+	body := strings.Replace(canonicalParseJSON, `"image_width":200,"image_height":80`, `"image_width":100,"image_height":40`, 1)
+	server := visionServer(t, body, nil)
+	defer server.Close()
+
+	_, err := NewParser(ai.NewClient(server.URL+"/v1", "test-key", "vision-test")).ParseAtDimensions(
+		context.Background(), "data:image/png;base64,cG5n", 200, 80,
+	)
+	if err == nil || ErrorCode(err) != ParseErrorContent || !strings.Contains(err.Error(), "coordinate grid") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestParseRejectsInvalidOpenAIEnvelopes(t *testing.T) {
 	for name, body := range map[string]string{
 		"non JSON": `not-json`, "empty choices": `{"choices":[]}`, "empty content": `{"choices":[{"message":{"content":""}}]}`,

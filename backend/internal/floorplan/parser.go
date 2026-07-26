@@ -14,6 +14,7 @@ import (
 
 const visionSystemPrompt = "You extract residential floor-plan structure. Return only one strict JSON object matching this schema: {rooms:[{name,type,approximate_bounds:{x1,y1,x2,y2},area_ratio}], walls:[{id,x1,y1,x2,y2}], doors:[{id,kind,wallId,position,width,source,confirmed}], windows:[{id,kind,wallId,position,width,source,confirmed}], scale:{unit,pixel_to_unit}, metadata:{source,confidence,image_width,image_height}}. Every listed field is required, no additional fields are accepted, and arrays may be empty. All coordinates and opening widths are image pixels. scale.pixel_to_unit must be either a finite number or null, never a string: when no physical scale is explicitly visible, return exactly scale:{unit:\"px\",pixel_to_unit:null}; do not infer a conversion, orientation, height, thickness, or load-bearing status. metadata.confidence must be a finite number and image_width/image_height must be integers."
 const visionUserPrompt = "Parse this floor-plan image into the required JSON structure. Do not include markdown fences. Omit an opening if its wall-local position or width cannot be established."
+const dimensionedVisionUserPrompt = "Parse this floor-plan image into the required JSON structure. The original uploaded image is exactly %d pixels wide and %d pixels high. Use that exact original %d x %d pixel coordinate grid for every room bound, wall endpoint, and opening width, and return metadata.image_width exactly %d and metadata.image_height exactly %d. Do not include markdown fences. Omit an opening if its wall-local position or width cannot be established."
 const candidateSystemPrompt = "Find reliable single-floor-plan crops in this source image. Return only one strict JSON object matching this schema: {mode:string,candidates:[{x:number,y:number,width:number,height:number}]}. mode must be exactly one of \"single\", \"composite\", or \"uncertain\". Candidates must be absolute integer-pixel rectangles on the source image. Return mode \"uncertain\" with candidates:[] when no reliable crop can be established. Return \"single\" with exactly one candidate; return \"composite\" with two or more non-overlapping candidates. Do not add fields or markdown."
 const candidateUserPrompt = "Detect reliable crop rectangles that each contain one standalone floor plan. Do not guess a crop when the image is ambiguous."
 
@@ -52,6 +53,18 @@ func NewParser(client *ai.Client) *Parser {
 }
 
 func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, error) {
+	return p.parse(ctx, imageDataURL, visionUserPrompt, 0, 0)
+}
+
+func (p *Parser) ParseAtDimensions(ctx context.Context, imageDataURL string, imageWidth, imageHeight int) (ParseResult, error) {
+	if imageWidth <= 0 || imageHeight <= 0 {
+		return ParseResult{}, &ParseError{Code: ParseErrorContent, Err: fmt.Errorf("source image dimensions must be positive")}
+	}
+	prompt := fmt.Sprintf(dimensionedVisionUserPrompt, imageWidth, imageHeight, imageWidth, imageHeight, imageWidth, imageHeight)
+	return p.parse(ctx, imageDataURL, prompt, imageWidth, imageHeight)
+}
+
+func (p *Parser) parse(ctx context.Context, imageDataURL, userPrompt string, imageWidth, imageHeight int) (ParseResult, error) {
 	if p.client == nil || p.client.APIKey == "" {
 		return ParseResult{}, fmt.Errorf("AI_API_KEY is required to parse floor plans")
 	}
@@ -67,7 +80,7 @@ func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, e
 		{
 			Role: "user",
 			Content: []map[string]any{
-				{"type": "text", "text": visionUserPrompt},
+				{"type": "text", "text": userPrompt},
 				{"type": "image_url", "image_url": map[string]string{"url": imageDataURL}},
 			},
 		},
@@ -86,8 +99,22 @@ func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, e
 	if err != nil {
 		return ParseResult{}, &ParseError{Code: ParseErrorSchema, Err: err}
 	}
+	if imageWidth > 0 && imageHeight > 0 {
+		if result.Metadata.ImageWidth != imageWidth || result.Metadata.ImageHeight != imageHeight {
+			return ParseResult{}, &ParseError{Code: ParseErrorContent, Err: fmt.Errorf("ai result does not use the source image coordinate grid")}
+		}
+		// Decoded upload bytes remain the durable source of truth after the
+		// provider has explicitly confirmed it used the same coordinate grid.
+		result.Metadata.ImageWidth = imageWidth
+		result.Metadata.ImageHeight = imageHeight
+	}
 	if err := validateParsedResult(result); err != nil {
 		return ParseResult{}, &ParseError{Code: ParseErrorContent, Err: err}
+	}
+	if imageWidth > 0 && imageHeight > 0 {
+		if err := validateParsedBounds(result, imageWidth, imageHeight); err != nil {
+			return ParseResult{}, &ParseError{Code: ParseErrorContent, Err: err}
+		}
 	}
 	// Vision output is an unmeasured interpretation, never an architectural
 	// confirmation. Preserve only explicit manual/measurement confirmations.
@@ -98,6 +125,24 @@ func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, e
 		result.Windows[i].Confirmed = false
 	}
 	return result, nil
+}
+
+func validateParsedBounds(result ParseResult, imageWidth, imageHeight int) error {
+	inBounds := func(x, y float64) bool {
+		return x >= 0 && x <= float64(imageWidth) && y >= 0 && y <= float64(imageHeight)
+	}
+	for i, room := range result.Rooms {
+		bounds := room.ApproximateBounds
+		if bounds.X1 > bounds.X2 || bounds.Y1 > bounds.Y2 || !inBounds(bounds.X1, bounds.Y1) || !inBounds(bounds.X2, bounds.Y2) {
+			return fmt.Errorf("room[%d] exceeds source image bounds", i)
+		}
+	}
+	for i, wall := range result.Walls {
+		if !inBounds(wall.X1, wall.Y1) || !inBounds(wall.X2, wall.Y2) {
+			return fmt.Errorf("wall[%d] exceeds source image bounds", i)
+		}
+	}
+	return nil
 }
 
 // AnalyzeCandidates finds reliable source-image crop candidates without

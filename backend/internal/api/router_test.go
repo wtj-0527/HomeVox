@@ -168,9 +168,24 @@ func TestParseFloorplanReportsMissingAIConfig(t *testing.T) {
 	}
 }
 
-func TestParseFloorplanRejectsCanonicalDimensionsThatDoNotMatchEffectiveImage(t *testing.T) {
-	content := `{"rooms":[],"walls":[{"id":"wall-1","x1":0,"y1":0,"x2":1,"y2":0}],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"vision","confidence":0.8,"image_width":200,"image_height":300}}`
-	vision := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func TestParseFloorplanBindsProviderCoordinatesToDecodedImageDimensions(t *testing.T) {
+	content := `{"rooms":[],"walls":[{"id":"wall-1","x1":0,"y1":0,"x2":1,"y2":0}],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"vision","confidence":0.8,"image_width":2,"image_height":3}}`
+	vision := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Messages []struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.Messages) != 2 {
+			t.Fatalf("decode request: %v", err)
+		}
+		var user []struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(request.Messages[1].Content, &user); err != nil || len(user) != 2 ||
+			!strings.Contains(user[0].Text, "exactly 2 pixels wide and 3 pixels high") {
+			t.Fatalf("dimension-bound prompt = %s", request.Messages[1].Content)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"content":%q}}]}`, content)
 	}))
@@ -190,8 +205,22 @@ func TestParseFloorplanRejectsCanonicalDimensionsThatDoNotMatchEffectiveImage(t 
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "ai_content_unreliable") {
+	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var parsed struct {
+		Result struct {
+			Metadata struct {
+				ImageWidth  int `json:"image_width"`
+				ImageHeight int `json:"image_height"`
+			} `json:"metadata"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if parsed.Result.Metadata.ImageWidth != 2 || parsed.Result.Metadata.ImageHeight != 3 {
+		t.Fatalf("metadata dimensions = %dx%d, want decoded 2x3", parsed.Result.Metadata.ImageWidth, parsed.Result.Metadata.ImageHeight)
 	}
 }
 
