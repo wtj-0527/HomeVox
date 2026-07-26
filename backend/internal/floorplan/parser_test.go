@@ -97,16 +97,19 @@ func TestParseAtDimensionsRejectsGeometryOutsideDecodedImage(t *testing.T) {
 	}
 }
 
-func TestParseAtDimensionsRejectsProviderCoordinateGridMismatch(t *testing.T) {
+func TestParseAtDimensionsOverridesProviderPreprocessingDimensions(t *testing.T) {
 	body := strings.Replace(canonicalParseJSON, `"image_width":200,"image_height":80`, `"image_width":100,"image_height":40`, 1)
 	server := visionServer(t, body, nil)
 	defer server.Close()
 
-	_, err := NewParser(ai.NewClient(server.URL+"/v1", "test-key", "vision-test")).ParseAtDimensions(
+	result, err := NewParser(ai.NewClient(server.URL+"/v1", "test-key", "vision-test")).ParseAtDimensions(
 		context.Background(), "data:image/png;base64,cG5n", 200, 80,
 	)
-	if err == nil || ErrorCode(err) != ParseErrorContent || !strings.Contains(err.Error(), "coordinate grid") {
-		t.Fatalf("error = %v", err)
+	if err != nil {
+		t.Fatalf("ParseAtDimensions() error = %v", err)
+	}
+	if result.Metadata.ImageWidth != 200 || result.Metadata.ImageHeight != 80 {
+		t.Fatalf("metadata dimensions = %dx%d, want decoded 200x80", result.Metadata.ImageWidth, result.Metadata.ImageHeight)
 	}
 }
 

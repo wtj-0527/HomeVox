@@ -169,7 +169,7 @@ func TestParseFloorplanReportsMissingAIConfig(t *testing.T) {
 }
 
 func TestParseFloorplanBindsProviderCoordinatesToDecodedImageDimensions(t *testing.T) {
-	content := `{"rooms":[],"walls":[{"id":"wall-1","x1":0,"y1":0,"x2":1,"y2":0}],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"vision","confidence":0.8,"image_width":2,"image_height":3}}`
+	content := `{"rooms":[],"walls":[{"id":"wall-1","x1":0,"y1":0,"x2":1,"y2":0}],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"vision","confidence":0.8,"image_width":20,"image_height":30}}`
 	vision := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Messages []struct {

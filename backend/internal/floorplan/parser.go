@@ -100,11 +100,10 @@ func (p *Parser) parse(ctx context.Context, imageDataURL, userPrompt string, ima
 		return ParseResult{}, &ParseError{Code: ParseErrorSchema, Err: err}
 	}
 	if imageWidth > 0 && imageHeight > 0 {
-		if result.Metadata.ImageWidth != imageWidth || result.Metadata.ImageHeight != imageHeight {
-			return ParseResult{}, &ParseError{Code: ParseErrorContent, Err: fmt.Errorf("ai result does not use the source image coordinate grid")}
-		}
-		// Decoded upload bytes remain the durable source of truth after the
-		// provider has explicitly confirmed it used the same coordinate grid.
+		// Provider preprocessing may self-report different dimensions even when
+		// the returned geometry follows the requested source-pixel grid. Decoded
+		// upload bytes remain authoritative; geometry is checked against those
+		// bounds below instead of trusting provider metadata.
 		result.Metadata.ImageWidth = imageWidth
 		result.Metadata.ImageHeight = imageHeight
 	}
