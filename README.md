@@ -33,16 +33,18 @@ HomeVox 采用混合技术路线：**Go 管业务 API，Rust 管体素/几何核
 - ✅ 户型图上传与 OpenAI-compatible AI 解析接口已落地；正向解析运行需要配置 `AI_API_KEY`、`AI_BASE_URL`、`AI_MODEL`
 - ✅ 自动判断与裁切：新文件会先请求候选区域；单一候选自动生成裁切后的 effective source 并解析，复合/不确定候选进入可调整裁切。分析的传输、schema 或内容失败会安全回到全图手动裁切；裁切后解析失败会保留原图、候选和裁切框以便重试。
 - ✅ 持久化边界：只保存已确认并实际解析的 effective source；原图仅保留在当前浏览器会话中用于重新裁切，不会上传为项目 source image。
-- ✅ 2D 户型校正编辑器支持墙体选择、共享端点拖拽、Undo/Redo 与底图显隐
+- ✅ 2D 户型校正编辑器支持墙体选择、共享端点拖拽、起点/终点 source-pixel 数值输入、Undo/Redo 与底图显隐；越出 effective source、退化或破坏门窗开口的编辑不会提交。
 - ✅ Issue #13：生产前端构建会从 `wasm/` 源码执行 `wasm-pack build --target web`，由受控 17³（4,913 voxel）标量场调用 Rust Marching Cubes，并在 R3F 中显示有限 position/normal 的真实 WASM 网格。
 - ✅ Issue #17：浏览器上传链路的 AI 结果现在经受控 OpenAI-compatible Vision HTTP 合同和严格 canonical schema validation；未知字段、重复键、缺失/部分字段、null、错误类型和尾随 JSON 都会失败关闭，且不会补齐 AI 输出中的 ID、kind、source 或集合。
 - ✅ 门窗 opening 由 wall-local `wallId`、`position`、`width` 与 `confirmed` 驱动真实 2D/3D 开洞；未确认的门高、窗高和窗台高仅为非持久化预览，绝不表述为建筑实测参数。
 - ✅ WebGL 不可用时显示明确降级提示，不再留下空黑 3D 视口
 - ✅ Issue #9：为当前可用 2D/3D 视图提供一次点击一次下载的 PNG 导出，支持空白/尺寸/序列化等失败闭环；3D 导出通过 R3F 渲染器即时渲染后抓取并规避对象 URL 过早回收
 - ✅ Rust/WASM 几何核心已加入 Marching Cubes 功能验证
-- ✅ Issue #11：项目可持久化保存、列表加载与修订保存已接入单端口 API。服务端在上传前分配 UUID，并以同一 UUID 写入 PostgreSQL 与 `projects/{uuid}/source-image` S3/MinIO 对象键；数据库写入失败会删除该对象。
+- ✅ Issue #11：项目可持久化保存与修订保存已接入单端口 API。服务端在上传前分配 UUID，并以同一 UUID 写入 PostgreSQL 与 `projects/{uuid}/source-image` S3/MinIO 对象键；数据库写入失败会删除该对象。未建立用户身份体系前，全局项目列表关闭，避免枚举其他项目。
+- ✅ AI 识别完成后可在 2D 阶段立即创建服务器端识别快照，后续显式“保存当前修改”沿用 revision conflict 保护且不会再次调用 Vision Provider。创建项目会生成 256-bit 随机 capability，数据库只存 SHA-256；detail/source/update 必须通过专用 header 携带明文 capability，并统一返回 `Cache-Control: no-store`。跨浏览器继续编辑链接只把 capability 放在 URL fragment，前端在发起项目请求前立即从地址栏清除；source-image URL 必须精确绑定当前项目同源 API。获得该链接的人可访问和修改项目，应按敏感凭据保管。
+- ⚠️ 当前 capability 是单实例阶段的持有者读写授权，不等同于用户登录或租户隔离。正式多用户版本仍需 owner-bound identity，以及 capability 的轮换/吊销入口；在此之前不要把继续编辑链接发给不受信任的人。
 - ✅ 项目 API 仅在 PostgreSQL schema/ping 与 S3 bucket 均验证就绪时可用；`/api/config` 分别报告 `not_configured`、`incomplete_config`、`unavailable` 或 `ready` 状态。
-- ✅ 已用隔离 PostgreSQL + MinIO 验证 create/get/list/source-image/update/stale-revision-409、重启后加载及未配置持久化时 project API 的 503；该验收使用 fixture 文档，不包含真实 AI 正向解析。
+- ✅ 已用隔离 PostgreSQL + MinIO 验证 create、capability-gated get/source-image/update、stale-revision-409、独立浏览器恢复、重启后加载及未配置持久化时 project API 的 503；无 capability 的 UUID-only 请求失败关闭，全局 list 不可枚举。
 - 3D 视口公开引擎状态、grid、三角形/顶点、调用耗时与输入/输出字节；单次主线程 WASM 调用预算为 50ms。加载、输入、输出或预算失败时明确回退到既有 wall-shell，2D 编辑、项目加载和 PNG 导出仍可用。
 
 ## 可复现 WASM 与浏览器验收
@@ -65,7 +67,7 @@ npm --prefix frontend run test:e2e
 
 本地开发与 LazyCat 生产发布是两条独立链路。HomeVox 在开发机和生产容器内都固定监听 `0.0.0.0:18088`。
 
-本地开发直接启动 Go 单端口服务，并通过开发机的 18088 端口前缀域名访问；不运行 `lzc-cli project deploy`，也不安装开发 LPK：
+本地开发直接启动 Go 单端口服务，并通过开发机的 18088 端口前缀域名访问；不运行 `lzc-cli project deploy`，也不安装开发 LPK。若要跨浏览器保存识别快照，必须在进程环境或 ignored `backend/.env` 中提供可用的 `DATABASE_URL`、`S3_ENDPOINT`、`S3_BUCKET`、`S3_ACCESS_KEY_ID`、`S3_SECRET_ACCESS_KEY`，并以 `/api/config` 的 `databaseStatus: "ready"`、`s3Status: "ready"` 为准：
 
 ```bash
 npm --prefix frontend ci

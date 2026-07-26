@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createProjectSession, projectSaveIssue, type ProjectSessionDependencies } from './projectSession'
-import type { ProjectDetail, ProjectSummary } from './projects'
+import { storeInitialProjectAccess, type ProjectAccess } from './projectAccess'
+import { ProjectAPIError, type ProjectDetail } from './projects'
+
+const capability = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+const access: ProjectAccess = { id: '00000000-0000-0000-0000-000000000001', capability }
 
 const document = {
   filename: 'plan.png',
@@ -21,14 +25,6 @@ const project: ProjectDetail = {
   document,
 }
 
-const projectSummary: ProjectSummary = {
-  id: project.id,
-  name: project.name,
-  revision: project.revision,
-  createdAt: project.createdAt,
-  updatedAt: project.updatedAt,
-  sourceImageURL: project.sourceImageURL,
-}
 
 describe('project session save admission', () => {
   it('fails closed before persistence if the canonical document is absent or invalid', () => {
@@ -54,21 +50,22 @@ function deferred<T>() {
 function sessionHarness({
   currentProject = null,
   sourceFile = new File(['png'], 'plan.png', { type: 'image/png' }),
+  initialAccess = currentProject ? access : null,
   dependencies = {},
 }: {
   currentProject?: ProjectDetail | null
   sourceFile?: File | null
+  initialAccess?: ProjectAccess | null
   dependencies?: Partial<ProjectSessionDependencies>
 } = {}) {
   const states: Array<Record<string, unknown>> = []
   const onProjectSaved = vi.fn()
   const onProjectLoaded = vi.fn()
   const defaults: ProjectSessionDependencies = {
-    listProjects: vi.fn().mockResolvedValue([]),
     getProject: vi.fn().mockResolvedValue(project),
-    createProject: vi.fn().mockResolvedValue(project),
+    createProject: vi.fn().mockResolvedValue({ project, capability }),
     updateProject: vi.fn().mockResolvedValue({ ...project, revision: 3 }),
-    fetchSourceImage: vi.fn().mockResolvedValue(new Response(new Blob(['png'], { type: 'image/png' }), { status: 200 })),
+    fetchSourceImage: vi.fn().mockResolvedValue(new Blob(['png'], { type: 'image/png' })),
   }
   const controller = createProjectSession({
     document: () => document,
@@ -76,7 +73,7 @@ function sessionHarness({
     sourceFile: () => sourceFile,
     projectName: () => 'Home',
     currentProject: () => currentProject,
-    projects: () => [] as readonly ProjectSummary[],
+    initialAccess,
     onProjectSaved,
     onProjectLoaded,
     onState: (next) => states.push(next),
@@ -85,88 +82,35 @@ function sessionHarness({
 }
 
 describe('ProjectSession controller', () => {
-  it('aborts the prior request and prevents a stale success from publishing over the latest request', async () => {
-    const first = deferred<ProjectSummary[]>()
-    const second = deferred<ProjectSummary[]>()
-    const listProjects = vi.fn()
-      .mockImplementationOnce(() => first.promise)
-      .mockImplementationOnce(() => second.promise)
-    const { controller, states } = sessionHarness({ dependencies: { listProjects } })
-
-    const oldRequest = controller.refreshProjects()
-    const oldSignal = listProjects.mock.calls[0][0] as AbortSignal
-    const latestRequest = controller.refreshProjects()
-    expect(oldSignal.aborted).toBe(true)
-
-    first.resolve([{ ...projectSummary, name: 'stale project' }])
-    second.resolve([projectSummary])
-    await Promise.all([oldRequest, latestRequest])
-
-    expect(states.filter((state) => 'projects' in state).at(-1)?.projects).toEqual([projectSummary])
-    expect(states.some((state) => JSON.stringify(state.projects ?? []).includes('stale project'))).toBe(false)
-  })
-
-  it('does not publish a stale request error after a newer refresh succeeds', async () => {
-    const first = deferred<ProjectSummary[]>()
-    const second = deferred<ProjectSummary[]>()
-    const listProjects = vi.fn()
-      .mockImplementationOnce(() => first.promise)
-      .mockImplementationOnce(() => second.promise)
-    const { controller, states } = sessionHarness({ dependencies: { listProjects } })
-
-    const oldRequest = controller.refreshProjects()
-    const latestRequest = controller.refreshProjects()
-    first.reject(new Error('old failure'))
-    second.resolve([projectSummary])
-    await Promise.all([oldRequest, latestRequest])
-
-    expect(states.some((state) => String(state.projectMessage ?? '').includes('old failure'))).toBe(false)
-    expect(states.filter((state) => 'projects' in state).at(-1)?.projects).toEqual([projectSummary])
-  })
-
-  it('aborts pending work on dispose and does not publish a late success', async () => {
-    const pending = deferred<ProjectSummary[]>()
-    const listProjects = vi.fn().mockReturnValue(pending.promise)
-    const { controller, states } = sessionHarness({ dependencies: { listProjects } })
-
-    const request = controller.refreshProjects()
-    const signal = listProjects.mock.calls[0][0] as AbortSignal
-    const stateCountBeforeDispose = states.length
-    controller.dispose()
-    expect(signal.aborted).toBe(true)
-    pending.resolve([])
-    await request
-
-    expect(states).toHaveLength(stateCountBeforeDispose)
-  })
-
   it('loads only a valid project with a successful image response and never fabricates a loaded callback', async () => {
     const success = sessionHarness()
-    await success.controller.loadProject(project.id)
+    await success.controller.loadProject(access)
     expect(success.onProjectLoaded).toHaveBeenCalledOnce()
     expect(success.onProjectLoaded).toHaveBeenCalledWith(project, expect.any(Blob))
+    expect(success.dependencies.getProject).toHaveBeenCalledWith(project.id, capability, expect.any(AbortSignal))
+    expect(success.dependencies.fetchSourceImage).toHaveBeenCalledWith(project.sourceImageURL, capability, expect.any(AbortSignal))
 
     const failure = sessionHarness({
       dependencies: {
-        fetchSourceImage: vi.fn().mockResolvedValue(new Response('not an image', { status: 200, headers: { 'Content-Type': 'text/plain' } })),
+        fetchSourceImage: vi.fn().mockRejectedValue(new Error('原始户型图不是受支持的图片')),
       },
     })
-    await failure.controller.loadProject(project.id)
+    await failure.controller.loadProject(access)
     expect(failure.onProjectLoaded).not.toHaveBeenCalled()
     expect(failure.states.some((state) => String(state.projectMessage ?? '').includes('原始户型图不是受支持的图片'))).toBe(true)
 
     const unavailable = sessionHarness({
       dependencies: {
-        fetchSourceImage: vi.fn().mockResolvedValue(new Response('unavailable', { status: 503 })),
+        fetchSourceImage: vi.fn().mockRejectedValue(new Error('HTTP 503: 无法加载原始户型图')),
       },
     })
-    await unavailable.controller.loadProject(project.id)
+    await unavailable.controller.loadProject(access)
     expect(unavailable.onProjectLoaded).not.toHaveBeenCalled()
     expect(unavailable.states.some((state) => String(state.projectMessage ?? '').includes('HTTP 503'))).toBe(true)
   })
 
   it('preserves create and update semantics and only completes after the API confirms success', async () => {
-    const pendingCreate = deferred<ProjectDetail>()
+    const pendingCreate = deferred<{ project: ProjectDetail; capability: string }>()
     const create = sessionHarness({ dependencies: { createProject: vi.fn().mockReturnValue(pendingCreate.promise) } })
     const createRequest = create.controller.saveProject()
     expect(create.dependencies.createProject).toHaveBeenCalledWith('Home', document, expect.any(File), expect.any(AbortSignal))
@@ -174,14 +118,104 @@ describe('ProjectSession controller', () => {
     expect([uploaded.name, uploaded.type, uploaded.size]).toEqual([document.filename, document.contentType, document.size])
     expect(create.dependencies.updateProject).not.toHaveBeenCalled()
     expect(create.onProjectSaved).not.toHaveBeenCalled()
-    pendingCreate.resolve(project)
+    pendingCreate.resolve({ project, capability })
     await createRequest
     expect(create.onProjectSaved).toHaveBeenCalledOnce()
+    expect(create.onProjectSaved).toHaveBeenCalledWith(project)
 
     const update = sessionHarness({ currentProject: project, sourceFile: null })
     await update.controller.saveProject()
-    expect(update.dependencies.updateProject).toHaveBeenCalledWith(project.id, 'Home', document, project.revision, expect.any(AbortSignal))
+    expect(update.dependencies.updateProject).toHaveBeenCalledWith(project.id, capability, 'Home', document, project.revision, expect.any(AbortSignal))
     expect(update.dependencies.createProject).not.toHaveBeenCalled()
     expect(update.onProjectSaved).toHaveBeenCalledOnce()
+    expect(update.onProjectSaved).toHaveBeenCalledWith({ ...project, revision: 3 })
+  })
+
+  it('publishes a safe revision-conflict state that can be recovered by loading the latest project', async () => {
+    const conflict = sessionHarness({
+      currentProject: project,
+      sourceFile: null,
+      dependencies: {
+        updateProject: vi.fn().mockRejectedValue(new ProjectAPIError('revision_conflict', '项目已在其他页面更新，请加载最新版本后再保存')),
+      },
+    })
+    await conflict.controller.saveProject()
+    expect(conflict.states.at(-2)).toMatchObject({ projectMessage: '项目已在其他页面更新，请加载最新版本后再保存', projectMessageTone: 'error' })
+    expect(JSON.stringify(conflict.states)).not.toContain(project.id)
+
+    await conflict.controller.loadProject(access)
+    expect(conflict.onProjectLoaded).toHaveBeenCalledWith(project, expect.any(Blob))
+  })
+
+
+  it('copies the resume link through an injected writer and reports success without publishing the capability', async () => {
+    const create = sessionHarness()
+    await create.controller.saveProject()
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    await create.controller.copyProjectResumeLink('https://homevox.example/workspace', writeText)
+    expect(writeText).toHaveBeenCalledWith(`https://homevox.example/workspace#project=${project.id}&cap=${capability}`)
+    expect(create.states.at(-1)).toMatchObject({ projectMessage: '继续编辑链接已复制，请妥善保管', projectMessageTone: 'success' })
+    expect(JSON.stringify(create.states)).not.toContain(capability)
+  })
+
+  it('reactivates after a StrictMode cleanup without losing the private capability', async () => {
+    const resumed = sessionHarness({ currentProject: project, sourceFile: null })
+    resumed.controller.dispose()
+    resumed.controller.activate()
+    await resumed.controller.reloadProject()
+    expect(resumed.dependencies.getProject).toHaveBeenCalledWith(project.id, capability, expect.any(AbortSignal))
+    expect(resumed.onProjectLoaded).toHaveBeenCalledWith(project, expect.any(Blob))
+  })
+
+	it('consumes an initial vaulted capability once and retries only when StrictMode cleanup aborts it', async () => {
+		storeInitialProjectAccess(access)
+		const pending = deferred<ProjectDetail>()
+		const resumed = sessionHarness({
+			initialAccess: null,
+			dependencies: { getProject: vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue(project) },
+		})
+		const first = resumed.controller.loadInitialProject()
+		resumed.controller.dispose()
+		resumed.controller.activate()
+		const second = resumed.controller.loadInitialProject()
+		pending.resolve(project)
+		await Promise.all([first, second])
+		expect(resumed.onProjectLoaded).toHaveBeenCalledOnce()
+		await resumed.controller.loadInitialProject()
+		expect(resumed.dependencies.getProject).toHaveBeenCalledTimes(2)
+	})
+
+  it('invalidates pending load, create, and update work when project access is cleared', async () => {
+    const pendingLoad = deferred<ProjectDetail>()
+    const load = sessionHarness({ dependencies: { getProject: vi.fn().mockReturnValue(pendingLoad.promise) } })
+    const loadRequest = load.controller.loadProject(access)
+    load.controller.clearAccess()
+    pendingLoad.resolve(project)
+    await loadRequest
+    expect(load.onProjectLoaded).not.toHaveBeenCalled()
+    expect(load.dependencies.fetchSourceImage).not.toHaveBeenCalled()
+
+    const pendingCreate = deferred<{ project: ProjectDetail; capability: string }>()
+    const create = sessionHarness({ dependencies: { createProject: vi.fn().mockReturnValue(pendingCreate.promise) } })
+    const createRequest = create.controller.saveProject()
+    create.controller.clearAccess()
+    pendingCreate.resolve({ project, capability })
+    await createRequest
+    expect(create.onProjectSaved).not.toHaveBeenCalled()
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    await create.controller.copyProjectResumeLink('https://homevox.example/workspace', writeText)
+    expect(writeText).not.toHaveBeenCalled()
+
+    const pendingUpdate = deferred<ProjectDetail>()
+    const update = sessionHarness({
+      currentProject: project,
+      sourceFile: null,
+      dependencies: { updateProject: vi.fn().mockReturnValue(pendingUpdate.promise) },
+    })
+    const updateRequest = update.controller.saveProject()
+    update.controller.clearAccess()
+    pendingUpdate.resolve({ ...project, revision: 3 })
+    await updateRequest
+    expect(update.onProjectSaved).not.toHaveBeenCalled()
   })
 })

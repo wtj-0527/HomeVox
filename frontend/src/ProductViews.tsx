@@ -8,19 +8,33 @@ import { ThreeDPreviewPanel } from './ThreeDPreviewPanel'
 export type TwoDWorkspaceProps = {
   editor: FloorplanEditorPanelProps
   inspector: InspectorPanelProps
+  snapshot: {
+    exists: boolean
+    busy: boolean
+    canSave?: boolean
+    message: string
+    messageTone: 'success' | 'error'
+    onSave: () => void
+    onReload: () => void
+    onCopyResumeLink: () => void
+  }
   canAdvance: boolean
   onAdvance: () => void
 }
 
-function WorkspaceToolbar({ inspector, linked = false, onAdvance, canAdvance }: Pick<TwoDWorkspaceProps, 'inspector' | 'onAdvance' | 'canAdvance'> & { linked?: boolean }) {
+export function WorkspaceToolbar({ inspector, snapshot, linked = false, onAdvance, canAdvance }: Pick<TwoDWorkspaceProps, 'inspector' | 'snapshot' | 'onAdvance' | 'canAdvance'> & { linked?: boolean }) {
   return <div className="workspace-toolbar">
     <div className="flex min-w-0 items-center gap-2">
       <span className="toolbar-chip">{linked ? '并排视图' : '2D 编辑'}</span>
       {linked ? <span className="truncate text-xs font-semibold text-emerald-700">平面图与空间预览已同步</span> : <span className="text-xs font-semibold text-slate-500">调整完成后可查看 3D</span>}
     </div>
     <div className="flex items-center gap-2">
-      <button type="button" className="toolbar-button" disabled={!inspector.canUndo} onClick={inspector.onUndo}>撤销</button>
-      <button type="button" className="toolbar-button" disabled={!inspector.canRedo} onClick={inspector.onRedo}>重做</button>
+      {snapshot.message && <span role={snapshot.messageTone === 'error' ? 'alert' : 'status'} className={`max-w-44 truncate text-xs font-semibold ${snapshot.messageTone === 'error' ? 'text-red-700' : 'text-emerald-700'}`}>{snapshot.message}</span>}
+      {snapshot.exists && snapshot.messageTone === 'error' && <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={snapshot.onReload}>加载最新版本</button>}
+      {snapshot.exists && <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={snapshot.onCopyResumeLink}>复制编辑链接</button>}
+      <button data-testid="save-recognition-snapshot" type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy || snapshot.canSave === false} onClick={snapshot.onSave}>{snapshot.busy ? '保存中…' : snapshot.exists ? '保存当前修改' : '创建识别快照'}</button>
+      <button type="button" className="toolbar-button whitespace-nowrap" disabled={!inspector.canUndo} onClick={inspector.onUndo}>撤销</button>
+      <button type="button" className="toolbar-button whitespace-nowrap" disabled={!inspector.canRedo} onClick={inspector.onRedo}>重做</button>
       {linked
         ? <button data-testid="complete-product-step" type="button" className="toolbar-primary" disabled={!canAdvance} onClick={onAdvance}>保存项目</button>
         : <button data-testid="complete-product-step" type="button" className="toolbar-primary" disabled={!canAdvance} onClick={onAdvance}>完成校正后生成 3D</button>}
@@ -28,8 +42,8 @@ function WorkspaceToolbar({ inspector, linked = false, onAdvance, canAdvance }: 
   </div>
 }
 
-export function TwoDWorkspace({ editor, inspector, canAdvance, onAdvance }: TwoDWorkspaceProps) {
-  return <section className="two-d-product-workspace"><div className="workspace-card two-d-editor-frame"><WorkspaceToolbar inspector={inspector} canAdvance={canAdvance} onAdvance={onAdvance} /><FloorplanEditorPanel {...editor} embedded /></div><InspectorPanel {...inspector} /></section>
+export function TwoDWorkspace({ editor, inspector, snapshot, canAdvance, onAdvance }: TwoDWorkspaceProps) {
+  return <section className="two-d-product-workspace"><div className="workspace-card two-d-editor-frame"><WorkspaceToolbar inspector={inspector} snapshot={snapshot} canAdvance={canAdvance} onAdvance={onAdvance} /><FloorplanEditorPanel {...editor} embedded /></div><InspectorPanel {...inspector} /></section>
 }
 
 type ThreeDUnavailableProps = {
@@ -87,9 +101,9 @@ export type LinkedWorkspaceProps = TwoDWorkspaceProps & {
   onBack: () => void
 }
 
-export function LinkedWorkspace({ editor, preview, inspector, previewAvailable, canAdvance, onAdvance, onBack }: LinkedWorkspaceProps) {
+export function LinkedWorkspace({ editor, preview, inspector, snapshot, previewAvailable, canAdvance, onAdvance, onBack }: LinkedWorkspaceProps) {
   if (!previewAvailable) {
     return <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800" role="alert"><h3 className="text-lg font-semibold">当前 3D 预览不可用</h3><p className="mt-2 text-sm text-slate-600">联动工作台已关闭，请先返回 2D 校正。</p><button type="button" className="mt-4 rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={onBack}>返回 2D 校正</button></section>
   }
-  return <section className="workspace-card linked-product-workspace"><WorkspaceToolbar inspector={inspector} linked canAdvance={canAdvance} onAdvance={onAdvance} /><div className="workspace-grid product-workspace product-workspace-linked"><FloorplanEditorPanel {...editor} embedded /><ThreeDPreviewPanel {...preview} /><InspectorPanel {...inspector} /></div></section>
+  return <section className="workspace-card linked-product-workspace"><WorkspaceToolbar inspector={inspector} snapshot={snapshot} linked canAdvance={canAdvance} onAdvance={onAdvance} /><div className="workspace-grid product-workspace product-workspace-linked"><FloorplanEditorPanel {...editor} embedded /><ThreeDPreviewPanel {...preview} /><InspectorPanel {...inspector} /></div></section>
 }

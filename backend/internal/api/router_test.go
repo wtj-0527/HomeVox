@@ -19,23 +19,66 @@ import (
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/config"
 )
 
-func TestRouterAppliesCorsHeaders(t *testing.T) {
+func TestRouterAllowsOnlySameHostCorsPreflight(t *testing.T) {
 	router := NewRouter(config.Config{})
 	req := httptest.NewRequest(http.MethodOptions, "/api/config", nil)
-	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Origin", "http://example.com")
 	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	req.Header.Set("Access-Control-Request-Headers", projectCapabilityHeader)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
 
-	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Fatalf("Access-Control-Allow-Origin = %q, want *", got)
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "http://example.com" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want exact same-host origin", got)
 	}
 	if got := w.Header().Get("Access-Control-Allow-Methods"); got == "" {
 		t.Fatal("Access-Control-Allow-Methods header missing")
 	}
+	if got := w.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, projectCapabilityHeader) {
+		t.Fatalf("Access-Control-Allow-Headers = %q, want project capability header", got)
+	}
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("OPTIONS status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+}
+
+func TestRouterRejectsCrossHostCorsPreflight(t *testing.T) {
+	router := NewRouter(config.Config{})
+	req := httptest.NewRequest(http.MethodOptions, "/api/projects/00000000-0000-0000-0000-000000000001", nil)
+	req.Header.Set("Origin", "https://attacker.example")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	req.Header.Set("Access-Control-Request-Headers", projectCapabilityHeader)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("OPTIONS status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("cross-host response exposed Access-Control-Allow-Origin %q", got)
+	}
+}
+
+func TestRouterAllowsSamePublicOriginBehindIngress(t *testing.T) {
+	router := NewRouter(config.Config{})
+	req := httptest.NewRequest(http.MethodOptions, "/api/projects/00000000-0000-0000-0000-000000000001", nil)
+	req.Host = "homevox:18088"
+	req.Header.Set("Origin", "https://homevox.example")
+	req.Header.Set("X-Forwarded-Host", "homevox.example")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	req.Header.Set("Access-Control-Request-Headers", projectCapabilityHeader)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("proxied same-origin OPTIONS status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://homevox.example" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want public origin", got)
 	}
 }
 

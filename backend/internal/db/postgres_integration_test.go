@@ -43,7 +43,8 @@ func TestPostgresRepositoryLifecycle(t *testing.T) {
 		t.Fatalf("marshal doc: %v", err)
 	}
 
-	created, err := repo.Create(ctx, "00000000-0000-4000-8000-000000000001", "Suite 1", "source/one.png", "image/png", 12, docJSON)
+	const capabilityHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	created, err := repo.Create(ctx, "00000000-0000-4000-8000-000000000001", capabilityHash, "Suite 1", "source/one.png", "image/png", 12, docJSON)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -57,20 +58,22 @@ func TestPostgresRepositoryLifecycle(t *testing.T) {
 		t.Fatalf("created_at not UTC: %v", created.CreatedAt.Location())
 	}
 
-	got, err := repo.Get(ctx, created.ID)
+	got, err := repo.Get(ctx, created.ID, capabilityHash)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	if got.ID != created.ID {
 		t.Fatalf("get id = %s, want %s", got.ID, created.ID)
 	}
-
-	list, err := repo.List(ctx, 10)
-	if err != nil {
-		t.Fatalf("list: %v", err)
+	if _, err := repo.Get(ctx, created.ID, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"); err != ErrProjectNotFound {
+		t.Fatalf("wrong capability hash error = %v, want ErrProjectNotFound", err)
 	}
-	if len(list) != 1 {
-		t.Fatalf("list len = %d, want 1", len(list))
+	var storedCapabilityHash string
+	if err := repo.pool.QueryRow(ctx, `SELECT capability_hash FROM projects WHERE id = $1`, created.ID).Scan(&storedCapabilityHash); err != nil {
+		t.Fatalf("read stored capability hash: %v", err)
+	}
+	if storedCapabilityHash != capabilityHash {
+		t.Fatalf("stored capability hash mismatch")
 	}
 
 	updatedDoc := floorplan.ParseResult{Walls: []floorplan.Segment{{X1: 0, Y1: 0, X2: 2, Y2: 0}}}
@@ -78,14 +81,14 @@ func TestPostgresRepositoryLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal updated doc: %v", err)
 	}
-	updated, err := repo.Update(ctx, created.ID, 1, "Suite 1+", updatedDocJSON)
+	updated, err := repo.Update(ctx, created.ID, capabilityHash, 1, "Suite 1+", updatedDocJSON)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	if updated.Revision != 2 {
 		t.Fatalf("updated revision = %d, want 2", updated.Revision)
 	}
-	if _, err := repo.Update(ctx, created.ID, 1, "bad", updatedDocJSON); err == nil {
+	if _, err := repo.Update(ctx, created.ID, capabilityHash, 1, "bad", updatedDocJSON); err == nil {
 		t.Fatal("expected revision conflict")
 	}
 }

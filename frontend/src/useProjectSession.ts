@@ -1,31 +1,31 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ParseResponse } from './floorplanUi'
-import type { ProjectDetail, ProjectSummary } from './projects'
+import type { ProjectDetail } from './projects'
 import { createProjectSession, type ProjectBusy, type ProjectSession } from './projectSession'
 
 type ProjectSessionOptions = {
   document: ParseResponse | null
   geometryValidationError: string | null
   sourceFile: File | null
-  onProjectSaved: () => void
+
+  onProjectSaved: (project: ProjectDetail) => void
   onProjectLoaded: (project: ProjectDetail, sourceImage: Blob) => void
 }
 
-type ProjectSessionState = Pick<ProjectSession, 'projectName' | 'currentProject' | 'projects' | 'projectMessage' | 'projectBusy'>
+type ProjectSessionState = Pick<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy'>
 
 const initialState: ProjectSessionState = {
   projectName: '',
   currentProject: null,
-  projects: [],
   projectMessage: '',
+  projectMessageTone: 'success',
   projectBusy: null,
 }
 
 export type UseProjectSession = ProjectSession
 
-/** React state boundary for durable project persistence. The stable controller
- * owns cancellation/request identity while App supplies the current canonical
- * document and applies a successfully loaded document to the editor. */
+/** React state boundary for durable project persistence. Capability plaintext
+ * remains owned by the stable controller closure rather than React state. */
 export function useProjectSession(options: ProjectSessionOptions): UseProjectSession {
   const [state, setState] = useState<ProjectSessionState>(initialState)
   const documentRef = useRef(options.document)
@@ -49,8 +49,8 @@ export function useProjectSession(options: ProjectSessionOptions): UseProjectSes
       sourceFile: () => sourceFileRef.current,
       projectName: () => stateRef.current.projectName,
       currentProject: () => stateRef.current.currentProject,
-      projects: () => stateRef.current.projects,
-      onProjectSaved: () => savedRef.current(),
+		initialAccess: null,
+      onProjectSaved: (project) => savedRef.current(project),
       onProjectLoaded: (project, sourceImage) => loadedRef.current(project, sourceImage),
       onState: (next) => {
         setState((current) => ({ ...current, ...next }))
@@ -59,17 +59,27 @@ export function useProjectSession(options: ProjectSessionOptions): UseProjectSes
   }
   const controller = controllerRef.current
 
-  useEffect(() => () => controller.dispose(), [controller])
+  useEffect(() => {
+    controller.activate()
+    return () => controller.dispose()
+  }, [controller])
 
   return {
     ...state,
     setProjectName: (projectName: string) => setState((current) => ({ ...current, projectName })),
-    clearCurrentProject: () => setState((current) => ({ ...current, currentProject: null })),
-    refreshProjects: controller.refreshProjects,
+    clearCurrentProject: () => {
+      controller.clearAccess()
+      setState((current) => ({ ...current, currentProject: null }))
+    },
     saveProject: controller.saveProject,
     loadProject: controller.loadProject,
+		loadInitialProject: controller.loadInitialProject,
+    reloadProject: controller.reloadProject,
+    copyProjectResumeLink: controller.copyProjectResumeLink,
+    clearAccess: controller.clearAccess,
+    activate: controller.activate,
     dispose: controller.dispose,
   }
 }
 
-export type { ProjectBusy, ProjectDetail, ProjectSummary }
+export type { ProjectBusy, ProjectDetail }

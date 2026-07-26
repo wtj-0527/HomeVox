@@ -19,6 +19,7 @@ const (
 	MaxCreateRequestBytes    = MaxDocumentBytes + MaxSourceImageBytes + MaxCreateRequestOverhead
 	MaxUpdateRequestBytes    = MaxDocumentBytes + MaxCreateRequestOverhead
 	MinNameLength            = 1
+	MinCanonicalWallLength   = 1e-3
 )
 
 var SupportedImageContentTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
@@ -107,9 +108,30 @@ func validateDocumentEnvelope(doc floorplan.ParseResponse) error {
 	if err := validateBounds(doc.Result.Rooms); err != nil {
 		return err
 	}
+	if err := validateImageBounds(doc); err != nil {
+		return err
+	}
 	allOpenings := append(append([]floorplan.Opening{}, doc.Result.Doors...), doc.Result.Windows...)
 	if err := validateOpenings(doc.Result.Walls, allOpenings); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateImageBounds(doc floorplan.ParseResponse) error {
+	width := float64(doc.Result.Metadata.ImageWidth)
+	height := float64(doc.Result.Metadata.ImageHeight)
+	inside := func(x, y float64) bool { return x >= 0 && x <= width && y >= 0 && y <= height }
+	for i, wall := range doc.Result.Walls {
+		if !inside(wall.X1, wall.Y1) || !inside(wall.X2, wall.Y2) {
+			return fmt.Errorf("wall[%d] exceeds source image bounds", i)
+		}
+	}
+	for i, room := range doc.Result.Rooms {
+		bounds := room.ApproximateBounds
+		if !inside(bounds.X1, bounds.Y1) || !inside(bounds.X2, bounds.Y2) {
+			return fmt.Errorf("room[%d] exceeds source image bounds", i)
+		}
 	}
 	return nil
 }
@@ -127,7 +149,7 @@ func validateSegmentSet(segments []floorplan.Segment) error {
 		if isNotFinite(segment.X1) || isNotFinite(segment.Y1) || isNotFinite(segment.X2) || isNotFinite(segment.Y2) {
 			return fmt.Errorf("wall[%d] has invalid numeric value", i)
 		}
-		if math.Hypot(segment.X2-segment.X1, segment.Y2-segment.Y1) <= 0 {
+		if math.Hypot(segment.X2-segment.X1, segment.Y2-segment.Y1) <= MinCanonicalWallLength {
 			return fmt.Errorf("wall[%d] is degenerate", i)
 		}
 	}

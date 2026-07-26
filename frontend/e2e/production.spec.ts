@@ -343,7 +343,7 @@ async function dragEndpoint(page: Page, testID: string, deltaX: number, deltaY: 
   await page.mouse.up()
 }
 
-test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one production lifecycle', async ({ page }, testInfo) => {
+test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one production lifecycle', async ({ page, browser }, testInfo) => {
   await page.goto('/?e2e=instrument')
   await expect(page.getByTestId('product-topbar').getByRole('heading', { name: '导入真实户型图' })).toBeVisible()
   await expect(page.getByTestId('product-sidebar')).toHaveCSS('width', '232px')
@@ -383,6 +383,53 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await expectCustomerFacingCopy(page)
   await page.getByTestId('wall-hit-wall-1').click({ position: { x: 80, y: 1 }, force: true })
   await expect.poll(async () => (await e2eState(page)).selectedWallId).toBe('wall-1')
+  await expect(page.getByLabel('起点 X')).toHaveValue('60')
+  await page.getByLabel('起点 X').fill('90')
+  await page.getByLabel('起点 Y').fill('90')
+  await page.getByRole('button', { name: '应用坐标' }).click()
+  await expect.poll(async () => (await e2eState(page)).walls.find((wall) => wall.id === 'wall-1')).toMatchObject({ x1: 90, y1: 90 })
+
+  const snapshotCreate = page.waitForResponse((response) => response.url().endsWith('/api/projects') && response.request().method() === 'POST')
+  await page.getByTestId('save-recognition-snapshot').click()
+  const createdSnapshotResponse = await snapshotCreate
+  expect(createdSnapshotResponse.status()).toBe(201)
+	expect(createdSnapshotResponse.headers()['cache-control']).toBe('no-store')
+	const createdSnapshot = await createdSnapshotResponse.json() as { id: string; revision: number; capability: string }
+	expect(createdSnapshot.revision).toBe(1)
+	expect(createdSnapshot.capability).toMatch(/^[A-Za-z0-9_-]{43}$/)
+	await expect(page.getByRole('button', { name: '复制编辑链接' })).toBeVisible()
+	const capabilityHeader = 'x-homevox-project-capability'
+	const visionFactsBeforeResume = await (await page.request.get(visionURL.toString())).json() as unknown[]
+	const visionRequestCountBeforeResume = visionFactsBeforeResume.length
+	const independentContext = await browser.newContext()
+	const independentPage = await independentContext.newPage()
+	const independentProjectGet = independentPage.waitForRequest((request) => request.url().endsWith(`/api/projects/${createdSnapshot.id}`) && request.method() === 'GET')
+	const independentSourceGet = independentPage.waitForRequest((request) => request.url().endsWith(`/api/projects/${createdSnapshot.id}/source-image`) && request.method() === 'GET')
+	await independentPage.goto(`/?e2e=instrument#project=${createdSnapshot.id}&cap=${createdSnapshot.capability}`)
+	await expect(independentPage.getByLabel('2D 墙体编辑器')).toBeVisible()
+	const independentProjectRequest = await independentProjectGet
+	const independentSourceRequest = await independentSourceGet
+	expect(independentProjectRequest.headers()[capabilityHeader] === createdSnapshot.capability).toBe(true)
+	expect(independentSourceRequest.headers()[capabilityHeader] === createdSnapshot.capability).toBe(true)
+	expect(new URL(independentPage.url()).hash).toBe('')
+	const visionFactsAfterResume = await (await independentPage.request.get(visionURL.toString())).json() as unknown[]
+	expect(visionFactsAfterResume).toHaveLength(visionRequestCountBeforeResume)
+	await independentContext.close()
+	await page.route(`**/api/projects/${createdSnapshot.id}`, (route) => route.request().method() === 'PUT'
+		? (expect(route.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true), route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'revision_conflict', message: 'project has changed' } }) }))
+		: route.continue())
+  await page.getByTestId('save-recognition-snapshot').click()
+  const conflictAlert = page.getByRole('alert')
+  await expect(conflictAlert).toContainText('项目已在其他页面更新，请加载最新版本后再保存')
+  await expect(conflictAlert).not.toContainText(createdSnapshot.id)
+  await expect(conflictAlert).not.toContainText(/revision|HTTP 409/i)
+  await page.unroute(`**/api/projects/${createdSnapshot.id}`)
+  const reload = page.waitForResponse((response) => response.url().endsWith(`/api/projects/${createdSnapshot.id}`) && response.request().method() === 'GET')
+  await page.getByRole('button', { name: '加载最新版本' }).click()
+  const reloadResponse = await reload
+  expect(reloadResponse.status()).toBe(200)
+  expect(reloadResponse.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true)
+  await expect(page.getByTestId('wall-hit-wall-1')).toHaveAttribute('x1', '90')
   captures.push(await screenshot(page, testInfo, 'issue-19-2d-correction.png'))
 
   await page.getByTestId('complete-product-step').click()
@@ -463,13 +510,14 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   expect(new Set(hashes).size).toBe(4)
 
   await page.getByLabel('项目名称').fill('Production lifecycle project')
-  const save = page.waitForResponse((response) => response.url().endsWith('/api/projects') && response.request().method() === 'POST')
-  await page.getByRole('button', { name: '创建项目' }).click()
+  const save = page.waitForResponse((response) => response.url().endsWith(`/api/projects/${createdSnapshot.id}`) && response.request().method() === 'PUT')
+  await page.getByRole('button', { name: '保存项目', exact: true }).click()
   const saved = await save
-  expect(saved.status()).toBe(201)
+  expect(saved.status()).toBe(200)
+  expect(saved.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true)
   const savedProject = await saved.json() as { id: string; revision: number; document: { result: { walls: Array<{ id: string; x1: number; y1: number; x2: number; y2: number }>; windows: Array<{ id: string; wallId: string; position: number; width: number }> } } }
   expect(savedProject.id).toMatch(/^[0-9a-f-]{36}$/i)
-  expect(savedProject.revision).toBe(1)
+  expect(savedProject.revision).toBe(2)
   await expect(page.getByRole('button', { name: /保存项目.*已完成/ })).toBeVisible()
   expect(savedProject.document.result.walls.find((wall) => wall.id === 'wall-1')).toEqual(editedWall)
   expect(savedProject.document.result.windows).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'window-1', wallId: 'wall-2', width: 60 })]))
@@ -480,24 +528,38 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   const pids = await restarted.json() as { oldPid: number; newPid: number }
   expect(pids.newPid).not.toBe(pids.oldPid)
 
-  await page.goto(`/?e2e=instrument&project=${savedProject.id}`)
-  await expect(page.getByRole('button', { name: /校正 2D，当前步骤/ })).toBeEnabled()
-  await expect(page.getByRole('button', { name: /导入户型图，已完成/ })).toBeVisible()
-  await expect(page.getByRole('button', { name: /AI 识别，已完成/ })).toBeVisible()
-  await expect(page.getByRole('button', { name: /保存项目，已完成/ })).toBeVisible()
-  await page.getByRole('button', { name: /校正 2D，当前步骤/ }).click()
-  await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
-  await page.getByTestId('opening-handle-window-1').click({ force: true })
-  await expect(page.getByTestId('opening-width')).toHaveValue('60')
-  await page.getByTestId('complete-product-step').click()
-  await expect(page.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
-  const reloadedGeometry = await e2eState(page)
+	const directReload = await page.request.get(`/api/projects/${savedProject.id}`, {
+		headers: { 'X-HomeVox-Project-Capability': createdSnapshot.capability },
+	})
+	expect(directReload.status(), await directReload.text()).toBe(200)
+	const restartedContext = await browser.newContext()
+	const restartedPage = await restartedContext.newPage()
+	const restartedProjectGet = restartedPage.waitForResponse((response) => response.url().endsWith(`/api/projects/${savedProject.id}`) && response.request().method() === 'GET')
+	const restartedSourceGet = restartedPage.waitForResponse((response) => response.url().endsWith(`/api/projects/${savedProject.id}/source-image`) && response.request().method() === 'GET')
+	await restartedPage.goto(`/?e2e=instrument#project=${savedProject.id}&cap=${createdSnapshot.capability}`)
+	const restartedProjectResponse = await restartedProjectGet
+	expect(restartedProjectResponse.status(), await restartedProjectResponse.text()).toBe(200)
+	const restartedSourceResponse = await restartedSourceGet
+	expect(restartedSourceResponse.status(), await restartedSourceResponse.text()).toBe(200)
+	await expect(restartedPage.getByRole('button', { name: /校正 2D，当前步骤/ })).toBeEnabled()
+	expect(new URL(restartedPage.url()).hash).toBe('')
+	await expect(restartedPage.getByRole('button', { name: /导入户型图，已完成/ })).toBeVisible()
+	await expect(restartedPage.getByRole('button', { name: /AI 识别，已完成/ })).toBeVisible()
+	await expect(restartedPage.getByRole('button', { name: /保存项目，已完成/ })).toBeVisible()
+	await restartedPage.getByRole('button', { name: /校正 2D，当前步骤/ }).click()
+	await expect(restartedPage.getByLabel('2D 墙体编辑器')).toBeVisible()
+	await restartedPage.getByTestId('opening-handle-window-1').click({ force: true })
+	await expect(restartedPage.getByTestId('opening-width')).toHaveValue('60')
+	await restartedPage.getByTestId('complete-product-step').click()
+	await expect(restartedPage.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
+	const reloadedGeometry = await e2eState(restartedPage)
   expect(reloadedGeometry.geometry.finite).toBe(true)
   expect(reloadedGeometry.geometry.fingerprint).toBe(geometryAfterEndpointEdit.geometry.fingerprint)
   expect(reloadedGeometry.walls.find((wall) => wall.id === 'wall-1')).toEqual(editedWall)
-  const accessibility = await page.locator('body').ariaSnapshot()
+  const accessibility = await restartedPage.locator('body').ariaSnapshot()
   expect(accessibility).not.toMatch(/(?:WASM|Grid|triangles|fallback|结构化 JSON)/i)
-  await expect(page.locator('pre')).toHaveCount(0)
+  await expect(restartedPage.locator('pre')).toHaveCount(0)
+  await restartedContext.close()
 })
 
 test('keeps a selected composite candidate and adjusted crop after parse failure', async ({ page }) => {
@@ -656,7 +718,7 @@ test('keeps invalid and duplicate canonical identity failures closed', async ({ 
   await expect(page.getByRole('button', { name: '2D/3D 联动' })).toBeDisabled()
 })
 
-test('fails closed after a 2D endpoint is dragged into a zero-length wall', async ({ page }) => {
+test('rejects a 2D endpoint drag that would create a zero-length wall', async ({ page }) => {
   const withoutOpenings: ParseFixture = { ...canonicalFixture, result: { ...canonicalFixture.result, doors: [], windows: [] } }
   await page.route('**/api/floorplans/parse', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(withoutOpenings) }))
   await page.goto('/?e2e=instrument')
@@ -668,14 +730,9 @@ test('fails closed after a 2D endpoint is dragged into a zero-length wall', asyn
   if (!start || !end) throw new Error('missing wall endpoint handles')
   await dragEndpoint(page, 'endpoint-handle-0-start', end.x - start.x, end.y - start.y)
   const afterDrag = await e2eState(page)
-  const zeroLengthWall = afterDrag.walls.find((wall) => wall.id === 'wall-1')
-  expect(zeroLengthWall).toBeDefined()
-  expect(Math.hypot((zeroLengthWall?.x2 ?? 0) - (zeroLengthWall?.x1 ?? 0), (zeroLengthWall?.y2 ?? 0) - (zeroLengthWall?.y1 ?? 0))).toBeLessThan(1e-3)
-  await expect(page.getByText('这个户型有一处需要调整', { exact: false })).toBeVisible()
-  await expect(page.getByTestId('complete-product-step')).toBeDisabled()
-  await expect(page.getByRole('button', { name: '生成 3D，未解锁' })).toBeDisabled()
-  await expect(page.getByRole('button', { name: '2D/3D 联动' })).toBeDisabled()
-  await expect(page.getByRole('button', { name: '保存项目' })).toBeDisabled()
+  expect(afterDrag.walls.find((wall) => wall.id === 'wall-1')).toEqual({ id: 'wall-1', x1: 80, y1: 80, x2: 520, y2: 80 })
+  await expect(page.getByRole('alert')).toContainText('暂时无法这样调整')
+  await expect(page.getByTestId('complete-product-step')).toBeEnabled()
   await expect(page.getByLabel('2D 墙体编辑器')).toBeVisible()
 })
 
@@ -713,7 +770,7 @@ test('makes parse retry and persistence-unavailable states actionable', async ({
   await page.getByRole('button', { name: '保存项目' }).click()
   await page.getByLabel('项目名称').fill('Unavailable persistence')
   await page.getByRole('button', { name: '创建项目' }).click()
-  await expect(page.getByRole('status')).toContainText('项目保存失败')
+  await expect(page.getByRole('alert')).toContainText('项目保存失败')
 })
 
 test('keeps the narrow-screen workflow keyboard reachable', async ({ page }) => {
@@ -733,7 +790,7 @@ test('keeps the narrow-screen workflow keyboard reachable', async ({ page }) => 
   await expect(page.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
 })
 
-test('does not export stale 3D after current canonical geometry becomes invalid', async ({ page }) => {
+test('keeps 3D export unavailable in the pure 2D view after an invalid drag is rejected', async ({ page }) => {
   const withoutOpenings: ParseFixture = { ...canonicalFixture, result: { ...canonicalFixture.result, doors: [], windows: [] } }
   await page.route('**/api/floorplans/parse', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(withoutOpenings) }))
   await page.goto('/?e2e=instrument')
@@ -749,7 +806,7 @@ test('does not export stale 3D after current canonical geometry becomes invalid'
   expect(end).not.toBeNull()
   if (!start || !end) throw new Error('missing wall endpoint handles')
   await dragEndpoint(page, 'endpoint-handle-0-start', end.x - start.x, end.y - start.y)
-  await expect(page.getByText('这个户型有一处需要调整', { exact: false })).toBeVisible()
+  await expect(page.getByRole('alert')).toContainText('暂时无法这样调整')
   await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
   let downloads = 0
   page.on('download', () => { downloads += 1 })

@@ -4,7 +4,9 @@
 
 ### Added
 
-- 修复真实 Vision Provider 默认按内部预处理尺寸回报 `metadata.image_width/image_height`，导致有效裁切被错误拒绝的问题：解析请求现在显式绑定后端已解码的原图精确尺寸与坐标网格；Provider 必须确认使用同一网格，durable metadata 才采用上传字节的真实宽高，尺寸不一致或任何房间/墙体坐标越界仍失败关闭。真实懒猫浏览器以 `4701 × 4501` 裁切验证 `/api/floorplans/parse` 返回 200，并进入同尺寸、可编辑墙体覆盖可见的 2D 校正页。
+- 2D 校正工具栏可在生成 3D 前直接创建服务器端识别快照，后续墙体/门窗调整以 revision 更新同一个项目且不会重新调用候选分析或 Vision parse。项目 UUID 不作为访问凭证：创建时生成 256-bit capability，数据库只存 SHA-256；detail/source/update 必须携带专用 header，并全部使用 `Cache-Control: no-store`。继续编辑链接只在 URL fragment 中交接 capability，应用启动后立即清除 fragment；source-image URL 必须精确绑定当前项目同源 API；全局项目列表在没有 owner 身份边界时关闭。
+- 选中墙体后可直接输入起点/终点四个 source-pixel 坐标；数值编辑保留共享端点、进入 Undo/Redo，并与拖拽共用 effective source 边界和 opening 校验。前端拒绝越界、非有限、退化或破坏开口的编辑，后端项目 create/update 同样拒绝超出 durable image grid 的墙体和房间边界。
+- 修复真实 Vision Provider 默认按内部预处理尺寸回报 `metadata.image_width/image_height`，导致有效裁切被错误拒绝的问题：解析请求显式提供后端已解码的原图精确尺寸与坐标网格，但 Provider 回报的 metadata 仅视为不可信的预处理信息；durable metadata 由上传字节的真实宽高覆盖，任何房间/墙体坐标超出 decoded image bounds 仍失败关闭。真实懒猫浏览器以 `4701 × 4501` 裁切验证 `/api/floorplans/parse` 返回 200，并进入同尺寸、可编辑墙体覆盖可见的 2D 校正页。
 - 裁切确认后的真实 Provider 等待阶段现在显示动态“正在判断当前裁切区域…”状态并禁用重复提交；若裁切图仍缺少完整、无遮挡的墙体边界，失败说明会明确要求继续调整或更换原始无遮挡图，不再重复泛化提示“裁切到单个户型”。
 - Issue #19 milestone C：导入链路改为自动候选判断；single 候选自动裁切后解析，composite/uncertain 和分析失败进入可继续的手动裁切。有效裁切图是解析、2D 底图和项目 source-image 的唯一来源，原图不持久化。生产 Playwright/fake-vision 合同验证受控提示词返回的真实矩形、裁切后的尺寸/内容及 parse 失败后的重试保留状态。
 - Issue #19 parity 的权威原型更新为 File `7622c4ac-2f6b-802b-8008-5f15321d47e8` / Page `7622c4ac-2f6b-802b-8008-5f15321d47e9`，版本 **HomeVox · 主流程 · 自动判断与裁切 · 草稿 04 · 视觉验收**，共 8 个 Board。
@@ -25,6 +27,7 @@
 
 ### Verification
 
+- 生产 Playwright 在隔离 PostgreSQL + MinIO 中验证：2D 数值编辑后创建 revision 1 快照，独立 Chromium context 通过 capability fragment 恢复同一坐标，fragment 在请求前从地址栏清除，GET/source/PUT 均携带专用 header，候选/parse 请求计数不增加；继续编辑后保存 revision 2，服务重启后仍恢复同一 canonical 几何。
 - 新增 `productDesign` Vitest 合同和 production Playwright shell geometry gate（232px/72px）；固定 1440 × 960 screenshot、像素与交互门禁继续覆盖 01/03/04/05。
 
 - 完成 Issue #17 的受控 Vision 合同闭环：生产 Go multipart parse API 以 OpenAI-compatible `/chat/completions` 多模态请求处理浏览器图片，并对空/非 JSON envelope、schema-invalid opening geometry、timeout、429 与 5xx fail-closed；上游错误正文不会回显给浏览器。

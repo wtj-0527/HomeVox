@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   createWallEditorState,
+  editWallCoordinates,
   moveEndpoint,
   pushWallSnapshot,
   redo,
@@ -9,6 +10,44 @@ import {
 import { validateOpenings } from './floorplanUi'
 
 describe('wall edit core', () => {
+  it('applies bounded numeric coordinates as one shared-topology edit', () => {
+    const state = createWallEditorState([
+      { id: 'wall-a', x1: 0, y1: 0, x2: 10, y2: 0 },
+      { id: 'wall-b', x1: 10, y1: 0, x2: 20, y2: 0 },
+    ])
+
+    const edited = editWallCoordinates(state, 'wall-a', { x1: 1, y1: 2, x2: 12, y2: 3 }, { width: 100, height: 80 })
+
+    expect(edited.error).toBeNull()
+    expect(edited.changed).toBe(true)
+    expect(edited.walls[0]).toEqual({ id: 'wall-a', x1: 1, y1: 2, x2: 12, y2: 3 })
+    expect(edited.walls[1]).toEqual({ id: 'wall-b', x1: 12, y1: 3, x2: 20, y2: 0 })
+  })
+
+  it('rejects non-finite, out-of-image, degenerate, and opening-breaking numeric coordinates', () => {
+    const state = createWallEditorState(
+      [{ id: 'wall-a', x1: 0, y1: 0, x2: 100, y2: 0 }],
+      [{ id: 'door-a', kind: 'door', wallId: 'wall-a', position: 0.5, width: 20 }],
+    )
+    const bounds = { width: 100, height: 80 }
+
+    expect(editWallCoordinates(state, 'wall-a', { x1: Number.NaN, y1: 0, x2: 100, y2: 0 }, bounds).error).toContain('finite')
+    expect(editWallCoordinates(state, 'wall-a', { x1: -1, y1: 0, x2: 100, y2: 0 }, bounds).error).toContain('image')
+    expect(editWallCoordinates(state, 'wall-a', { x1: 50, y1: 50, x2: 50, y2: 50 }, bounds).error).toContain('length')
+    expect(editWallCoordinates(state, 'wall-a', { x1: 0, y1: 0, x2: 20, y2: 0 }, bounds).error).toContain('opening')
+  })
+
+  it('rejects a shared-endpoint edit that degenerates an adjacent wall', () => {
+    const state = createWallEditorState([
+      { id: 'wall-a', x1: 0, y1: 0, x2: 10, y2: 0 },
+      { id: 'wall-b', x1: 10, y1: 0, x2: 20, y2: 0 },
+    ])
+    const edited = editWallCoordinates(state, 'wall-a', { x1: 0, y1: 0, x2: 20, y2: 0 }, { width: 100, height: 80 })
+    expect(edited.error).toContain('length')
+    expect(edited.changed).toBe(false)
+    expect(edited.walls).toEqual(state.walls)
+  })
+
   it('moves only one endpoint when detached', () => {
     const state = createWallEditorState([
       {

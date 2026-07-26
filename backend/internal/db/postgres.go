@@ -37,20 +37,11 @@ type Project struct {
 	UpdatedAt              time.Time
 }
 
-type ProjectSummary struct {
-	ID        string
-	Name      string
-	Revision  int
-	UpdatedAt time.Time
-	CreatedAt time.Time
-}
-
 type ProjectRepository interface {
 	InitializeSchema(ctx context.Context) error
-	Create(ctx context.Context, id, name, sourceImageKey, sourceImageContentType string, sourceImageSize int64, document json.RawMessage) (Project, error)
-	Get(ctx context.Context, id string) (Project, error)
-	Update(ctx context.Context, id string, expectedRevision int, name string, document json.RawMessage) (Project, error)
-	List(ctx context.Context, limit int) ([]ProjectSummary, error)
+	Create(ctx context.Context, id, capabilityHash, name, sourceImageKey, sourceImageContentType string, sourceImageSize int64, document json.RawMessage) (Project, error)
+	Get(ctx context.Context, id, capabilityHash string) (Project, error)
+	Update(ctx context.Context, id, capabilityHash string, expectedRevision int, name string, document json.RawMessage) (Project, error)
 }
 
 type PostgresRepository struct {
@@ -89,6 +80,8 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at timestamptz NOT NULL DEFAULT timezone('UTC', now())
 );
 
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS capability_hash text;
+
 CREATE INDEX IF NOT EXISTS projects_updated_at_idx ON projects (updated_at DESC);
 `
 	if _, err := r.pool.Exec(ctx, schemaSQL); err != nil {
@@ -115,13 +108,14 @@ EXECUTE PROCEDURE project_touch_updated_at();`)
 	return err
 }
 
-func (r *PostgresRepository) Create(ctx context.Context, id, name, sourceImageKey, sourceImageContentType string, sourceImageSize int64, document json.RawMessage) (Project, error) {
+func (r *PostgresRepository) Create(ctx context.Context, id, capabilityHash, name, sourceImageKey, sourceImageContentType string, sourceImageSize int64, document json.RawMessage) (Project, error) {
 	var created Project
 	row := r.pool.QueryRow(ctx, `
-INSERT INTO projects (id, name, source_image_key, source_image_content_type, source_image_size, document)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO projects (id, capability_hash, name, source_image_key, source_image_content_type, source_image_size, document)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING id, name, source_image_key, source_image_content_type, source_image_size, revision, created_at, updated_at;`,
 		id,
+		capabilityHash,
 		name,
 		sourceImageKey,
 		sourceImageContentType,
@@ -136,13 +130,13 @@ RETURNING id, name, source_image_key, source_image_content_type, source_image_si
 	return normalizeProjectTimes(created), nil
 }
 
-func (r *PostgresRepository) Get(ctx context.Context, id string) (Project, error) {
+func (r *PostgresRepository) Get(ctx context.Context, id, capabilityHash string) (Project, error) {
 	var project Project
 	row := r.pool.QueryRow(ctx, `
 SELECT id, name, source_image_key, source_image_content_type, source_image_size, revision, document, created_at, updated_at
 FROM projects
-WHERE id = $1;
-`, id)
+WHERE id = $1 AND capability_hash = $2;
+`, id, capabilityHash)
 	err := row.Scan(&project.ID, &project.Name, &project.SourceImageKey, &project.SourceImageContentType, &project.SourceImageSize, &project.Revision, &project.Document, &project.CreatedAt, &project.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -153,60 +147,26 @@ WHERE id = $1;
 	return normalizeProjectTimes(project), nil
 }
 
-func (r *PostgresRepository) List(ctx context.Context, limit int) ([]ProjectSummary, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 100
-	}
-
-	rows, err := r.pool.Query(ctx, `
-SELECT id, name, revision, created_at, updated_at
-FROM projects
-ORDER BY updated_at DESC, id DESC
-LIMIT $1;
-`, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list projects: %w", err)
-	}
-	defer rows.Close()
-
-	var projects []ProjectSummary
-	for rows.Next() {
-		var project ProjectSummary
-		err = rows.Scan(&project.ID, &project.Name, &project.Revision, &project.CreatedAt, &project.UpdatedAt)
-		if err != nil {
-			return nil, fmt.Errorf("scan project summary: %w", err)
-		}
-		projects = append(projects, project)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("scan project summaries: %w", err)
-	}
-	for i := range projects {
-		projects[i].CreatedAt = projects[i].CreatedAt.UTC()
-		projects[i].UpdatedAt = projects[i].UpdatedAt.UTC()
-	}
-	return projects, nil
-}
-
-func (r *PostgresRepository) Update(ctx context.Context, id string, expectedRevision int, name string, document json.RawMessage) (Project, error) {
+func (r *PostgresRepository) Update(ctx context.Context, id, capabilityHash string, expectedRevision int, name string, document json.RawMessage) (Project, error) {
 	var updated Project
 	row := r.pool.QueryRow(ctx, `
 UPDATE projects
 SET name = $2,
     document = $3,
     revision = revision + 1
-WHERE id = $1 AND revision = $4
+WHERE id = $1 AND revision = $4 AND capability_hash = $5
 RETURNING id, name, source_image_key, source_image_content_type, source_image_size, revision, created_at, updated_at;`,
 		id,
 		name,
 		document,
 		expectedRevision,
+		capabilityHash,
 	)
 	err := row.Scan(&updated.ID, &updated.Name, &updated.SourceImageKey, &updated.SourceImageContentType, &updated.SourceImageSize, &updated.Revision, &updated.CreatedAt, &updated.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			var current int
-			errFound := r.pool.QueryRow(ctx, `SELECT revision FROM projects WHERE id = $1;`, id).Scan(&current)
+			errFound := r.pool.QueryRow(ctx, `SELECT revision FROM projects WHERE id = $1 AND capability_hash = $2;`, id, capabilityHash).Scan(&current)
 			if errFound == nil {
 				return Project{}, &RevisionConflictError{ID: id, Expected: expectedRevision, Current: current}
 			}

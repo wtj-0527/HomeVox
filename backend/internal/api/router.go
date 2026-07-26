@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -251,13 +252,44 @@ func registerFrontend(router *gin.Engine, frontendDir string) {
 
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
+		origin := c.GetHeader("Origin")
+		if origin != "" {
+			parsed, err := url.Parse(origin)
+			host, scheme, forwardedOK := publicRequestOrigin(c.Request)
+			if err != nil || !forwardedOK || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host != host || (scheme != "" && parsed.Scheme != scheme) || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+				c.AbortWithStatus(http.StatusForbidden)
+				return
+			}
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Vary", "Origin")
+		}
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, "+projectCapabilityHeader)
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
 		c.Next()
 	}
+}
+
+func publicRequestOrigin(request *http.Request) (host, scheme string, ok bool) {
+	forwardedHost := lastForwardedValue(request.Header.Get("X-Forwarded-Host"))
+	forwardedProto := strings.ToLower(lastForwardedValue(request.Header.Get("X-Forwarded-Proto")))
+	if forwardedHost == "" && forwardedProto == "" {
+		return request.Host, "", request.Host != ""
+	}
+	if forwardedHost == "" || (forwardedProto != "http" && forwardedProto != "https") {
+		return "", "", false
+	}
+	parsed, err := url.Parse("//" + forwardedHost)
+	if err != nil || parsed.Host != forwardedHost || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", "", false
+	}
+	return forwardedHost, forwardedProto, true
+}
+
+func lastForwardedValue(value string) string {
+	parts := strings.Split(value, ",")
+	return strings.TrimSpace(parts[len(parts)-1])
 }

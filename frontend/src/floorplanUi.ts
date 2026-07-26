@@ -51,8 +51,9 @@ export function openingPoint(wall: WallSegment, item: ParsedOpening): {x:number;
  * an invalid edit so a user can correct it, but 3D and persistence must never
  * consume a partial, anonymous, or degenerate document.
  */
-export function validateCanonicalFloorplan(walls: readonly WallSegment[], openings: readonly ParsedOpening[]): string | null {
+export function validateCanonicalFloorplan(walls: readonly WallSegment[], openings: readonly ParsedOpening[], image?: { width: number; height: number } | null): string | null {
  if (walls.length === 0) return 'floorplan must contain at least one wall'
+ if (image && (!finite(image.width) || !finite(image.height) || image.width <= 0 || image.height <= 0)) return 'source image dimensions must be finite and positive'
  const wallIDs = new Set<string>()
  for (const item of walls) {
   if (!id(item.id)) return 'wall must have a stable id'
@@ -60,6 +61,7 @@ export function validateCanonicalFloorplan(walls: readonly WallSegment[], openin
   wallIDs.add(item.id)
   if (!finiteWallGeometry(item)) return 'wall coordinates must be finite'
   if (!(wallLength(item) > MIN_CANONICAL_WALL_LENGTH)) return 'wall length must be strictly greater than zero'
+  if (image && (item.x1 < 0 || item.x1 > image.width || item.x2 < 0 || item.x2 > image.width || item.y1 < 0 || item.y1 > image.height || item.y2 < 0 || item.y2 > image.height)) return 'wall coordinates must remain inside the source image'
  }
  return validateOpenings(walls, openings)
 }

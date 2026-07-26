@@ -14,12 +14,6 @@ export function isE2EInstrumentationEnabled(): boolean {
   return enabled()
 }
 
-export function e2EProjectID(): string | null {
-  if (!enabled()) return null
-  const value = new URLSearchParams(window.location.search).get('project')
-  return value && /^[0-9a-f-]{36}$/i.test(value) ? value : null
-}
-
 export function e2EWasmLoader(): (() => Promise<WasmBindings>) | undefined {
   if (enabled() && new URLSearchParams(window.location.search).get('wasm') === 'load-failure') {
     return async () => { throw new Error('test-only WASM loader failure') }

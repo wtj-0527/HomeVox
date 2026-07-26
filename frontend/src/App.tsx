@@ -7,6 +7,7 @@ import {
   canUndo,
   createWallEditorState,
   addOpening,
+  editWallCoordinates,
   moveEndpoint,
   pushWallSnapshot,
   removeOpening,
@@ -58,7 +59,7 @@ import { canExportCurrentThreeD } from './threeDExport'
 import { exportCurrentThreeDRevision, type ThreeDExportRevision } from './threeDExportSession'
 import { canonicalRevisionToken } from './floorplanSession'
 import { parseFailureMessage, parseNetworkFailureMessage, parseRetryFailureMessage } from './parseFeedback'
-import { e2EProjectID, e2EWasmLoader, isE2EInstrumentationEnabled, publishE2EState } from '@homevox-e2e'
+import { e2EWasmLoader, isE2EInstrumentationEnabled, publishE2EState } from '@homevox-e2e'
 import './App.css'
 
 const API_PARSE_URL = '/api/floorplans/parse'
@@ -240,7 +241,7 @@ export default function App() {
   originalSourceRef.current = originalSource
   const requestSequenceRef = useRef(0)
   const cropOperationRef = useRef(new LatestOperation())
-  const initialProjectLoadRef = useRef<(id: string) => Promise<void>>(() => Promise.resolve())
+
   const wasmGenerationRef = useRef(0)
   const [, setWasmGeneration] = useState(0)
   const wasmGeometryRef = useRef<BufferGeometry | null>(null)
@@ -264,8 +265,8 @@ export default function App() {
     parseResponse ? { ...parseResponse, result: { ...parseResponse.result, walls, doors, windows } } : null
   ), [parseResponse, walls, doors, windows])
   const geometryValidationError = useMemo(
-    () => validateCanonicalFloorplan(walls, openings),
-    [walls, openings],
+    () => validateCanonicalFloorplan(walls, openings, effectiveImageSize),
+    [effectiveImageSize, walls, openings],
   )
   const hasCanonicalGeometry = Boolean(durableDocument) && !geometryValidationError
   // Content token changes in the same render as every wall/opening commit, before
@@ -330,24 +331,27 @@ export default function App() {
     setOpeningError('')
   }, [applyProductTransition])
   const projectSession = useProjectSession({
-    document: durableDocument,
-    geometryValidationError,
-    sourceFile: effectiveSource,
-    onProjectSaved: () => applyProductTransition({ type: 'complete', step: 6 }, productFlowContext),
+		document: durableDocument,
+		geometryValidationError,
+		sourceFile: effectiveSource,
+    onProjectSaved: () => {
+      if (activeStep === 6) applyProductTransition({ type: 'complete', step: 6 }, productFlowContext)
+    },
     onProjectLoaded: applyLoadedProject,
   })
   const {
     projectName,
     currentProject,
-    projects,
     projectMessage,
+    projectMessageTone,
     projectBusy,
     setProjectName,
     clearCurrentProject,
-    refreshProjects,
     saveProject,
-    loadProject,
-  } = projectSession
+		loadInitialProject,
+    reloadProject,
+		copyProjectResumeLink,
+    } = projectSession
   const wallShellModel = useMemo(
     () => buildWallShellModel(walls, doors, windows),
     [walls, doors, windows],
@@ -542,17 +546,11 @@ export default function App() {
     }
   }, [canonicalRevision, geometryValidationError, invalidateGeometry, resolveGeometry, wallVoxelModel])
 
+  // The fragment-selected project is consumed once by the persistence controller;
+  // later editor changes must never reload it over local edits.
   useEffect(() => {
-    void refreshProjects()
-  }, [refreshProjects])
-
-  // The URL-selected project is an initial-load command, not a reactive
-  // request; later editor changes must never reload it over local edits.
-  initialProjectLoadRef.current = loadProject
-  useEffect(() => {
-    const projectID = e2EProjectID()
-    if (projectID) void initialProjectLoadRef.current(projectID)
-  }, [])
+		void loadInitialProject()
+	}, [loadInitialProject])
 
   useEffect(() => () => {
     if (originalPreviewURL) URL.revokeObjectURL(originalPreviewURL)
@@ -916,7 +914,7 @@ export default function App() {
     if (draggedEndpoint) {
       const moveResult = moveEndpoint(wallEditor, draggedEndpoint, cursor)
       const openingValidationError = moveResult.changed
-        ? validateCanonicalFloorplan(moveResult.walls, wallEditor.openings)
+        ? validateCanonicalFloorplan(moveResult.walls, wallEditor.openings, effectiveImageSize)
         : null
       setDragPreviewWalls(moveResult.changed ? moveResult.walls : null)
       setOpeningError(openingValidationError ?? '')
@@ -969,6 +967,17 @@ export default function App() {
       return
     }
     if (edit.changed) setWallEditor(pushWallSnapshot(wallEditor, wallEditor.walls, edit.openings))
+    setOpeningError('')
+  }
+
+  function handleWallCoordinatesChange(coordinates: Pick<WallSegment, 'x1' | 'y1' | 'x2' | 'y2'>) {
+    if (!wallEditor || !selectedWallID || !effectiveImageSize) return
+    const edit = editWallCoordinates(wallEditor, selectedWallID, coordinates, effectiveImageSize)
+    if (edit.error) {
+      setOpeningError(edit.error)
+      return
+    }
+    if (edit.changed) setWallEditor(pushWallSnapshot(wallEditor, edit.walls, wallEditor.openings))
     setOpeningError('')
   }
 
@@ -1027,8 +1036,8 @@ export default function App() {
       return
     }
     if (draggedEndpoint && dragPreviewWalls) {
-      const openingValidationError = validateCanonicalFloorplan(dragPreviewWalls, wallEditor.openings)
-      setWallEditor(pushWallSnapshot(wallEditor, dragPreviewWalls, wallEditor.openings))
+      const openingValidationError = validateCanonicalFloorplan(dragPreviewWalls, wallEditor.openings, effectiveImageSize)
+      if (!openingValidationError) setWallEditor(pushWallSnapshot(wallEditor, dragPreviewWalls, wallEditor.openings))
       setOpeningError(openingValidationError ?? '')
     }
     if (draggedOpeningID && dragPreviewOpenings) setWallEditor(pushWallSnapshot(wallEditor, wallEditor.walls, dragPreviewOpenings))
@@ -1150,6 +1159,7 @@ export default function App() {
   }
   const inspectorProps: InspectorPanelProps = {
     selectedWallID,
+    selectedWall,
     selectedOpening,
     openingError,
     canExport2D,
@@ -1159,6 +1169,7 @@ export default function App() {
     canUndo: canUndo(wallEditor),
     canRedo: canRedo(wallEditor),
     onAddOpening: handleAddOpening,
+    onWallCoordinatesChange: handleWallCoordinatesChange,
     onOpeningWidthChange: (width) => {
       if (selectedOpening?.id) commitOpeningPatch(selectedOpening.id, { width })
     },
@@ -1167,6 +1178,16 @@ export default function App() {
     onExport3D: () => { void handleExport3D() },
     onUndo: handleUndo,
     onRedo: handleRedo,
+  }
+  const snapshot = {
+    exists: currentProject !== null,
+    busy: projectBusy === 'save',
+    canSave: hasCanonicalGeometry,
+    message: projectMessage,
+    messageTone: projectMessageTone,
+    onSave: () => { void saveProject() },
+    onReload: () => { void reloadProject() },
+		onCopyResumeLink: () => { void copyProjectResumeLink(window.location.href, (value) => navigator.clipboard.writeText(value)) },
   }
   const threeDPreviewProps: ThreeDPreviewPanelProps = {
     canonicalRevision,
@@ -1206,10 +1227,10 @@ export default function App() {
     <ProductShell activeStep={activeStep} completedSteps={completedSteps} flow={flow} hasDocument={Boolean(durableDocument)} onOpenStep={(step) => applyProductTransition({ type: 'open', step })} primaryAction={primaryAction}>
         {activeStep === 1 && <SourceImportView selectedFile={originalSource} previewURL={originalPreviewURL} onFileChange={handleFileChange} status={status} error={error} />}
         {activeStep === 2 && (crop ? <CropConfirmView selectedFile={originalSource} previewURL={originalPreviewURL} onFileChange={handleFileChange} imageSize={originalImageSize} detection={candidateDetection} crop={crop} status={status} error={error} onCropChange={(next) => originalImageSize && setCrop(clampCrop(next, originalImageSize))} onSelectCandidate={(index) => { if (originalImageSize) { const next = selectCandidate(candidateDetection?.candidates ?? [], index, originalImageSize); if (next) setCrop(next) } }} onRestoreRecommended={() => { if (originalImageSize) { const next = selectCandidate(candidateDetection?.candidates ?? [], 0, originalImageSize); setCrop(next ?? fullImageCrop(originalImageSize)) } }} onResetFullImage={() => originalImageSize && setCrop(fullImageCrop(originalImageSize))} onConfirm={() => { void confirmCrop() }} /> : <AIParseView selectedFile={originalSource} previewURL={originalPreviewURL} onFileChange={handleFileChange} status={status} error={error} />)}
-        {activeStep === 3 && <TwoDWorkspace editor={editorProps} inspector={inspectorProps} canAdvance={canAdvance} onAdvance={goNext} />}
+        {activeStep === 3 && <TwoDWorkspace editor={editorProps} inspector={inspectorProps} snapshot={snapshot} canAdvance={canAdvance} onAdvance={goNext} />}
         {activeStep === 4 && <ThreeDConfirmation preview={threeDPreviewProps} previewAvailable={canRenderThreeDPreview} canOpenLinkedWorkspace={canOpenLinkedWorkspace} wasmState={wasmState} onBack={() => applyProductTransition({ type: 'open', step: 3 })} onComplete={() => completeAndAdvance(4, 5)} />}
-        {activeStep === 5 && <LinkedWorkspace editor={editorProps} preview={threeDPreviewProps} inspector={inspectorProps} previewAvailable={canRenderThreeDPreview} canAdvance={canAdvance} onAdvance={goNext} onBack={() => applyProductTransition({ type: 'open', step: 3 })} />}
-        {activeStep === 6 && <ProjectSaveView projectName={projectName} currentProject={currentProject} projects={projects} projectMessage={projectMessage} projectBusy={projectBusy} canSave={hasCanonicalGeometry} onProjectNameChange={setProjectName} onSave={() => { void saveProject() }} onRefresh={() => { void refreshProjects() }} onLoad={(id) => { void loadProject(id) }} />}
+        {activeStep === 5 && <LinkedWorkspace editor={editorProps} preview={threeDPreviewProps} inspector={inspectorProps} snapshot={snapshot} previewAvailable={canRenderThreeDPreview} canAdvance={canAdvance} onAdvance={goNext} onBack={() => applyProductTransition({ type: 'open', step: 3 })} />}
+        {activeStep === 6 && <ProjectSaveView projectName={projectName} currentProject={currentProject} projectMessage={projectMessage} projectMessageTone={projectMessageTone} projectBusy={projectBusy} canSave={hasCanonicalGeometry} onProjectNameChange={setProjectName} onSave={() => { void saveProject() }} onCopyResumeLink={() => { void copyProjectResumeLink(window.location.href, (value) => navigator.clipboard.writeText(value)) }} />}
     </ProductShell>
   )
 }

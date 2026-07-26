@@ -1,5 +1,8 @@
 import { isParseResponse, type ParseResponse } from './floorplanUi'
 
+export const PROJECT_CAPABILITY_HEADER = 'X-HomeVox-Project-Capability'
+const projectIDPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 export type ProjectSummary = {
   id: string
   name: string
@@ -15,7 +18,21 @@ export type ProjectDetail = ProjectSummary & {
   sourceImageSize: number
 }
 
-type ErrorEnvelope = { error?: { message?: unknown } | unknown }
+export type CreatedProject = {
+  project: ProjectDetail
+  capability: string
+}
+
+type ErrorEnvelope = { error?: { code?: unknown; message?: unknown } | unknown }
+
+export class ProjectAPIError extends Error {
+  readonly code: string | null
+  constructor(code: string | null, message: string) {
+    super(message)
+    this.name = 'ProjectAPIError'
+    this.code = code
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -24,12 +41,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isProjectSummary(value: unknown): value is ProjectSummary {
   return isRecord(value) &&
     typeof value.id === 'string' &&
+    projectIDPattern.test(value.id) &&
     typeof value.name === 'string' &&
     typeof value.revision === 'number' &&
     Number.isInteger(value.revision) &&
     typeof value.createdAt === 'string' &&
     typeof value.updatedAt === 'string' &&
-    typeof value.sourceImageURL === 'string'
+    value.sourceImageURL === `/api/projects/${value.id}/source-image`
 }
 
 export function isProjectDetail(value: unknown): value is ProjectDetail {
@@ -42,6 +60,18 @@ export function isProjectDetail(value: unknown): value is ProjectDetail {
     record.sourceImageSize > 0
 }
 
+function isCreatedProject(value: unknown): value is ProjectDetail & { capability: string } {
+  if (!isProjectDetail(value) || !isRecord(value)) return false
+  const capability = (value as Record<string, unknown>).capability
+  return typeof capability === 'string' && /^[A-Za-z0-9_-]{43}$/.test(capability)
+}
+
+function capabilityHeaders(capability: string, headers?: HeadersInit): Headers {
+  const result = new Headers(headers)
+  result.set(PROJECT_CAPABILITY_HEADER, capability)
+  return result
+}
+
 async function responseError(response: Response): Promise<Error> {
   const text = await response.text()
   let body: ErrorEnvelope | null = null
@@ -50,10 +80,14 @@ async function responseError(response: Response): Promise<Error> {
   } catch {
     // Keep a useful error when an intermediary returned non-JSON.
   }
+  const code = isRecord(body?.error) && typeof body.error.code === 'string' ? body.error.code : null
+  if (response.status === 409 && code === 'revision_conflict') {
+    return new ProjectAPIError(code, '项目已在其他页面更新，请加载最新版本后再保存')
+  }
   const message = isRecord(body?.error) && typeof body.error.message === 'string'
     ? body.error.message
     : text.trim() || response.statusText || '请求失败'
-  return new Error(`HTTP ${response.status}: ${message}`)
+  return new ProjectAPIError(code, `HTTP ${response.status}: ${message}`)
 }
 
 async function parseJSON(response: Response): Promise<unknown> {
@@ -61,37 +95,41 @@ async function parseJSON(response: Response): Promise<unknown> {
   return response.json()
 }
 
-export async function listProjects(signal?: AbortSignal): Promise<ProjectSummary[]> {
-  const body = await parseJSON(await fetch('/api/projects', { signal }))
-  if (!Array.isArray(body) || !body.every(isProjectSummary)) {
-    throw new Error('服务返回的项目列表无效')
-  }
-  return body
-}
-
-export async function getProject(id: string, signal?: AbortSignal): Promise<ProjectDetail> {
-  const body = await parseJSON(await fetch(`/api/projects/${encodeURIComponent(id)}`, { signal }))
+export async function getProject(id: string, capability: string, signal?: AbortSignal): Promise<ProjectDetail> {
+  const body = await parseJSON(await fetch(`/api/projects/${encodeURIComponent(id)}`, {
+    headers: capabilityHeaders(capability),
+    signal,
+  }))
   if (!isProjectDetail(body)) throw new Error('服务返回的项目文档无效')
   return body
 }
 
-export async function createProject(name: string, document: ParseResponse, sourceImage: File, signal?: AbortSignal): Promise<ProjectDetail> {
+export async function createProject(name: string, document: ParseResponse, sourceImage: File, signal?: AbortSignal): Promise<CreatedProject> {
   const form = new FormData()
   form.append('name', name)
   form.append('document', JSON.stringify(document))
   form.append('source_image', sourceImage)
   const body = await parseJSON(await fetch('/api/projects', { method: 'POST', body: form, signal }))
-  if (!isProjectDetail(body)) throw new Error('服务返回的已创建项目无效')
-  return body
+  if (!isCreatedProject(body)) throw new Error('服务返回的已创建项目无效')
+  const { capability, ...project } = body
+  return { project, capability }
 }
 
-export async function updateProject(id: string, name: string, document: ParseResponse, expectedRevision: number, signal?: AbortSignal): Promise<ProjectDetail> {
+export async function updateProject(id: string, capability: string, name: string, document: ParseResponse, expectedRevision: number, signal?: AbortSignal): Promise<ProjectDetail> {
   const body = await parseJSON(await fetch(`/api/projects/${encodeURIComponent(id)}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: capabilityHeaders(capability, { 'Content-Type': 'application/json' }),
     body: JSON.stringify({ name, document, expectedRevision }),
     signal,
   }))
   if (!isProjectDetail(body)) throw new Error('服务返回的已保存项目无效')
   return body
+}
+
+export async function fetchProjectSourceImage(url: string, capability: string, signal?: AbortSignal): Promise<Blob> {
+  const response = await fetch(url, { headers: capabilityHeaders(capability), signal })
+  if (!response.ok) throw await responseError(response)
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+  if (!contentType.startsWith('image/')) throw new Error('原始户型图不是受支持的图片')
+  return response.blob()
 }

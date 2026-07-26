@@ -129,4 +129,10 @@ describe('canonical floorplan admission', () => {
     expect(validateCanonicalFloorplan([{ x1: 0, y1: 0, x2: 100, y2: 0 }], [])).toContain('stable id')
     expect(validateCanonicalFloorplan([{ id: 'wall-a', x1: 0, y1: 0, x2: Number.NaN, y2: 0 }], [])).toContain('finite')
   })
+
+  it('rejects wall coordinates outside the effective source image', () => {
+    const walls = [{ id: 'wall-a', x1: 0, y1: 0, x2: 101, y2: 0 }]
+    expect(validateCanonicalFloorplan(walls, [], { width: 100, height: 80 })).toContain('source image')
+    expect(validateCanonicalFloorplan([{ ...walls[0], x2: 100 }], [], { width: 100, height: 80 })).toBeNull()
+  })
 })

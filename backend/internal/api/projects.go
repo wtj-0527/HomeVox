@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -54,14 +56,15 @@ type databaseConfig struct {
 }
 
 const (
-	statusNotConfigured persistenceStatus = "not_configured"
-	statusIncomplete    persistenceStatus = "incomplete_config"
-	statusUnavailable   persistenceStatus = "unavailable"
-	statusReady         persistenceStatus = "ready"
-	projectListLimitMax                   = 100
+	statusNotConfigured     persistenceStatus = "not_configured"
+	statusIncomplete        persistenceStatus = "incomplete_config"
+	statusUnavailable       persistenceStatus = "unavailable"
+	statusReady             persistenceStatus = "ready"
+	projectCapabilityHeader                   = "X-HomeVox-Project-Capability"
 )
 
 var uuidRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+var projectCapabilityRegex = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
 type projectRepositoryFactory func(context.Context, string) (db.ProjectRepository, error)
 type objectStoreFactory func(storage.Config) (storage.ObjectStore, error)
@@ -125,6 +128,11 @@ func (deps projectDependencies) ready() bool {
 
 func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 	group := router.Group("/api/projects")
+	group.Use(func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Header("Pragma", "no-cache")
+		c.Next()
+	})
 	group.POST("", func(c *gin.Context) {
 		if !deps.ready() {
 			writeProjectError(c, http.StatusServiceUnavailable, "persistence_unavailable", "project persistence unavailable")
@@ -192,6 +200,11 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 			writeProjectError(c, http.StatusServiceUnavailable, "persistence_unavailable", "failed to allocate project ID")
 			return
 		}
+		capability, err := newProjectCapability()
+		if err != nil {
+			writeProjectError(c, http.StatusServiceUnavailable, "persistence_unavailable", "failed to allocate project capability")
+			return
+		}
 		key := sourceImageKey(projectID)
 		err = deps.store.PutObject(c.Request.Context(), key, contentType, data)
 		if err != nil {
@@ -205,7 +218,7 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 			writeProjectError(c, http.StatusBadRequest, "invalid_document", "invalid document")
 			return
 		}
-		created, err := deps.repo.Create(c.Request.Context(), projectID, name, key, contentType, int64(len(data)), rawDoc)
+		created, err := deps.repo.Create(c.Request.Context(), projectID, hashProjectCapability(capability), name, key, contentType, int64(len(data)), rawDoc)
 		if err != nil {
 			if deleteErr := deps.store.DeleteObject(c.Request.Context(), key); deleteErr != nil {
 				log.Printf("project create rollback failed for object key=%s: %v", key, deleteErr)
@@ -216,12 +229,16 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 			return
 		}
 
-		writeFullProject(c, http.StatusCreated, created)
+		writeFullProject(c, http.StatusCreated, created, capability)
 	})
 
 	group.PUT(":id", func(c *gin.Context) {
 		if !deps.ready() {
 			writeProjectError(c, http.StatusServiceUnavailable, "persistence_unavailable", "project persistence unavailable")
+			return
+		}
+		capabilityHash, ok := requireProjectCapability(c)
+		if !ok {
 			return
 		}
 		id := c.Param("id")
@@ -261,17 +278,17 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 			return
 		}
 
-		current, err := deps.repo.Get(c.Request.Context(), id)
+		current, err := deps.repo.Get(c.Request.Context(), id, capabilityHash)
 		if err != nil {
 			if err == db.ErrProjectNotFound {
-				writeProjectError(c, http.StatusNotFound, "project_not_found", "project not found")
+				writeProjectError(c, http.StatusNotFound, "project_not_found", "project not found or capability is invalid")
 				return
 			}
 			writeProjectError(c, http.StatusServiceUnavailable, "database_unavailable", "failed to get project")
 			return
 		}
 		if current.Revision != payload.ExpectedRevision {
-			writeProjectError(c, http.StatusConflict, "revision_conflict", (&db.RevisionConflictError{ID: id, Expected: payload.ExpectedRevision, Current: current.Revision}).Error())
+			writeProjectError(c, http.StatusConflict, "revision_conflict", "project has changed; load the latest version before saving")
 			return
 		}
 		currentDocument, err := project.NormalizeDocument(current.Document)
@@ -300,21 +317,21 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 			return
 		}
 
-		updated, err := deps.repo.Update(c.Request.Context(), id, payload.ExpectedRevision, name, rawDoc)
+		updated, err := deps.repo.Update(c.Request.Context(), id, capabilityHash, payload.ExpectedRevision, name, rawDoc)
 		if err != nil {
 			if err == db.ErrProjectNotFound {
-				writeProjectError(c, http.StatusNotFound, "project_not_found", "project not found")
+				writeProjectError(c, http.StatusNotFound, "project_not_found", "project not found or capability is invalid")
 				return
 			}
 			if _, ok := err.(*db.RevisionConflictError); ok {
-				writeProjectError(c, http.StatusConflict, "revision_conflict", err.Error())
+				writeProjectError(c, http.StatusConflict, "revision_conflict", "project has changed; load the latest version before saving")
 				return
 			}
 			writeProjectError(c, http.StatusServiceUnavailable, "database_unavailable", "failed to update project")
 			return
 		}
 
-		writeFullProject(c, http.StatusOK, updated)
+		writeFullProject(c, http.StatusOK, updated, "")
 	})
 
 	group.GET("", func(c *gin.Context) {
@@ -322,35 +339,7 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 			writeProjectError(c, http.StatusServiceUnavailable, "persistence_unavailable", "project persistence unavailable")
 			return
 		}
-
-		limit := projectListLimitMax
-		if q := c.Query("limit"); q != "" {
-			parsed, err := strconv.Atoi(q)
-			if err != nil || parsed <= 0 || parsed > projectListLimitMax {
-				writeProjectError(c, http.StatusBadRequest, "invalid_limit", "limit must be an integer between 1 and 100")
-				return
-			}
-			limit = parsed
-		}
-
-		summaries, err := deps.repo.List(c.Request.Context(), limit)
-		if err != nil {
-			writeProjectError(c, http.StatusServiceUnavailable, "database_unavailable", "failed to list projects")
-			return
-		}
-
-		items := make([]gin.H, 0, len(summaries))
-		for _, summary := range summaries {
-			items = append(items, gin.H{
-				"id":             summary.ID,
-				"name":           summary.Name,
-				"revision":       summary.Revision,
-				"createdAt":      summary.CreatedAt.UTC().Format(time.RFC3339),
-				"updatedAt":      summary.UpdatedAt.UTC().Format(time.RFC3339),
-				"sourceImageURL": fmt.Sprintf("/api/projects/%s/source-image", summary.ID),
-			})
-		}
-		c.JSON(http.StatusOK, items)
+		writeProjectError(c, http.StatusUnauthorized, "project_capability_required", "project listing requires an authenticated owner")
 	})
 
 	group.GET(":id", func(c *gin.Context) {
@@ -358,22 +347,26 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 			writeProjectError(c, http.StatusServiceUnavailable, "persistence_unavailable", "project persistence unavailable")
 			return
 		}
+		capabilityHash, ok := requireProjectCapability(c)
+		if !ok {
+			return
+		}
 		id := c.Param("id")
 		if !uuidRegex.MatchString(id) {
 			writeProjectError(c, http.StatusBadRequest, "invalid_project_id", "id must be UUID")
 			return
 		}
 
-		projectModel, err := deps.repo.Get(c.Request.Context(), id)
+		projectModel, err := deps.repo.Get(c.Request.Context(), id, capabilityHash)
 		if err != nil {
 			if err == db.ErrProjectNotFound {
-				writeProjectError(c, http.StatusNotFound, "project_not_found", "project not found")
+				writeProjectError(c, http.StatusNotFound, "project_not_found", "project not found or capability is invalid")
 				return
 			}
 			writeProjectError(c, http.StatusServiceUnavailable, "database_unavailable", "failed to get project")
 			return
 		}
-		writeFullProject(c, http.StatusOK, projectModel)
+		writeFullProject(c, http.StatusOK, projectModel, "")
 	})
 
 	group.GET(":id/source-image", func(c *gin.Context) {
@@ -381,16 +374,20 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 			writeProjectError(c, http.StatusServiceUnavailable, "persistence_unavailable", "project persistence unavailable")
 			return
 		}
+		capabilityHash, ok := requireProjectCapability(c)
+		if !ok {
+			return
+		}
 		id := c.Param("id")
 		if !uuidRegex.MatchString(id) {
 			writeProjectError(c, http.StatusBadRequest, "invalid_project_id", "id must be UUID")
 			return
 		}
 
-		projectModel, err := deps.repo.Get(c.Request.Context(), id)
+		projectModel, err := deps.repo.Get(c.Request.Context(), id, capabilityHash)
 		if err != nil {
 			if err == db.ErrProjectNotFound {
-				writeProjectError(c, http.StatusNotFound, "project_not_found", "project not found")
+				writeProjectError(c, http.StatusNotFound, "project_not_found", "project not found or capability is invalid")
 				return
 			}
 			writeProjectError(c, http.StatusServiceUnavailable, "database_unavailable", "failed to get project")
@@ -423,14 +420,14 @@ func writeProjectError(c *gin.Context, status int, code, message string) {
 	c.JSON(status, body)
 }
 
-func writeFullProject(c *gin.Context, status int, projectModel db.Project) {
+func writeFullProject(c *gin.Context, status int, projectModel db.Project, capability string) {
 	var parsed floorplan.ParseResponse
 	if err := json.Unmarshal(projectModel.Document, &parsed); err != nil {
 		writeProjectError(c, http.StatusInternalServerError, "corrupt_project_document", "failed to decode project document")
 		return
 	}
 
-	c.JSON(status, gin.H{
+	body := gin.H{
 		"id":                     projectModel.ID,
 		"name":                   projectModel.Name,
 		"revision":               projectModel.Revision,
@@ -440,7 +437,33 @@ func writeFullProject(c *gin.Context, status int, projectModel db.Project) {
 		"createdAt":              projectModel.CreatedAt.UTC().Format(time.RFC3339),
 		"updatedAt":              projectModel.UpdatedAt.UTC().Format(time.RFC3339),
 		"sourceImageURL":         fmt.Sprintf("/api/projects/%s/source-image", projectModel.ID),
-	})
+	}
+	if capability != "" {
+		body["capability"] = capability
+	}
+	c.JSON(status, body)
+}
+
+func requireProjectCapability(c *gin.Context) (string, bool) {
+	capability := c.GetHeader(projectCapabilityHeader)
+	if !projectCapabilityRegex.MatchString(capability) {
+		writeProjectError(c, http.StatusUnauthorized, "project_capability_required", "a valid project capability is required")
+		return "", false
+	}
+	return hashProjectCapability(capability), true
+}
+
+func newProjectCapability() (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
+}
+
+func hashProjectCapability(capability string) string {
+	sum := sha256.Sum256([]byte(capability))
+	return hex.EncodeToString(sum[:])
 }
 
 func newProjectID() (string, error) {

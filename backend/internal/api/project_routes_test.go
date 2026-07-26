@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -19,13 +20,14 @@ import (
 )
 
 type fakeProjectRepo struct {
-	projects       map[string]db.Project
-	nextID         int
-	lastCreatedID  string
-	lastCreatedKey string
-	createErr      error
-	initializeErr  error
-	getCalls       int
+	projects         map[string]db.Project
+	capabilityHashes map[string]string
+	nextID           int
+	lastCreatedID    string
+	lastCreatedKey   string
+	createErr        error
+	initializeErr    error
+	getCalls         int
 }
 
 const validProjectDocument = `{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"fixture","confidence":0.5,"image_width":100,"image_height":80}}}`
@@ -38,12 +40,12 @@ func projectDocumentForSourceImage(t testing.TB) string {
 }
 
 func newFakeProjectRepo() *fakeProjectRepo {
-	return &fakeProjectRepo{projects: make(map[string]db.Project)}
+	return &fakeProjectRepo{projects: make(map[string]db.Project), capabilityHashes: make(map[string]string)}
 }
 
 func (f *fakeProjectRepo) InitializeSchema(_ context.Context) error { return f.initializeErr }
 
-func (f *fakeProjectRepo) Create(_ context.Context, id, name, sourceImageKey, sourceImageContentType string, sourceImageSize int64, document json.RawMessage) (db.Project, error) {
+func (f *fakeProjectRepo) Create(_ context.Context, id, capabilityHash, name, sourceImageKey, sourceImageContentType string, sourceImageSize int64, document json.RawMessage) (db.Project, error) {
 	f.lastCreatedID = id
 	f.lastCreatedKey = sourceImageKey
 	if f.createErr != nil {
@@ -65,21 +67,22 @@ func (f *fakeProjectRepo) Create(_ context.Context, id, name, sourceImageKey, so
 		UpdatedAt:              time.Now().UTC(),
 	}
 	f.projects[id] = project
+	f.capabilityHashes[id] = capabilityHash
 	return project, nil
 }
 
-func (f *fakeProjectRepo) Get(_ context.Context, id string) (db.Project, error) {
+func (f *fakeProjectRepo) Get(_ context.Context, id, capabilityHash string) (db.Project, error) {
 	f.getCalls++
 	project, ok := f.projects[id]
-	if !ok {
+	if !ok || f.capabilityHashes[id] != capabilityHash {
 		return db.Project{}, db.ErrProjectNotFound
 	}
 	return project, nil
 }
 
-func (f *fakeProjectRepo) Update(_ context.Context, id string, expectedRevision int, name string, document json.RawMessage) (db.Project, error) {
+func (f *fakeProjectRepo) Update(_ context.Context, id, capabilityHash string, expectedRevision int, name string, document json.RawMessage) (db.Project, error) {
 	project, ok := f.projects[id]
-	if !ok {
+	if !ok || f.capabilityHashes[id] != capabilityHash {
 		return db.Project{}, db.ErrProjectNotFound
 	}
 	if project.Revision != expectedRevision {
@@ -91,29 +94,6 @@ func (f *fakeProjectRepo) Update(_ context.Context, id string, expectedRevision 
 	project.UpdatedAt = time.Now().UTC()
 	f.projects[id] = project
 	return project, nil
-}
-
-func (f *fakeProjectRepo) List(_ context.Context, limit int) ([]db.ProjectSummary, error) {
-	if limit <= 0 {
-		limit = 1
-	}
-	if limit > 100 {
-		limit = 100
-	}
-	items := make([]db.ProjectSummary, 0, len(f.projects))
-	for _, project := range f.projects {
-		items = append(items, db.ProjectSummary{
-			ID:        project.ID,
-			Name:      project.Name,
-			Revision:  project.Revision,
-			CreatedAt: project.CreatedAt,
-			UpdatedAt: project.UpdatedAt,
-		})
-	}
-	if len(items) > limit {
-		return items[:limit], nil
-	}
-	return items, nil
 }
 
 func (f *fakeProjectRepo) Close() {}
@@ -182,6 +162,57 @@ func newProjectRouter(repo db.ProjectRepository, store storage.ObjectStore) *gin
 	return router
 }
 
+const testProjectCapability = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+func testCapabilityHash() string {
+	sum := sha256.Sum256([]byte(testProjectCapability))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func authorizeProjectRequest(request *http.Request, capability string) {
+	request.Header.Set(projectCapabilityHeader, capability)
+}
+
+func seedAuthorizedProject(t testing.TB, repo *fakeProjectRepo, store *fakeObjectStore, projectID string) {
+	t.Helper()
+	repo.projects[projectID] = db.Project{
+		ID: projectID, Name: "Private plan", SourceImageKey: sourceImageKey(projectID),
+		SourceImageContentType: "image/png", SourceImageSize: int64(len(validPNG(t))),
+		Document: json.RawMessage(projectDocumentForSourceImage(t)), Revision: 1,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	repo.capabilityHashes[projectID] = testCapabilityHash()
+	store.objects[sourceImageKey(projectID)] = fakeObject{data: validPNG(t), contentType: "image/png"}
+}
+
+func TestProjectRoutesRequireCapabilityInsteadOfProjectID(t *testing.T) {
+	repo := newFakeProjectRepo()
+	store := newFakeObjectStore()
+	router := newProjectRouter(repo, store)
+	projectID := "00000000-0000-0000-0000-000000000001"
+	seedAuthorizedProject(t, repo, store, projectID)
+
+	for _, target := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/projects"},
+		{http.MethodGet, "/api/projects/" + projectID},
+		{http.MethodGet, "/api/projects/" + projectID + "/source-image"},
+		{http.MethodPut, "/api/projects/" + projectID},
+	} {
+		req := httptest.NewRequest(target.method, target.path, nil)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, req)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s status = %d, want %d", target.method, target.path, response.Code, http.StatusUnauthorized)
+		}
+		if strings.Contains(response.Body.String(), projectID) {
+			t.Fatalf("%s %s leaked project identity: %s", target.method, target.path, response.Body.String())
+		}
+	}
+}
+
 func TestProjectCreateRequiresValidatedInput(t *testing.T) {
 	router := newProjectRouter(newFakeProjectRepo(), newFakeObjectStore())
 
@@ -208,11 +239,11 @@ func TestProjectCreateRequiresValidatedInput(t *testing.T) {
 	}
 }
 
-func TestProjectAPIReturnsUnavailableWhenPersistenceNotReady(t *testing.T) {
+func TestProjectCreateReturnsUnavailableWhenPersistenceNotReady(t *testing.T) {
 	router := gin.New()
 	registerProjectRoutes(router, projectDependencies{databaseStatus: statusUnavailable, s3Status: statusUnavailable})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusServiceUnavailable {
@@ -224,7 +255,7 @@ func TestProjectAPIReturnsUnavailableWhenPersistenceNotReady(t *testing.T) {
 	}
 }
 
-func TestProjectCreateGetsListAndSourceImage(t *testing.T) {
+func TestProjectCreateReturnsCapabilityAndAuthorizesReads(t *testing.T) {
 	repo := newFakeProjectRepo()
 	store := newFakeObjectStore()
 	router := newProjectRouter(repo, store)
@@ -251,12 +282,19 @@ func TestProjectCreateGetsListAndSourceImage(t *testing.T) {
 	if createW.Code != http.StatusCreated {
 		t.Fatalf("create status = %d, body=%s", createW.Code, createW.Body.String())
 	}
+	if got := createW.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("create Cache-Control = %q, want no-store for one-time capability response", got)
+	}
 
 	var created map[string]any
 	if err := json.Unmarshal(createW.Body.Bytes(), &created); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 	id := created["id"].(string)
+	capability, ok := created["capability"].(string)
+	if !ok || !projectCapabilityRegex.MatchString(capability) {
+		t.Fatalf("create capability is missing or malformed")
+	}
 	if repo.lastCreatedID != id {
 		t.Fatalf("repo ID = %s, response ID = %s", repo.lastCreatedID, id)
 	}
@@ -267,26 +305,27 @@ func TestProjectCreateGetsListAndSourceImage(t *testing.T) {
 	if _, ok := store.objects[wantKey]; !ok {
 		t.Fatalf("upload did not use project UUID key %s", wantKey)
 	}
+	storedHash := repo.capabilityHashes[id]
+	if storedHash == "" || storedHash == capability || storedHash != hashProjectCapability(capability) {
+		t.Fatalf("repository must receive only the capability hash")
+	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api/projects?limit=1", nil)
 	listW := httptest.NewRecorder()
 	router.ServeHTTP(listW, listReq)
-	if listW.Code != http.StatusOK {
-		t.Fatalf("list status = %d", listW.Code)
-	}
-	var list []map[string]any
-	if err := json.Unmarshal(listW.Body.Bytes(), &list); err != nil {
-		t.Fatalf("unmarshal list: %v", err)
-	}
-	if got := list[0]["id"].(string); got != id {
-		t.Fatalf("list first id = %s, want %s", got, id)
+	if listW.Code != http.StatusUnauthorized || strings.Contains(listW.Body.String(), id) {
+		t.Fatalf("list must not enumerate projects; status=%d body=%s", listW.Code, listW.Body.String())
 	}
 
 	sourceImageReq := httptest.NewRequest(http.MethodGet, created["sourceImageURL"].(string), nil)
+	authorizeProjectRequest(sourceImageReq, capability)
 	sourceImageW := httptest.NewRecorder()
 	router.ServeHTTP(sourceImageW, sourceImageReq)
 	if sourceImageW.Code != http.StatusOK {
 		t.Fatalf("source image status = %d", sourceImageW.Code)
+	}
+	if got := sourceImageW.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("source image Cache-Control = %q, want no-store", got)
 	}
 	if sourceImageW.Header().Get("Content-Type") != "image/png" {
 		t.Fatalf("content type = %s", sourceImageW.Header().Get("Content-Type"))
@@ -296,10 +335,33 @@ func TestProjectCreateGetsListAndSourceImage(t *testing.T) {
 	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+id, nil)
+	authorizeProjectRequest(getReq, capability)
 	getW := httptest.NewRecorder()
 	router.ServeHTTP(getW, getReq)
 	if getW.Code != http.StatusOK {
 		t.Fatalf("get status = %d", getW.Code)
+	}
+	if strings.Contains(getW.Body.String(), capability) {
+		t.Fatal("project detail must not echo the capability")
+	}
+}
+
+func TestProjectReadWithWrongCapabilityReturnsGenericNotFound(t *testing.T) {
+	repo := newFakeProjectRepo()
+	store := newFakeObjectStore()
+	projectID := "00000000-0000-0000-0000-000000000001"
+	seedAuthorizedProject(t, repo, store, projectID)
+	router := newProjectRouter(repo, store)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID, nil)
+	authorizeProjectRequest(req, "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), projectID) || strings.Contains(w.Body.String(), testProjectCapability) {
+		t.Fatalf("unauthorized response leaked project identity or capability: %s", w.Body.String())
 	}
 }
 
@@ -374,19 +436,20 @@ func TestProjectCreateRejectsEffectiveSourceDimensionMismatch(t *testing.T) {
 	}
 }
 
-func TestProjectListRejectsLimitAbove100(t *testing.T) {
+func TestProjectListCannotEnumerateEvenWithLimit(t *testing.T) {
 	router := newProjectRouter(newFakeProjectRepo(), newFakeObjectStore())
 	req := httptest.NewRequest(http.MethodGet, "/api/projects?limit=101", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"code":"invalid_limit"`) {
-		t.Fatalf("status/body = %d/%s, want invalid_limit", w.Code, w.Body.String())
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), `"code":"project_capability_required"`) {
+		t.Fatalf("status/body = %d/%s, want capability rejection", w.Code, w.Body.String())
 	}
 }
 
 func TestProjectGetMissingReturnsNotFound(t *testing.T) {
 	router := newProjectRouter(newFakeProjectRepo(), newFakeObjectStore())
 	req := httptest.NewRequest(http.MethodGet, "/api/projects/00000000-0000-0000-0000-000000000000", nil)
+	authorizeProjectRequest(req, testProjectCapability)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
@@ -396,7 +459,7 @@ func TestProjectGetMissingReturnsNotFound(t *testing.T) {
 
 func TestProjectUpdateConflict(t *testing.T) {
 	repo := newFakeProjectRepo()
-	created, err := repo.Create(context.Background(), "00000000-0000-4000-8000-000000000001", "Plan", "source", "image/png", 12, []byte(validProjectDocument))
+	created, err := repo.Create(context.Background(), "00000000-0000-4000-8000-000000000001", testCapabilityHash(), "Plan", "source", "image/png", 12, []byte(validProjectDocument))
 	if err != nil {
 		t.Fatalf("create fake project: %v", err)
 	}
@@ -405,6 +468,7 @@ func TestProjectUpdateConflict(t *testing.T) {
 	payload := `{"name":"Plan","document":` + validProjectDocument + `,"expectedRevision":2}`
 	updateReq := httptest.NewRequest(http.MethodPut, "/api/projects/"+created.ID, strings.NewReader(payload))
 	updateReq.Header.Set("Content-Type", "application/json")
+	authorizeProjectRequest(updateReq, testProjectCapability)
 	updateW := httptest.NewRecorder()
 	router.ServeHTTP(updateW, updateReq)
 	if updateW.Code != http.StatusConflict {
@@ -421,6 +485,7 @@ func TestProjectUpdateRejectsOversizedJSONBodyBeforeBinding(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPut, "/api/projects/"+id, strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
+	authorizeProjectRequest(req, testProjectCapability)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -444,6 +509,7 @@ func TestProjectUpdateReturnsNotFoundForUnknownID(t *testing.T) {
 	payload := `{"name":"Plan","document":` + validProjectDocument + `,"expectedRevision":1}`
 	req := httptest.NewRequest(http.MethodPut, "/api/projects/00000000-0000-0000-0000-000000000001", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
+	authorizeProjectRequest(req, testProjectCapability)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
@@ -455,7 +521,7 @@ func TestProjectUpdateRejectsSourceImageMetadataMutation(t *testing.T) {
 	repo := newFakeProjectRepo()
 	image := validPNG(t)
 	document := projectDocumentForSourceImage(t)
-	_, err := repo.Create(context.Background(), "00000000-0000-0000-0000-000000000001", "Plan", "source", "image/png", int64(len(image)), []byte(document))
+	_, err := repo.Create(context.Background(), "00000000-0000-0000-0000-000000000001", testCapabilityHash(), "Plan", "source", "image/png", int64(len(image)), []byte(document))
 	if err != nil {
 		t.Fatalf("create fixture: %v", err)
 	}
@@ -465,6 +531,7 @@ func TestProjectUpdateRejectsSourceImageMetadataMutation(t *testing.T) {
 	payload := `{"name":"Plan","document":` + strings.Replace(document, `"contentType":"image/png"`, `"contentType":"image/jpeg"`, 1) + `,"expectedRevision":1}`
 	req := httptest.NewRequest(http.MethodPut, "/api/projects/00000000-0000-0000-0000-000000000001", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
+	authorizeProjectRequest(req, testProjectCapability)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -477,7 +544,7 @@ func TestProjectUpdateRejectsEffectiveSourceDimensionMutation(t *testing.T) {
 	repo := newFakeProjectRepo()
 	image := validPNG(t)
 	document := projectDocumentForSourceImage(t)
-	_, err := repo.Create(context.Background(), "00000000-0000-0000-0000-000000000001", "Plan", "source", "image/png", int64(len(image)), []byte(document))
+	_, err := repo.Create(context.Background(), "00000000-0000-0000-0000-000000000001", testCapabilityHash(), "Plan", "source", "image/png", int64(len(image)), []byte(document))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,6 +555,7 @@ func TestProjectUpdateRejectsEffectiveSourceDimensionMutation(t *testing.T) {
 	payload := `{"name":"Plan","document":` + mutatedDocument + `,"expectedRevision":1}`
 	req := httptest.NewRequest(http.MethodPut, "/api/projects/00000000-0000-0000-0000-000000000001", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
+	authorizeProjectRequest(req, testProjectCapability)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "source_image_metadata_mismatch") {
@@ -499,7 +567,7 @@ func TestProjectUpdateChecksImmutableSourceObjectDimensions(t *testing.T) {
 	repo := newFakeProjectRepo()
 	image := validPNG(t)
 	document := strings.Replace(validProjectDocument, `"size":12`, fmt.Sprintf(`"size":%d`, len(image)), 1)
-	_, err := repo.Create(context.Background(), "00000000-0000-0000-0000-000000000001", "Plan", "source", "image/png", int64(len(image)), []byte(document))
+	_, err := repo.Create(context.Background(), "00000000-0000-0000-0000-000000000001", testCapabilityHash(), "Plan", "source", "image/png", int64(len(image)), []byte(document))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,6 +577,7 @@ func TestProjectUpdateChecksImmutableSourceObjectDimensions(t *testing.T) {
 	payload := `{"name":"Plan","document":` + document + `,"expectedRevision":1}`
 	req := httptest.NewRequest(http.MethodPut, "/api/projects/00000000-0000-0000-0000-000000000001", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
+	authorizeProjectRequest(req, testProjectCapability)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "source_image_metadata_mismatch") {
@@ -581,17 +650,14 @@ func TestProjectCreateFailsWhenCleanupFailsReturnsInfraError(t *testing.T) {
 type newFailingProjectRepo struct{}
 
 func (f newFailingProjectRepo) InitializeSchema(context.Context) error { return nil }
-func (f newFailingProjectRepo) Create(context.Context, string, string, string, string, int64, json.RawMessage) (db.Project, error) {
+func (f newFailingProjectRepo) Create(context.Context, string, string, string, string, string, int64, json.RawMessage) (db.Project, error) {
 	return db.Project{}, fmt.Errorf("forced failure")
 }
-func (f newFailingProjectRepo) Get(context.Context, string) (db.Project, error) {
+func (f newFailingProjectRepo) Get(context.Context, string, string) (db.Project, error) {
 	return db.Project{}, db.ErrProjectNotFound
 }
-func (f newFailingProjectRepo) Update(context.Context, string, int, string, json.RawMessage) (db.Project, error) {
+func (f newFailingProjectRepo) Update(context.Context, string, string, int, string, json.RawMessage) (db.Project, error) {
 	return db.Project{}, fmt.Errorf("forced failure")
-}
-func (f newFailingProjectRepo) List(context.Context, int) ([]db.ProjectSummary, error) {
-	return nil, fmt.Errorf("forced failure")
 }
 func (f newFailingProjectRepo) Close() {}
 

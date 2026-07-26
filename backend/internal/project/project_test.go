@@ -2,6 +2,7 @@ package project
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -112,6 +113,28 @@ func TestNormalizeDocumentRejectsOversizedJSON(t *testing.T) {
 	raw := append(validDocumentJSON(), []byte(strings.Repeat(" ", MaxDocumentBytes))...)
 	if _, err := NormalizeDocument(raw); err == nil {
 		t.Fatal("expected oversized document error")
+	}
+}
+
+func TestNormalizeDocumentRejectsGeometryOutsideSourceImage(t *testing.T) {
+	raw := []byte(`{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[{"id":"wall-1","x1":0,"y1":0,"x2":101,"y2":0}],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"fixture","confidence":0.5,"image_width":100,"image_height":80}}}`)
+	if _, err := NormalizeDocument(raw); err == nil || !strings.Contains(err.Error(), "image bounds") {
+		t.Fatalf("NormalizeDocument error = %v, want image bounds rejection", err)
+	}
+}
+
+func TestNormalizeDocumentUsesCanonicalMinimumWallLength(t *testing.T) {
+	for name, x2 := range map[string]float64{"below": 0.0009, "equal": 0.001} {
+		t.Run(name, func(t *testing.T) {
+			raw := []byte(fmt.Sprintf(`{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[{"id":"wall-1","x1":0,"y1":0,"x2":%g,"y2":0}],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"fixture","confidence":0.5,"image_width":100,"image_height":80}}}`, x2))
+			if _, err := NormalizeDocument(raw); err == nil {
+				t.Fatalf("wall length %g should be rejected", x2)
+			}
+		})
+	}
+	raw := []byte(`{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[{"id":"wall-1","x1":0,"y1":0,"x2":0.0011,"y2":0}],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"fixture","confidence":0.5,"image_width":100,"image_height":80}}}`)
+	if _, err := NormalizeDocument(raw); err != nil {
+		t.Fatalf("wall above canonical minimum rejected: %v", err)
 	}
 }
 

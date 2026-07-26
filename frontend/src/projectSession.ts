@@ -1,14 +1,17 @@
 import type { ParseResponse } from './floorplanUi'
+import { buildProjectResumeURL, consumeInitialProjectAccess, type ProjectAccess } from './projectAccess'
 import {
   createProject,
+  fetchProjectSourceImage,
   getProject,
-  listProjects,
+  ProjectAPIError,
   updateProject,
+  type CreatedProject,
   type ProjectDetail,
-  type ProjectSummary,
 } from './projects'
 
-export type ProjectBusy = 'list' | 'save' | 'load' | null
+export type ProjectBusy = 'save' | 'load' | null
+export type ProjectMessageTone = 'success' | 'error'
 
 export function projectSaveIssue({
   document,
@@ -38,59 +41,58 @@ export function projectSaveIssue({
 type Request = { id: number; controller: AbortController }
 
 export type ProjectSessionDependencies = {
-  listProjects: (signal?: AbortSignal) => Promise<ProjectSummary[]>
-  getProject: (id: string, signal?: AbortSignal) => Promise<ProjectDetail>
+  getProject: (id: string, capability: string, signal?: AbortSignal) => Promise<ProjectDetail>
   createProject: (
     name: string,
     document: ParseResponse,
     sourceImage: File,
     signal?: AbortSignal,
-  ) => Promise<ProjectDetail>
+  ) => Promise<CreatedProject>
   updateProject: (
     id: string,
+    capability: string,
     name: string,
     document: ParseResponse,
     expectedRevision: number,
     signal?: AbortSignal,
   ) => Promise<ProjectDetail>
-  fetchSourceImage: (
-    url: string,
-    init: { signal: AbortSignal },
-  ) => Promise<Response>
+  fetchSourceImage: (url: string, capability: string, signal?: AbortSignal) => Promise<Blob>
 }
 
 const defaultProjectSessionDependencies: ProjectSessionDependencies = {
-  listProjects,
   getProject,
   createProject,
   updateProject,
-  fetchSourceImage: (url, init) => fetch(url, init),
+  fetchSourceImage: fetchProjectSourceImage,
 }
 
 export type ProjectSession = {
   projectName: string
   currentProject: ProjectDetail | null
-  projects: readonly ProjectSummary[]
   projectMessage: string
+  projectMessageTone: ProjectMessageTone
   projectBusy: ProjectBusy
   setProjectName: (name: string) => void
   clearCurrentProject: () => void
-  refreshProjects: () => Promise<void>
   saveProject: () => Promise<void>
-  loadProject: (id: string) => Promise<void>
+  loadProject: (access: ProjectAccess) => Promise<void>
+	loadInitialProject: () => Promise<void>
+  reloadProject: () => Promise<void>
+  copyProjectResumeLink: (baseURL: string, writeText: (value: string) => Promise<void>) => Promise<void>
+  clearAccess: () => void
+  activate: () => void
   dispose: () => void
 }
 
-/** Persistence controller with request identity/abort ownership. Product and
- * editor state remain in App, but views receive only this controller's typed
- * commands rather than project API details. */
+/** Persistence controller with request identity/abort ownership. Capability
+ * plaintext stays in this closure and is never merged into project/editor state. */
 export function createProjectSession({
   document,
   geometryValidationError,
   sourceFile,
   projectName,
   currentProject,
-  projects,
+  initialAccess,
   onProjectSaved,
   onProjectLoaded,
   onState,
@@ -100,14 +102,17 @@ export function createProjectSession({
   sourceFile: () => File | null
   projectName: () => string
   currentProject: () => ProjectDetail | null
-  projects: () => readonly ProjectSummary[]
-  onProjectSaved: () => void
+  initialAccess: ProjectAccess | null
+  onProjectSaved: (project: ProjectDetail) => void
   onProjectLoaded: (project: ProjectDetail, sourceImage: Blob) => void
-  onState: (next: Partial<Pick<ProjectSession, 'projectName' | 'currentProject' | 'projects' | 'projectMessage' | 'projectBusy'>>) => void
-}, dependencies: ProjectSessionDependencies = defaultProjectSessionDependencies): Omit<ProjectSession, 'projectName' | 'currentProject' | 'projects' | 'projectMessage' | 'projectBusy' | 'setProjectName' | 'clearCurrentProject'> {
+  onState: (next: Partial<Pick<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy'>>) => void
+}, dependencies: ProjectSessionDependencies = defaultProjectSessionDependencies): Omit<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy' | 'setProjectName' | 'clearCurrentProject'> {
   let request: Request | null = null
   let sequence = 0
   let disposed = false
+  let access = initialAccess
+  let initialLoadComplete = false
+
   const beginRequest = (): Request | null => {
     if (disposed) return null
     request?.controller.abort()
@@ -118,20 +123,28 @@ export function createProjectSession({
   }
   const isCurrent = (next: Request): boolean => !disposed && request?.id === next.id
 
-  return {
-    async refreshProjects() {
-      const active = beginRequest()
-      if (!active) return
-      onState({ projectBusy: 'list' })
-      try {
-        const nextProjects = await dependencies.listProjects(active.controller.signal)
-        if (isCurrent(active)) onState({ projects: nextProjects })
+  const loadAccess = async (nextAccess: ProjectAccess): Promise<boolean> => {
+    const active = beginRequest()
+    if (!active) return false
+    onState({ projectBusy: 'load', projectMessage: '', projectMessageTone: 'success' })
+    try {
+      const loaded = await dependencies.getProject(nextAccess.id, nextAccess.capability, active.controller.signal)
+      if (!isCurrent(active)) return false
+      const sourceImage = await dependencies.fetchSourceImage(loaded.sourceImageURL, nextAccess.capability, active.controller.signal)
+      if (!isCurrent(active)) return false
+      access = nextAccess
+      onState({ currentProject: loaded, projectName: loaded.name, projectMessage: '项目已加载', projectMessageTone: 'success' })
+      onProjectLoaded(loaded, sourceImage)
+      return true
       } catch (error) {
-        if (!active.controller.signal.aborted && isCurrent(active)) onState({ projectMessage: `项目列表加载失败：${error instanceof Error ? error.message : '未知错误'}` })
-      } finally {
-        if (isCurrent(active)) onState({ projectBusy: null })
-      }
-    },
+      if (!active.controller.signal.aborted && isCurrent(active)) onState({ projectMessage: `项目加载失败：${error instanceof Error ? error.message : '未知错误'}`, projectMessageTone: 'error' })
+      return false
+    } finally {
+      if (isCurrent(active)) onState({ projectBusy: null })
+    }
+  }
+
+  return {
     async saveProject() {
       const issue = projectSaveIssue({
         document: document(),
@@ -141,53 +154,85 @@ export function createProjectSession({
         sourceFile: sourceFile(),
       })
       if (issue) {
-        onState({ projectMessage: issue })
+        onState({ projectMessage: issue, projectMessageTone: 'error' })
+        return
+      }
+      const durableDocument = document()
+      const existing = currentProject()
+      if (existing && (!access || access.id !== existing.id)) {
+        onState({ projectMessage: '当前项目缺少有效访问凭据，请通过继续编辑链接重新打开', projectMessageTone: 'error' })
         return
       }
       const active = beginRequest()
       if (!active) return
-      const durableDocument = document()
-      const existing = currentProject()
       const name = projectName()
-      onState({ projectBusy: 'save', projectMessage: '' })
+      onState({ projectBusy: 'save', projectMessage: '', projectMessageTone: 'success' })
       try {
-        const saved = existing
-          ? await dependencies.updateProject(existing.id, name, durableDocument!, existing.revision, active.controller.signal)
-          : await dependencies.createProject(name, durableDocument!, sourceFile()!, active.controller.signal)
+        let saved: ProjectDetail
+		let createdAccess: ProjectAccess | null = null
+        if (existing) {
+          saved = await dependencies.updateProject(existing.id, access!.capability, name, durableDocument!, existing.revision, active.controller.signal)
+        } else {
+          const created = await dependencies.createProject(name, durableDocument!, sourceFile()!, active.controller.signal)
+          saved = created.project
+			createdAccess = { id: saved.id, capability: created.capability }
+        }
         if (!isCurrent(active)) return
+		if (createdAccess) access = createdAccess
         onState({
           currentProject: saved,
           projectName: saved.name,
           projectMessage: existing ? '项目已保存' : '项目已创建',
-          projects: [saved, ...projects().filter((item) => item.id !== saved.id)],
+          projectMessageTone: 'success',
         })
-        onProjectSaved()
+        onProjectSaved(saved)
       } catch (error) {
-        if (!active.controller.signal.aborted && isCurrent(active)) onState({ projectMessage: `项目保存失败：${error instanceof Error ? error.message : '未知错误'}` })
+        if (!active.controller.signal.aborted && isCurrent(active)) onState({
+          projectMessage: error instanceof ProjectAPIError && error.code === 'revision_conflict'
+            ? error.message
+            : `项目保存失败：${error instanceof Error ? error.message : '未知错误'}`,
+          projectMessageTone: 'error',
+        })
       } finally {
         if (isCurrent(active)) onState({ projectBusy: null })
       }
     },
-    async loadProject(id: string) {
-      const active = beginRequest()
-      if (!active) return
-      onState({ projectBusy: 'load', projectMessage: '' })
-      try {
-        const loaded = await dependencies.getProject(id, active.controller.signal)
-        if (!isCurrent(active)) return
-        const imageResponse = await dependencies.fetchSourceImage(loaded.sourceImageURL, { signal: active.controller.signal })
-        if (!imageResponse.ok) throw new Error(`HTTP ${imageResponse.status}: 无法加载原始户型图`)
-        const contentType = imageResponse.headers.get('content-type')?.toLowerCase() ?? ''
-        if (!contentType.startsWith('image/')) throw new Error('原始户型图不是受支持的图片')
-        const sourceImage = await imageResponse.blob()
-        if (!isCurrent(active)) return
-        onState({ currentProject: loaded, projectName: loaded.name, projectMessage: '项目已加载' })
-        onProjectLoaded(loaded, sourceImage)
-      } catch (error) {
-        if (!active.controller.signal.aborted && isCurrent(active)) onState({ projectMessage: `项目加载失败：${error instanceof Error ? error.message : '未知错误'}` })
-      } finally {
-        if (isCurrent(active)) onState({ projectBusy: null })
+    async loadProject(nextAccess) {
+      await loadAccess(nextAccess)
+    },
+    async loadInitialProject() {
+      if (initialLoadComplete) return
+      access ??= consumeInitialProjectAccess()
+      if (access) initialLoadComplete = await loadAccess(access)
+    },
+    async reloadProject() {
+      if (!access) {
+        onState({ projectMessage: '当前项目缺少有效访问凭据，请通过继续编辑链接重新打开', projectMessageTone: 'error' })
+        return
       }
+      await loadAccess(access)
+    },
+    async copyProjectResumeLink(baseURL: string, writeText: (value: string) => Promise<void>) {
+      if (!access) {
+        onState({ projectMessage: '请先创建识别快照', projectMessageTone: 'error' })
+        return
+      }
+      try {
+        await writeText(buildProjectResumeURL(access, baseURL))
+        onState({ projectMessage: '继续编辑链接已复制，请妥善保管', projectMessageTone: 'success' })
+      } catch {
+        onState({ projectMessage: '继续编辑链接复制失败，请检查浏览器剪贴板权限', projectMessageTone: 'error' })
+      }
+    },
+    clearAccess() {
+      access = null
+		request?.controller.abort()
+		sequence += 1
+		request = null
+		onState({ projectBusy: null })
+    },
+    activate() {
+      disposed = false
     },
     dispose() {
       disposed = true
