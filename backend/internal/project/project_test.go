@@ -138,6 +138,19 @@ func TestNormalizeDocumentUsesCanonicalMinimumWallLength(t *testing.T) {
 	}
 }
 
+func TestNormalizeDocumentRejectsIDsTheFrontendCannotReload(t *testing.T) {
+	for name, raw := range map[string]string{
+		"wall whitespace":     `{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[{"id":"wall 1","x1":0,"y1":0,"x2":100,"y2":0}],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"fixture","confidence":0.5,"image_width":100,"image_height":80}}}`,
+		"opening punctuation": `{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[{"id":"wall-1","x1":0,"y1":0,"x2":100,"y2":0}],"doors":[{"id":"door.1","kind":"door","wallId":"wall-1","position":0.5,"width":20}],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"fixture","confidence":0.5,"image_width":100,"image_height":80}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NormalizeDocument([]byte(raw)); err == nil || !strings.Contains(err.Error(), "stable id") {
+				t.Fatalf("NormalizeDocument error = %v, want stable id rejection", err)
+			}
+		})
+	}
+}
+
 func TestValidateSourceImageMetadata(t *testing.T) {
 	doc, err := NormalizeDocument(validDocumentJSON())
 	if err != nil {

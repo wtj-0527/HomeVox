@@ -43,6 +43,7 @@ HomeVox 采用混合技术路线：**Go 管业务 API，Rust 管体素/几何核
 - ✅ Issue #11：项目可持久化保存与修订保存已接入单端口 API。服务端在上传前分配 UUID，并以同一 UUID 写入 PostgreSQL 与 `projects/{uuid}/source-image` S3/MinIO 对象键；数据库写入失败会删除该对象。未建立用户身份体系前，全局项目列表关闭，避免枚举其他项目。
 - ✅ AI 识别完成后可在 2D 阶段立即创建服务器端识别快照，后续显式“保存当前修改”沿用 revision conflict 保护且不会再次调用 Vision Provider。创建项目会生成 256-bit 随机 capability，数据库只存 SHA-256；detail/source/update 必须通过专用 header 携带明文 capability，并统一返回 `Cache-Control: no-store`。跨浏览器继续编辑链接只把 capability 放在 URL fragment，前端在发起项目请求前立即从地址栏清除；source-image URL 必须精确绑定当前项目同源 API。获得该链接的人可访问和修改项目，应按敏感凭据保管。
 - ⚠️ 当前 capability 是单实例阶段的持有者读写授权，不等同于用户登录或租户隔离。正式多用户版本仍需 owner-bound identity，以及 capability 的轮换/吊销入口；在此之前不要把继续编辑链接发给不受信任的人。
+- ⚠️ capability 上线前创建的旧项目没有可恢复的明文凭据。schema 升级会保留其数据库记录与对象，但以随机不可兑换 digest 明确退役访问，不会把旧 UUID 继续当作凭据；如需继续编辑，须从原始户型图重新创建受保护快照。
 - ✅ 项目 API 仅在 PostgreSQL schema/ping 与 S3 bucket 均验证就绪时可用；`/api/config` 分别报告 `not_configured`、`incomplete_config`、`unavailable` 或 `ready` 状态。
 - ✅ 已用隔离 PostgreSQL + MinIO 验证 create、capability-gated get/source-image/update、stale-revision-409、独立浏览器恢复、重启后加载及未配置持久化时 project API 的 503；无 capability 的 UUID-only 请求失败关闭，全局 list 不可枚举。
 - 3D 视口公开引擎状态、grid、三角形/顶点、调用耗时与输入/输出字节；单次主线程 WASM 调用预算为 50ms。加载、输入、输出或预算失败时明确回退到既有 wall-shell，2D 编辑、项目加载和 PNG 导出仍可用。

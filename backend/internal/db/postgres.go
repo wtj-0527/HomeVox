@@ -82,6 +82,28 @@ CREATE TABLE IF NOT EXISTS projects (
 
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS capability_hash text;
 
+-- Rows created before capability authorization have no bearer secret that can
+-- be recovered safely. Preserve their data, but retire access fail-closed with
+-- an unredeemable random digest rather than leaving an ambiguous NULL state.
+UPDATE projects
+SET capability_hash = replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')
+WHERE capability_hash IS NULL;
+
+ALTER TABLE projects ALTER COLUMN capability_hash SET NOT NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'projects_capability_hash_format'
+          AND conrelid = 'projects'::regclass
+    ) THEN
+        ALTER TABLE projects ADD CONSTRAINT projects_capability_hash_format CHECK (capability_hash ~ '^[0-9a-f]{64}$');
+    END IF;
+END
+$$;
+
 CREATE INDEX IF NOT EXISTS projects_updated_at_idx ON projects (updated_at DESC);
 `
 	if _, err := r.pool.Exec(ctx, schemaSQL); err != nil {

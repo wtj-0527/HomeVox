@@ -5,6 +5,7 @@
 ### Added
 
 - 2D 校正工具栏可在生成 3D 前直接创建服务器端识别快照，后续墙体/门窗调整以 revision 更新同一个项目且不会重新调用候选分析或 Vision parse。项目 UUID 不作为访问凭证：创建时生成 256-bit capability，数据库只存 SHA-256；detail/source/update 必须携带专用 header，并全部使用 `Cache-Control: no-store`。继续编辑链接只在 URL fragment 中交接 capability，应用启动后立即清除 fragment；source-image URL 必须精确绑定当前项目同源 API；全局项目列表在没有 owner 身份边界时关闭。
+- capability schema 升级对旧项目采取显式 fail-closed：保留旧记录与对象，以随机不可兑换的 64-hex digest 替换缺失凭据，并把 `capability_hash` 固化为 `NOT NULL` 且受格式约束；不会让历史 UUID 退化为访问凭据。durable wall/opening ID 同时统一为前后端均可重载的 `[A-Za-z0-9_-]+`。
 - 选中墙体后可直接输入起点/终点四个 source-pixel 坐标；数值编辑保留共享端点、进入 Undo/Redo，并与拖拽共用 effective source 边界和 opening 校验。前端拒绝越界、非有限、退化或破坏开口的编辑，后端项目 create/update 同样拒绝超出 durable image grid 的墙体和房间边界。
 - 修复真实 Vision Provider 默认按内部预处理尺寸回报 `metadata.image_width/image_height`，导致有效裁切被错误拒绝的问题：解析请求显式提供后端已解码的原图精确尺寸与坐标网格，但 Provider 回报的 metadata 仅视为不可信的预处理信息；durable metadata 由上传字节的真实宽高覆盖，任何房间/墙体坐标超出 decoded image bounds 仍失败关闭。真实懒猫浏览器以 `4701 × 4501` 裁切验证 `/api/floorplans/parse` 返回 200，并进入同尺寸、可编辑墙体覆盖可见的 2D 校正页。
 - 裁切确认后的真实 Provider 等待阶段现在显示动态“正在判断当前裁切区域…”状态并禁用重复提交；若裁切图仍缺少完整、无遮挡的墙体边界，失败说明会明确要求继续调整或更换原始无遮挡图，不再重复泛化提示“裁切到单个户型”。

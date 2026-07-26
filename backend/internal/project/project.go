@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -25,6 +26,8 @@ const (
 var SupportedImageContentTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
 
 var imageContentTypeSet = map[string]struct{}{}
+
+var stableGeometryIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 func init() {
 	for _, contentType := range SupportedImageContentTypes {
@@ -139,8 +142,8 @@ func validateImageBounds(doc floorplan.ParseResponse) error {
 func validateSegmentSet(segments []floorplan.Segment) error {
 	seen := map[string]struct{}{}
 	for i, segment := range segments {
-		if strings.TrimSpace(segment.ID) == "" {
-			return fmt.Errorf("wall[%d] id is required", i)
+		if !stableGeometryIDPattern.MatchString(segment.ID) {
+			return fmt.Errorf("wall[%d] must use a stable id", i)
 		}
 		if _, ok := seen[segment.ID]; ok {
 			return fmt.Errorf("wall[%d] has duplicate id", i)
@@ -209,8 +212,8 @@ func validateOpenings(walls []floorplan.Segment, openings []floorplan.Opening) e
 	seen := map[string]struct{}{}
 	grouped := map[string][]floorplan.Opening{}
 	for i, o := range openings {
-		if strings.TrimSpace(o.ID) == "" {
-			return fmt.Errorf("opening[%d] id is required", i)
+		if !stableGeometryIDPattern.MatchString(o.ID) {
+			return fmt.Errorf("opening[%d] must use a stable id", i)
 		}
 		if _, ok := seen[o.ID]; ok {
 			return fmt.Errorf("opening[%d] has duplicate id", i)
