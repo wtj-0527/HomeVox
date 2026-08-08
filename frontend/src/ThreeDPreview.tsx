@@ -3,6 +3,7 @@ import { Canvas, useThree, type RootState } from '@react-three/fiber'
 import { Grid, Html, OrbitControls } from '@react-three/drei'
 import type { BufferGeometry } from 'three'
 import { buildWallShellPieces, frameWallShellModel, WINDOW_OPENING_HEIGHT, WINDOW_SILL_HEIGHT, type WallShellModel } from './wallShell'
+import { wasmWallMeshPresentation } from './wasmThreeDScene'
 import { analyzeCurrentThreeDFrame } from './threeDFrameAnalysis'
 
 export type ThreeDRenderer = { state: RootState; generation: string }
@@ -111,7 +112,11 @@ function CanonicalScene({
   onSelectWall,
   onSelectOpening,
 }: Omit<ThreeDPreviewProps, 'canonicalRevision' | 'webGLAvailable' | 'onRendererMount' | 'onRendererUnmount' | 'onFrameRendered'>) {
-  const pieces = buildWallShellPieces(model)
+  const wasmWallMesh = wasmWallMeshPresentation(wasmActive, wasmGeometry, model, onSelectWall)
+  const selectedWallPieces = useMemo(
+    () => wasmActive && wasmGeometry && selectedWallID ? buildWallShellPieces(model).filter((piece) => piece.wallId === selectedWallID) : [],
+    [model, selectedWallID, wasmActive, wasmGeometry],
+  )
   return (
     <>
       <ambientLight intensity={0.72} />
@@ -124,40 +129,38 @@ function CanonicalScene({
       )}
       <Grid args={[18, 18]} cellSize={1} cellThickness={0.45} cellColor="#425779" sectionSize={5} sectionThickness={0.8} sectionColor="#90a4c6" fadeDistance={24} infiniteGrid />
 
-      {/* Keep the generated WASM mesh in the mounted scene for a single
-          canonical/WASM/renderer revision. Canonical pieces are the visible
-          presentation because their explicit spans preserve opening cut-outs. */}
-      {wasmActive && wasmGeometry && <mesh geometry={wasmGeometry} visible={false} data-testid="wasm-wall-mesh" />}
-
-      {pieces.map((piece) => (
-        <group key={piece.id}>
-          <mesh
-            position={[piece.x, piece.y, piece.z]}
-            rotation={[0, piece.rotationY, 0]}
-            castShadow
-            receiveShadow
-            onPointerDown={(event) => { event.stopPropagation(); onSelectWall(piece.wallId) }}
-            onClick={(event) => { event.stopPropagation(); onSelectWall(piece.wallId) }}
-          >
-            <boxGeometry args={[piece.length, piece.height, piece.thickness]} />
-            <meshStandardMaterial
-              color={selectedWallID === piece.wallId ? '#a78bfa' : '#e8eff9'}
-              emissive={selectedWallID === piece.wallId ? '#5b21b6' : '#0f172a'}
-              emissiveIntensity={selectedWallID === piece.wallId ? 0.58 : 0.04}
-              roughness={0.58}
-            />
-          </mesh>
-        </group>
+      {/* Selection affordance only: success-path walls remain the visible WASM mesh. */}
+      {wasmWallMesh && selectedWallPieces.map((piece) => (
+        <mesh
+          key={`wasm-wall-selection-${piece.id}`}
+          position={[piece.x, piece.y, piece.z]}
+          rotation={[0, piece.rotationY, 0]}
+          data-testid={`three-wall-highlight-${piece.wallId}`}
+          renderOrder={1}
+        >
+          <boxGeometry args={[piece.length, piece.height, piece.thickness + 0.025]} />
+          <meshBasicMaterial color="#c4b5fd" toneMapped={false} transparent opacity={0.62} depthWrite={false} />
+        </mesh>
       ))}
-      {selectedWallID && model.walls.filter((wall) => wall.id === selectedWallID).map((wall) => (
-        <group key={`wall-selection-${wall.id}`} position={[wall.x, wall.height + 0.12, wall.z]} rotation={[0, wall.rotationY, 0]}>
-          <mesh data-testid={`three-wall-highlight-${wall.id}`}>
-            <boxGeometry args={[Math.min(wall.length, 1.4), 0.12, wall.thickness + 0.11]} />
-            <meshBasicMaterial color="#c4b5fd" toneMapped={false} />
-          </mesh>
-          <pointLight color="#c4b5fd" intensity={2.7} distance={3.5} />
-        </group>
-      ))}
+      {wasmWallMesh && (
+        <mesh
+          geometry={wasmWallMesh.geometry}
+          visible={wasmWallMesh.visible}
+          castShadow={wasmWallMesh.castShadow}
+          receiveShadow={wasmWallMesh.receiveShadow}
+          data-testid="wasm-wall-mesh"
+          onPointerDown={(event) => { event.stopPropagation(); wasmWallMesh.onSelectAt(event.point.x, event.point.z) }}
+          onClick={(event) => { event.stopPropagation(); wasmWallMesh.onSelectAt(event.point.x, event.point.z) }}
+        >
+          <meshStandardMaterial
+            color="#e8eff9"
+            emissive="#0f172a"
+            emissiveIntensity={0.04}
+            roughness={0.58}
+            side={2}
+          />
+        </mesh>
+      )}
 
       {model.walls.map((wall) => (
         <Html key={`wall-picker-${wall.id}`} position={[wall.x, wall.height + 0.32, wall.z]} center>
