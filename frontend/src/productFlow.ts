@@ -41,8 +41,8 @@ export function completeProductStep(completed: readonly ProductStep[], step: Pro
   return Array.from(new Set([...completed, step])).sort((a, b) => a - b) as ProductStep[]
 }
 
-/** A reloaded saved canonical document proves import/parsing and explicit save.
- * It deliberately does not manufacture 2D, 3D, or linked-review completion. */
+/** A reloaded canonical document proves only import/parsing. Snapshot presence
+ * never manufactures 2D, 3D, linked-review, or final-save completion. */
 export function initialCompletedSteps({
   hasCanonicalDocument,
   isSavedProject,

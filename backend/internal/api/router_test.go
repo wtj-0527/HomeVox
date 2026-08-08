@@ -163,6 +163,25 @@ func TestConfiguredUnresponsivePersistenceOnlyDisablesProjectAPIs(t *testing.T) 
 	}
 }
 
+func TestRouterPassesLegacyRecoveryKeyToProjectDependencies(t *testing.T) {
+	var received databaseConfig
+	router, cleanup := newRouterWithCleanup(
+		config.Config{LegacyRecoveryKey: "operator-only-key"},
+		time.Second,
+		func(_ context.Context, cfg databaseConfig) projectDependencies {
+			received = cfg
+			return projectDependencies{databaseStatus: statusNotConfigured, s3Status: statusNotConfigured}
+		},
+	)
+	defer cleanup()
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	if received.LegacyRecoveryKey != "operator-only-key" {
+		t.Fatalf("LegacyRecoveryKey = %q, want configured operator key", received.LegacyRecoveryKey)
+	}
+}
+
 func TestParseFloorplanRequiresImageFile(t *testing.T) {
 	router := NewRouter(config.Config{})
 	body := &bytes.Buffer{}
@@ -456,5 +475,33 @@ func TestAnalyzeFloorplanCandidatesReturnsSourcePixelRectsAndFailsClosed(t *test
 	}
 	if !strings.Contains(response.Body.String(), `"mode":"single"`) || !strings.Contains(response.Body.String(), `"width":10`) {
 		t.Fatalf("body=%s", response.Body.String())
+	}
+}
+
+func TestAnalyzeFloorplanCandidatesRejectsOversizedMultipartBeforeImageHandling(t *testing.T) {
+	router := NewRouter(config.Config{AIBaseURL: "https://example.test/v1", AIAPIKey: "test-key", AIModel: "test-model"})
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("floorplan", "oversized.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte("x"), maxFloorplanUploadBytes+maxMultipartOverheadBytes+1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/floorplans/candidates", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "10 MiB") {
+		t.Fatalf("expected actionable size error, body=%s", response.Body.String())
 	}
 }

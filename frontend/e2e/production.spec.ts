@@ -380,6 +380,11 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await expect(page.getByRole('button', { name: /校正 2D，当前步骤/ })).toBeVisible()
   await expectBox(page, '.two-d-editor-frame', { x: 256, y: 92, width: 870, height: 800 })
   await expectBox(page, '.two-d-product-workspace .inspector-card', { x: 1146, y: 92, width: 246, height: 800 })
+  // The editor mounts only after import/recognition. Its hit targets must use
+  // the actual CSS-pixel canvas size, not the old 0×0 fallback.
+  const endpointHitTarget = await page.getByTestId('endpoint-handle-0-start').boundingBox()
+  expect(endpointHitTarget).not.toBeNull()
+  expect(Math.min(endpointHitTarget?.width ?? 0, endpointHitTarget?.height ?? 0)).toBeGreaterThanOrEqual(14)
   await expectCustomerFacingCopy(page)
   await page.getByTestId('wall-hit-wall-1').click({ position: { x: 80, y: 1 }, force: true })
   await expect.poll(async () => (await e2eState(page)).selectedWallId).toBe('wall-1')
@@ -545,7 +550,7 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
 	expect(new URL(restartedPage.url()).hash).toBe('')
 	await expect(restartedPage.getByRole('button', { name: /导入户型图，已完成/ })).toBeVisible()
 	await expect(restartedPage.getByRole('button', { name: /AI 识别，已完成/ })).toBeVisible()
-	await expect(restartedPage.getByRole('button', { name: /保存项目，已完成/ })).toBeVisible()
+	await expect(restartedPage.getByRole('button', { name: /保存项目，未解锁/ })).toBeDisabled()
 	await restartedPage.getByRole('button', { name: /校正 2D，当前步骤/ }).click()
 	await expect(restartedPage.getByLabel('2D 墙体编辑器')).toBeVisible()
 	await restartedPage.getByTestId('opening-handle-window-1').click({ force: true })

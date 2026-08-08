@@ -171,6 +171,14 @@ func newProjectRouter(repo db.ProjectRepository, store storage.ObjectStore) *gin
 	return router
 }
 
+func newLegacyRecoveryRouter(repo db.ProjectRepository, store storage.ObjectStore, key string) *gin.Engine {
+	router := gin.New()
+	deps := readyDeps(repo, store)
+	deps.legacyRecoveryKey = key
+	registerProjectRoutes(router, deps)
+	return router
+}
+
 const testProjectCapability = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 func testCapabilityHash() string {
@@ -371,6 +379,59 @@ func TestProjectReadWithWrongCapabilityReturnsGenericNotFound(t *testing.T) {
 	}
 	if strings.Contains(w.Body.String(), projectID) || strings.Contains(w.Body.String(), testProjectCapability) {
 		t.Fatalf("unauthorized response leaked project identity or capability: %s", w.Body.String())
+	}
+}
+
+func TestLegacyProjectRecoveryRequiresOperatorKeyAndIssuesOneNewCapability(t *testing.T) {
+	repo := newFakeProjectRepo()
+	store := newFakeObjectStore()
+	id := "00000000-0000-0000-0000-000000000019"
+	repo.projects[id] = db.Project{
+		ID: id, Name: "Legacy plan", SourceImageKey: sourceImageKey(id),
+		SourceImageContentType: "image/png", SourceImageSize: int64(len(validPNG(t))),
+		Document: json.RawMessage(projectDocumentForSourceImage(t)), Revision: 1,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	store.objects[sourceImageKey(id)] = fakeObject{data: validPNG(t), contentType: "image/png"}
+	router := newLegacyRecoveryRouter(repo, store, "operator-only-key")
+
+	for _, key := range []string{"", "wrong-key"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/projects/"+id+"/recover", nil)
+		req.Header.Set("X-HomeVox-Legacy-Recovery-Key", key)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("recovery with %q status=%d body=%s", key, w.Code, w.Body.String())
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+id+"/recover", nil)
+	req.Header.Set("X-HomeVox-Legacy-Recovery-Key", "operator-only-key")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("recovery status=%d body=%s", w.Code, w.Body.String())
+	}
+	var recovered struct {
+		ID         string `json:"id"`
+		Capability string `json:"capability"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &recovered); err != nil {
+		t.Fatal(err)
+	}
+	if recovered.ID != id || !projectCapabilityRegex.MatchString(recovered.Capability) {
+		t.Fatalf("unexpected recovery response: %+v", recovered)
+	}
+	if repo.capabilityHashes[id] != hashProjectCapability(recovered.Capability) {
+		t.Fatal("recovery did not atomically assign the returned capability")
+	}
+
+	again := httptest.NewRequest(http.MethodPost, "/api/projects/"+id+"/recover", nil)
+	again.Header.Set("X-HomeVox-Legacy-Recovery-Key", "operator-only-key")
+	againW := httptest.NewRecorder()
+	router.ServeHTTP(againW, again)
+	if againW.Code != http.StatusNotFound {
+		t.Fatalf("second recovery status=%d body=%s", againW.Code, againW.Body.String())
 	}
 }
 

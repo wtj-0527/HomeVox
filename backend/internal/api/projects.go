@@ -129,6 +129,10 @@ func (deps projectDependencies) ready() bool {
 	return deps.repo != nil && deps.store != nil && deps.databaseStatus == statusReady && deps.s3Status == statusReady
 }
 
+func (deps projectDependencies) databaseReady() bool {
+	return deps.repo != nil && deps.databaseStatus == statusReady
+}
+
 func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 	group := router.Group("/api/projects")
 	group.Use(func(c *gin.Context) {
@@ -139,7 +143,7 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 	// Legacy rows predate bearer capabilities. Recovery is deliberately an
 	// operator-gated, one-time, audited action; no anonymous project-ID claim.
 	group.POST(":id/recover", func(c *gin.Context) {
-		if !deps.ready() {
+		if !deps.databaseReady() {
 			writeProjectError(c, http.StatusServiceUnavailable, "persistence_unavailable", "project persistence unavailable")
 			return
 		}

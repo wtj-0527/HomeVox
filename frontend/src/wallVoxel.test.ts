@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { readFile } from 'node:fs/promises'
 import { buildWallVoxelModel, WALL_VOXEL_GRID_SIZE } from './wallVoxel'
 import type { ParsedOpening } from './floorplanUi'
 
@@ -110,5 +111,23 @@ describe('buildWallVoxelModel', () => {
       [{ id: 'wall-a', x1: 0, y1: 0, x2: 300, y2: 0 }],
       [{ id: 'invalid', kind: 'door', wallId: 'wall-a', position: Number.NaN, width: 60 }],
     )).toBeNull()
+  })
+
+  it('keeps short parallel and mixed-orientation walls inside tight voxel bounds for real WASM meshing', async () => {
+    const model = buildWallVoxelModel([
+      { id: 'long', x1: 0, y1: 0, x2: 1000, y2: 0 },
+      { id: 'short-parallel', x1: 430, y1: 180, x2: 490, y2: 180 },
+      { id: 'diagonal', x1: 760, y1: 120, x2: 880, y2: 240 },
+    ])
+    expect(model).not.toBeNull()
+    if (!model) throw new Error('expected valid voxel model')
+
+    const module = await import('../../wasm/pkg/homevox_wasm')
+    module.initSync(await readFile(new URL('../../wasm/pkg/homevox_wasm_bg.wasm', import.meta.url)))
+    module.init()
+    const vertices = module.marching_cubes(model.data, ...model.dimensions, model.isoLevel)
+    expect(vertices).toBeInstanceOf(Float32Array)
+    expect(vertices.length).toBeGreaterThan(0)
+    expect(vertices.length % 9).toBe(0)
   })
 })

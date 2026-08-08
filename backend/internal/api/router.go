@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 )
 
 const maxFloorplanUploadBytes = 10 << 20
+const maxMultipartOverheadBytes = 64 << 10
 const persistenceStartupTimeout = 5 * time.Second
 
 type healthResponse struct {
@@ -33,6 +35,11 @@ type healthResponse struct {
 func NewRouter(cfg config.Config, frontendDirs ...string) *gin.Engine {
 	router, _ := NewRouterWithCleanup(cfg, frontendDirs...)
 	return router
+}
+
+func requestBodyTooLarge(err error) bool {
+	var maxBytesError *http.MaxBytesError
+	return errors.As(err, &maxBytesError)
 }
 
 // NewRouterWithCleanup exposes the persistence-resource cleanup required by
@@ -50,11 +57,12 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 	parser := floorplan.NewParser(ai.NewClientFromConfig(cfg))
 	startupContext, cancelStartup := context.WithTimeout(context.Background(), startupTimeout)
 	deps := initializeDependencies(startupContext, databaseConfig{
-		DatabaseURL: cfg.DatabaseURL,
-		S3Endpoint:  cfg.S3Endpoint,
-		S3Bucket:    cfg.S3Bucket,
-		S3AccessKey: cfg.S3AccessKey,
-		S3SecretKey: cfg.S3SecretKey,
+		DatabaseURL:       cfg.DatabaseURL,
+		S3Endpoint:        cfg.S3Endpoint,
+		S3Bucket:          cfg.S3Bucket,
+		S3AccessKey:       cfg.S3AccessKey,
+		S3SecretKey:       cfg.S3SecretKey,
+		LegacyRecoveryKey: cfg.LegacyRecoveryKey,
 	})
 	cancelStartup()
 	databaseStatus, s3Status, databaseConfigured, s3Configured := projectStatusesFromDependencies(deps)
@@ -81,9 +89,13 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 	registerProjectRoutes(router, deps)
 
 	router.POST("/api/floorplans/parse", func(c *gin.Context) {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxFloorplanUploadBytes+1024*1024)
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxFloorplanUploadBytes+maxMultipartOverheadBytes)
 		file, header, err := c.Request.FormFile("floorplan")
 		if err != nil {
+			if requestBodyTooLarge(err) {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "floorplan image must be 10 MiB or smaller"})
+				return
+			}
 			c.JSON(http.StatusBadRequest, gin.H{"error": "field floorplan is required"})
 			return
 		}
@@ -159,9 +171,13 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 	router.POST("/api/floorplans/candidates", func(c *gin.Context) {
 		// Bound the request before multipart parsing so oversized bodies are never
 		// parsed/spooled by FormFile. The allowance covers multipart framing.
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxFloorplanUploadBytes+1024*1024)
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxFloorplanUploadBytes+maxMultipartOverheadBytes)
 		file, header, err := c.Request.FormFile("floorplan")
 		if err != nil {
+			if requestBodyTooLarge(err) {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "floorplan image must be 10 MiB or smaller"})
+				return
+			}
 			c.JSON(http.StatusBadRequest, gin.H{"error": "field floorplan is required"})
 			return
 		}
