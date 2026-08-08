@@ -42,6 +42,7 @@ type ProjectRepository interface {
 	Create(ctx context.Context, id, capabilityHash, name, sourceImageKey, sourceImageContentType string, sourceImageSize int64, document json.RawMessage) (Project, error)
 	Get(ctx context.Context, id, capabilityHash string) (Project, error)
 	Update(ctx context.Context, id, capabilityHash string, expectedRevision int, name string, document json.RawMessage) (Project, error)
+	RecoverLegacy(ctx context.Context, id, capabilityHash, actor string) (Project, error)
 }
 
 type PostgresRepository struct {
@@ -82,14 +83,13 @@ CREATE TABLE IF NOT EXISTS projects (
 
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS capability_hash text;
 
--- Rows created before capability authorization have no bearer secret that can
--- be recovered safely. Preserve their data, but retire access fail-closed with
--- an unredeemable random digest rather than leaving an ambiguous NULL state.
-UPDATE projects
-SET capability_hash = replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')
-WHERE capability_hash IS NULL;
-
-ALTER TABLE projects ALTER COLUMN capability_hash SET NOT NULL;
+-- Legacy rows retain NULL until an authorized one-time recovery claim. Never
+-- overwrite them with an unrecoverable random digest.
+CREATE TABLE IF NOT EXISTS legacy_project_recovery_audit (
+    project_id uuid PRIMARY KEY REFERENCES projects(id),
+    recovered_at timestamptz NOT NULL DEFAULT timezone('UTC', now()),
+    actor text NOT NULL
+);
 
 DO $$
 BEGIN
@@ -201,6 +201,25 @@ RETURNING id, name, source_image_key, source_image_content_type, source_image_si
 	}
 	updated.Document = projectJSONCopy(document)
 	return normalizeProjectTimes(updated), nil
+}
+
+func (r *PostgresRepository) RecoverLegacy(ctx context.Context, id, capabilityHash, actor string) (Project, error) {
+	var recovered Project
+	err := r.pool.QueryRow(ctx, `
+WITH claimed AS (
+  UPDATE projects SET capability_hash = $2 WHERE id = $1 AND capability_hash IS NULL
+  RETURNING id, name, source_image_key, source_image_content_type, source_image_size, revision, document, created_at, updated_at
+), audit AS (
+  INSERT INTO legacy_project_recovery_audit (project_id, actor) SELECT id, $3 FROM claimed
+)
+SELECT id, name, source_image_key, source_image_content_type, source_image_size, revision, document, created_at, updated_at FROM claimed;`, id, capabilityHash, actor).Scan(&recovered.ID, &recovered.Name, &recovered.SourceImageKey, &recovered.SourceImageContentType, &recovered.SourceImageSize, &recovered.Revision, &recovered.Document, &recovered.CreatedAt, &recovered.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Project{}, ErrProjectNotFound
+	}
+	if err != nil {
+		return Project{}, fmt.Errorf("recover legacy project: %w", err)
+	}
+	return normalizeProjectTimes(recovered), nil
 }
 
 func normalizeProjectTimes(project Project) Project {

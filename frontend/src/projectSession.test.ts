@@ -185,6 +185,17 @@ describe('ProjectSession controller', () => {
 		expect(resumed.dependencies.getProject).toHaveBeenCalledTimes(2)
 	})
 
+  it('retains the initial capability after a transient metadata or source-image failure so it can retry', async () => {
+    const resumed = sessionHarness({ initialAccess: access, dependencies: { getProject: vi.fn().mockRejectedValueOnce(new Error('temporary')).mockResolvedValue(project) } })
+    await resumed.controller.loadInitialProject()
+    await resumed.controller.reloadProject()
+    expect(resumed.onProjectLoaded).toHaveBeenCalledOnce()
+    const imageFailure = sessionHarness({ initialAccess: access, dependencies: { fetchSourceImage: vi.fn().mockRejectedValueOnce(new Error('temporary')).mockResolvedValue(new Blob(['png'])) } })
+    await imageFailure.controller.loadInitialProject()
+    await imageFailure.controller.reloadProject()
+    expect(imageFailure.onProjectLoaded).toHaveBeenCalledOnce()
+  })
+
   it('invalidates pending load, create, and update work when project access is cleared', async () => {
     const pendingLoad = deferred<ProjectDetail>()
     const load = sessionHarness({ dependencies: { getProject: vi.fn().mockReturnValue(pendingLoad.promise) } })
@@ -204,7 +215,7 @@ describe('ProjectSession controller', () => {
     expect(create.onProjectSaved).not.toHaveBeenCalled()
     const writeText = vi.fn().mockResolvedValue(undefined)
     await create.controller.copyProjectResumeLink('https://homevox.example/workspace', writeText)
-    expect(writeText).not.toHaveBeenCalled()
+    expect(writeText).toHaveBeenCalledWith(`https://homevox.example/workspace#project=${project.id}&cap=${capability}`)
 
     const pendingUpdate = deferred<ProjectDetail>()
     const update = sessionHarness({

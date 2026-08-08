@@ -101,9 +101,6 @@ export type LinkedWorkspaceProps = TwoDWorkspaceProps & {
   onBack: () => void
 }
 
-export function LinkedWorkspace({ editor, preview, inspector, snapshot, previewAvailable, canAdvance, onAdvance, onBack }: LinkedWorkspaceProps) {
-  if (!previewAvailable) {
-    return <section className="workspace-card mx-auto max-w-2xl p-6 text-slate-800" role="alert"><h3 className="text-lg font-semibold">当前 3D 预览不可用</h3><p className="mt-2 text-sm text-slate-600">联动工作台已关闭，请先返回 2D 校正。</p><button type="button" className="mt-4 rounded-lg border border-slate-300 px-3 py-2 text-sm" onClick={onBack}>返回 2D 校正</button></section>
-  }
-  return <section className="workspace-card linked-product-workspace"><WorkspaceToolbar inspector={inspector} snapshot={snapshot} linked canAdvance={canAdvance} onAdvance={onAdvance} /><div className="workspace-grid product-workspace product-workspace-linked"><FloorplanEditorPanel {...editor} embedded /><ThreeDPreviewPanel {...preview} /><InspectorPanel {...inspector} /></div></section>
+export function LinkedWorkspace({ editor, preview, inspector, snapshot, previewAvailable, canAdvance, onAdvance }: LinkedWorkspaceProps) {
+  return <section className="workspace-card linked-product-workspace"><WorkspaceToolbar inspector={inspector} snapshot={snapshot} linked canAdvance={canAdvance} onAdvance={onAdvance} /><div className="workspace-grid product-workspace product-workspace-linked"><FloorplanEditorPanel {...editor} embedded />{previewAvailable ? <ThreeDPreviewPanel {...preview} /> : <div className="p-6 text-sm text-slate-600" role="status">正在更新空间预览；你可以继续校正 2D。</div>}<InspectorPanel {...inspector} /></div></section>
 }

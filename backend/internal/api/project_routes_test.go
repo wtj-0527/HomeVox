@@ -96,6 +96,15 @@ func (f *fakeProjectRepo) Update(_ context.Context, id, capabilityHash string, e
 	return project, nil
 }
 
+func (f *fakeProjectRepo) RecoverLegacy(_ context.Context, id, capabilityHash, _ string) (db.Project, error) {
+	project, ok := f.projects[id]
+	if !ok || f.capabilityHashes[id] != "" {
+		return db.Project{}, db.ErrProjectNotFound
+	}
+	f.capabilityHashes[id] = capabilityHash
+	return project, nil
+}
+
 func (f *fakeProjectRepo) Close() {}
 
 var _ db.ProjectRepository = (*fakeProjectRepo)(nil)
@@ -658,6 +667,9 @@ func (f newFailingProjectRepo) Get(context.Context, string, string) (db.Project,
 }
 func (f newFailingProjectRepo) Update(context.Context, string, string, int, string, json.RawMessage) (db.Project, error) {
 	return db.Project{}, fmt.Errorf("forced failure")
+}
+func (f newFailingProjectRepo) RecoverLegacy(context.Context, string, string, string) (db.Project, error) {
+	return db.Project{}, db.ErrProjectNotFound
 }
 func (f newFailingProjectRepo) Close() {}
 

@@ -45,10 +45,17 @@ export function buildWallVoxelModel(walls: readonly WallSegment[], doors: readon
   const shell = buildWallShellModel(walls, doors, windows)
   if (shell.validationError || shell.walls.length === 0) return null
 
-  const minX = Math.min(...shell.walls.map((wall) => wall.x - wall.length / 2))
-  const maxX = Math.max(...shell.walls.map((wall) => wall.x + wall.length / 2))
-  const minZ = Math.min(...shell.walls.map((wall) => wall.z - wall.length / 2))
-  const maxZ = Math.max(...shell.walls.map((wall) => wall.z + wall.length / 2))
+  // Project each rotated wall box onto world axes. Extending both axes by
+  // length/2 made sparse 17³ sampling miss short, parallel walls.
+  const xExtents = shell.walls.map((wall) => {
+    const cos = Math.abs(Math.cos(wall.rotationY))
+    const sin = Math.abs(Math.sin(wall.rotationY))
+    return { x: wall.length / 2 * cos + WALL_SHELL_THICKNESS / 2 * sin, z: wall.length / 2 * sin + WALL_SHELL_THICKNESS / 2 * cos }
+  })
+  const minX = Math.min(...shell.walls.map((wall, index) => wall.x - xExtents[index].x))
+  const maxX = Math.max(...shell.walls.map((wall, index) => wall.x + xExtents[index].x))
+  const minZ = Math.min(...shell.walls.map((wall, index) => wall.z - xExtents[index].z))
+  const maxZ = Math.max(...shell.walls.map((wall, index) => wall.z + xExtents[index].z))
   const padding = Math.max(WALL_SHELL_THICKNESS, 0.35)
   const bounds = [
     minX - padding,

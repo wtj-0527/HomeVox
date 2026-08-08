@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -35,10 +36,11 @@ type projectErrorEnvelope struct {
 }
 
 type projectDependencies struct {
-	databaseStatus persistenceStatus
-	s3Status       persistenceStatus
-	repo           db.ProjectRepository
-	store          storage.ObjectStore
+	databaseStatus    persistenceStatus
+	s3Status          persistenceStatus
+	repo              db.ProjectRepository
+	store             storage.ObjectStore
+	legacyRecoveryKey string
 }
 
 func (deps projectDependencies) Close() {
@@ -48,11 +50,12 @@ func (deps projectDependencies) Close() {
 }
 
 type databaseConfig struct {
-	DatabaseURL string
-	S3Endpoint  string
-	S3Bucket    string
-	S3AccessKey string
-	S3SecretKey string
+	DatabaseURL       string
+	S3Endpoint        string
+	S3Bucket          string
+	S3AccessKey       string
+	S3SecretKey       string
+	LegacyRecoveryKey string
 }
 
 const (
@@ -82,7 +85,7 @@ func newProjectDependencies(ctx context.Context, cfg databaseConfig) projectDepe
 // independently. A verified database remains "ready" even when S3 is incomplete
 // or unavailable (and vice versa); routes still require both dependencies.
 func newProjectDependenciesWithFactories(ctx context.Context, cfg databaseConfig, newRepo projectRepositoryFactory, newStore objectStoreFactory) projectDependencies {
-	deps := projectDependencies{}
+	deps := projectDependencies{legacyRecoveryKey: cfg.LegacyRecoveryKey}
 
 	if cfg.DatabaseURL == "" {
 		deps.databaseStatus = statusNotConfigured
@@ -133,6 +136,39 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 		c.Header("Pragma", "no-cache")
 		c.Next()
 	})
+	// Legacy rows predate bearer capabilities. Recovery is deliberately an
+	// operator-gated, one-time, audited action; no anonymous project-ID claim.
+	group.POST(":id/recover", func(c *gin.Context) {
+		if !deps.ready() {
+			writeProjectError(c, http.StatusServiceUnavailable, "persistence_unavailable", "project persistence unavailable")
+			return
+		}
+		if deps.legacyRecoveryKey == "" || subtle.ConstantTimeCompare([]byte(c.GetHeader("X-HomeVox-Legacy-Recovery-Key")), []byte(deps.legacyRecoveryKey)) != 1 {
+			writeProjectError(c, http.StatusForbidden, "legacy_recovery_forbidden", "legacy recovery requires an authorized recovery key")
+			return
+		}
+		id := c.Param("id")
+		if !uuidRegex.MatchString(id) {
+			writeProjectError(c, http.StatusBadRequest, "invalid_project_id", "id must be UUID")
+			return
+		}
+		capability, err := newProjectCapability()
+		if err != nil {
+			writeProjectError(c, http.StatusServiceUnavailable, "persistence_unavailable", "failed to allocate project capability")
+			return
+		}
+		recovered, err := deps.repo.RecoverLegacy(c.Request.Context(), id, hashProjectCapability(capability), c.ClientIP())
+		if err != nil {
+			if err == db.ErrProjectNotFound {
+				writeProjectError(c, http.StatusNotFound, "legacy_project_not_found", "legacy project not found or already recovered")
+				return
+			}
+			writeProjectError(c, http.StatusServiceUnavailable, "database_unavailable", "failed to recover legacy project")
+			return
+		}
+		writeFullProject(c, http.StatusOK, recovered, capability)
+	})
+
 	group.POST("", func(c *gin.Context) {
 		if !deps.ready() {
 			writeProjectError(c, http.StatusServiceUnavailable, "persistence_unavailable", "project persistence unavailable")

@@ -81,6 +81,7 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 	registerProjectRoutes(router, deps)
 
 	router.POST("/api/floorplans/parse", func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxFloorplanUploadBytes+1024*1024)
 		file, header, err := c.Request.FormFile("floorplan")
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "field floorplan is required"})
@@ -156,6 +157,9 @@ func newRouterWithCleanup(cfg config.Config, startupTimeout time.Duration, initi
 	})
 
 	router.POST("/api/floorplans/candidates", func(c *gin.Context) {
+		// Bound the request before multipart parsing so oversized bodies are never
+		// parsed/spooled by FormFile. The allowance covers multipart framing.
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxFloorplanUploadBytes+1024*1024)
 		file, header, err := c.Request.FormFile("floorplan")
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "field floorplan is required"})

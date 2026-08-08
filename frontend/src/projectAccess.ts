@@ -42,12 +42,15 @@ export function buildProjectResumeURL(access: ProjectAccess, baseURL: string): s
   return url.toString()
 }
 
-export function consumeProjectAccessFragment(
-  location: FragmentLocation,
-  replace: (path: string) => void,
-): ProjectAccess | null {
+export function clearProjectAccessFragment(location: FragmentLocation, replace: (path: string) => void): void {
   const params = new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : location.hash)
-  const access = parseProjectAccessFragment(location.hash)
   if (params.has('project') || params.has('cap')) replace(`${location.pathname}${location.search}`)
+}
+
+/** Legacy helper retained for callers that intentionally consume a fragment.
+ * Startup uses parseProjectAccessFragment so a failed load remains retryable. */
+export function consumeProjectAccessFragment(location: FragmentLocation, replace: (path: string) => void): ProjectAccess | null {
+  const access = parseProjectAccessFragment(location.hash)
+  clearProjectAccessFragment(location, replace)
   return access
 }

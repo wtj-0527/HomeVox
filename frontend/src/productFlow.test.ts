@@ -40,7 +40,7 @@ describe('product flow', () => {
   it('restores only facts proven by a saved canonical project', () => {
     expect(initialCompletedSteps({ hasCanonicalDocument: false, isSavedProject: false })).toEqual([])
     expect(initialCompletedSteps({ hasCanonicalDocument: true, isSavedProject: false })).toEqual([1, 2])
-    expect(initialCompletedSteps({ hasCanonicalDocument: true, isSavedProject: true })).toEqual([1, 2, 6])
+    expect(initialCompletedSteps({ hasCanonicalDocument: true, isSavedProject: true })).toEqual([1, 2])
     expect(canOpenStep(4, context([1, 2, 6]))).toBe(false)
   })
 })
@@ -52,7 +52,7 @@ describe('ProductFlowController', () => {
     const stale = transitionProductFlow(state, { type: 'complete', step: 4, next: 5 }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false })
     expect(stale).toEqual(state)
     expect(transitionProductFlow({ activeStep: 3, completed: [1, 2, 3] }, { type: 'complete', step: 4, next: 5 }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: true })).toEqual({ activeStep: 3, completed: [1, 2, 3] })
-    expect(transitionProductFlow({ activeStep: 1, completed: [] }, { type: 'reload', completed: [1, 2, 6] }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false })).toEqual({ activeStep: 1, completed: [1, 2, 6] })
+    expect(transitionProductFlow({ activeStep: 1, completed: [] }, { type: 'reload', completed: [1, 2] }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false })).toEqual({ activeStep: 1, completed: [1, 2] })
   })
 
   it('uses the same event admission to disable Step 5 completion when its renderer becomes stale', () => {

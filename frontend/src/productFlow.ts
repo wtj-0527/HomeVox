@@ -50,8 +50,9 @@ export function initialCompletedSteps({
   hasCanonicalDocument: boolean
   isSavedProject: boolean
 }): ProductStep[] {
+  void isSavedProject
   if (!hasCanonicalDocument) return []
-  return isSavedProject ? [1, 2, 6] : [1, 2]
+  return [1, 2]
 }
 
 export type ProductFlowEvent =

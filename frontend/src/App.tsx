@@ -255,23 +255,27 @@ export default function App() {
   })
 
   const result = parseResponse?.result ?? null
-  const walls = dragPreviewWalls ?? wallEditor?.walls ?? result?.walls ?? EMPTY_WALLS
-  const openings = useMemo(() => dragPreviewOpenings ?? wallEditor?.openings ?? (result ? [...result.doors, ...result.windows] : []), [dragPreviewOpenings, result, wallEditor])
-  const [doors, windows] = useMemo(() => [openings.filter((opening) => opening.kind === 'door'), openings.filter((opening) => opening.kind === 'window')], [openings])
+  // Pointer preview remains a 2D-only transient. Persisted canonical geometry and
+  // WASM rebuilds advance only when the drag is committed.
+  const canonicalWalls = wallEditor?.walls ?? result?.walls ?? EMPTY_WALLS
+  const walls = dragPreviewWalls ?? canonicalWalls
+  const canonicalOpenings = useMemo(() => wallEditor?.openings ?? (result ? [...result.doors, ...result.windows] : []), [result, wallEditor])
+  const openings = useMemo(() => dragPreviewOpenings ?? canonicalOpenings, [canonicalOpenings, dragPreviewOpenings])
+  const [doors, windows] = useMemo(() => [canonicalOpenings.filter((opening) => opening.kind === 'door'), canonicalOpenings.filter((opening) => opening.kind === 'window')], [canonicalOpenings])
   const selectedOpening = openings.find((opening) => opening.id === selectedOpeningID) ?? null
   const selectedWall = walls.find((wall) => wall.id === selectedWallID) ?? null
 
   const durableDocument = useMemo<ParseResponse | null>(() => (
-    parseResponse ? { ...parseResponse, result: { ...parseResponse.result, walls, doors, windows } } : null
-  ), [parseResponse, walls, doors, windows])
+    parseResponse ? { ...parseResponse, result: { ...parseResponse.result, walls: canonicalWalls, doors, windows } } : null
+  ), [parseResponse, canonicalWalls, doors, windows])
   const geometryValidationError = useMemo(
-    () => validateCanonicalFloorplan(walls, openings, effectiveImageSize),
-    [effectiveImageSize, walls, openings],
+    () => validateCanonicalFloorplan(canonicalWalls, canonicalOpenings, effectiveImageSize),
+    [effectiveImageSize, canonicalWalls, canonicalOpenings],
   )
   const hasCanonicalGeometry = Boolean(durableDocument) && !geometryValidationError
   // Content token changes in the same render as every wall/opening commit, before
   // React effects get a chance to dispose stale WASM or WebGL resources.
-  const canonicalRevision = useMemo(() => canonicalRevisionToken(walls, openings, hasCanonicalGeometry), [walls, openings, hasCanonicalGeometry])
+  const canonicalRevision = useMemo(() => canonicalRevisionToken(canonicalWalls, canonicalOpenings, hasCanonicalGeometry), [canonicalWalls, canonicalOpenings, hasCanonicalGeometry])
   const threeDGeneration = useThreeDGenerationController(canonicalRevision)
   const {
     geometryRevision,
@@ -353,10 +357,10 @@ export default function App() {
 		copyProjectResumeLink,
     } = projectSession
   const wallShellModel = useMemo(
-    () => buildWallShellModel(walls, doors, windows),
-    [walls, doors, windows],
+    () => buildWallShellModel(canonicalWalls, doors, windows),
+    [canonicalWalls, doors, windows],
   )
-  const wallVoxelModel = useMemo(() => buildWallVoxelModel(walls, doors, windows), [walls, doors, windows])
+  const wallVoxelModel = useMemo(() => buildWallVoxelModel(canonicalWalls, doors, windows), [canonicalWalls, doors, windows])
 
   const viewport = chooseViewport(result, effectiveImageSize)
   const editorScale = canvasScale(editorSize, viewport)
@@ -468,7 +472,7 @@ export default function App() {
     const observer = new ResizeObserver(updateSize)
     observer.observe(svg)
     return () => observer.disconnect()
-  }, [])
+  }, [activeStep])
 
   useEffect(() => () => {
     parseRequestRef.current?.controller.abort()
@@ -857,7 +861,15 @@ export default function App() {
         URL.revokeObjectURL(url)
         if (originalSourceRef.current === file) setOriginalImageSize({ width: image.naturalWidth, height: image.naturalHeight })
       }
-      image.onerror = () => URL.revokeObjectURL(url)
+      image.onerror = () => {
+        URL.revokeObjectURL(url)
+        if (originalSourceRef.current === file) {
+          setOriginalSource(null)
+          setError('无法读取该图片。请选择有效的 PNG、JPEG、GIF 或 WebP 户型图。')
+          setStatus('error')
+          setOriginalPreviewURL((currentURL) => { if (currentURL) URL.revokeObjectURL(currentURL); return '' })
+        }
+      }
       image.src = url
     }
   }

@@ -1,5 +1,5 @@
 import type { ParseResponse } from './floorplanUi'
-import { buildProjectResumeURL, consumeInitialProjectAccess, type ProjectAccess } from './projectAccess'
+import { buildProjectResumeURL, clearProjectAccessFragment, consumeInitialProjectAccess, type ProjectAccess } from './projectAccess'
 import {
   createProject,
   fetchProjectSourceImage,
@@ -135,6 +135,7 @@ export function createProjectSession({
       access = nextAccess
       onState({ currentProject: loaded, projectName: loaded.name, projectMessage: '项目已加载', projectMessageTone: 'success' })
       onProjectLoaded(loaded, sourceImage)
+      if (typeof window !== 'undefined') clearProjectAccessFragment(window.location, (path) => window.history.replaceState(null, '', path))
       return true
       } catch (error) {
       if (!active.controller.signal.aborted && isCurrent(active)) onState({ projectMessage: `项目加载失败：${error instanceof Error ? error.message : '未知错误'}`, projectMessageTone: 'error' })
@@ -177,8 +178,10 @@ export function createProjectSession({
           saved = created.project
 			createdAccess = { id: saved.id, capability: created.capability }
         }
+        // A server-confirmed create has issued the only recovery capability.
+        // Retain it before observing UI cancellation; cancellation only stops UI updates.
+        if (createdAccess) access = createdAccess
         if (!isCurrent(active)) return
-		if (createdAccess) access = createdAccess
         onState({
           currentProject: saved,
           projectName: saved.name,

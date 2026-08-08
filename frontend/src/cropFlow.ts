@@ -4,6 +4,7 @@ export type CandidateMode = 'single' | 'composite' | 'uncertain'
 export type CandidateDetection = { mode: CandidateMode; candidates: CropRect[] }
 
 export const MIN_CROP_SIZE = 32
+export const MAX_CROPPED_FILE_BYTES = 10 << 20
 
 export function cropDisplayMetrics(image: { width: number; height: number }): { handleSize: number; hitDistance: number; strokeWidth: number } {
   const longestSide = Math.max(1, image.width, image.height)
@@ -135,7 +136,10 @@ export async function createCroppedFile(source: File, crop: CropRect): Promise<F
     })
     const canvas = document.createElement('canvas')
     drawCropToCanvas(canvas, image, clampCrop(crop, { width: image.naturalWidth, height: image.naturalHeight }, 1))
-    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error('无法生成裁切图。')), source.type === 'image/png' ? 'image/png' : 'image/jpeg', 0.95))
+    const type = source.type === 'image/png' ? 'image/png' : 'image/jpeg'
+    let blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error('无法生成裁切图。')), type, 0.9))
+    if (blob.size > MAX_CROPPED_FILE_BYTES && type !== 'image/png') blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error('无法生成裁切图。')), type, 0.72))
+    if (blob.size > MAX_CROPPED_FILE_BYTES) throw new Error('裁切后的图片仍超过 10 MiB，请缩小裁切区域或选择更小的图片。')
     const extension = blob.type === 'image/png' ? 'png' : 'jpg'
     return new File([blob], `${source.name.replace(/\.[^.]+$/, '')}-crop.${extension}`, { type: blob.type })
   } finally { URL.revokeObjectURL(url) }
