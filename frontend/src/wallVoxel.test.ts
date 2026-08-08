@@ -122,7 +122,7 @@ describe('buildWallVoxelModel', () => {
     expect(model).not.toBeNull()
     if (!model) throw new Error('expected valid voxel model')
 
-    const module = await import('../../wasm/pkg/homevox_wasm')
+    const module = await import('@homevox-wasm')
     module.initSync(await readFile(new URL('../../wasm/pkg/homevox_wasm_bg.wasm', import.meta.url)))
     module.init()
     const vertices = module.marching_cubes(model.data, ...model.dimensions, model.isoLevel)
