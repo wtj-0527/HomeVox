@@ -473,12 +473,22 @@ func TestLegacyRecoveryPostgresRouteUpgradesOldDocumentBeforeOneTimeClaim(t *tes
 	const id = "00000000-0000-4000-8000-000000000053"
 	const retiredHash = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 	image := validPNG(t)
-	legacyDocument := strings.Replace(projectDocumentForSourceImage(t), `"pixel_to_unit":null`, ``, 1)
-	legacyDocument = strings.Replace(legacyDocument, `,"confidence":0.5`, ``, 1)
-	legacyDocument = strings.Replace(legacyDocument, `,"image_width":2`, ``, 1)
-	legacyDocument = strings.Replace(legacyDocument, `,"image_height":3`, ``, 1)
+	var legacyDocument map[string]any
+	if err := json.Unmarshal([]byte(projectDocumentForSourceImage(t)), &legacyDocument); err != nil {
+		t.Fatalf("decode fixture document: %v", err)
+	}
+	result := legacyDocument["result"].(map[string]any)
+	delete(result["scale"].(map[string]any), "pixel_to_unit")
+	metadata := result["metadata"].(map[string]any)
+	delete(metadata, "confidence")
+	delete(metadata, "image_width")
+	delete(metadata, "image_height")
+	legacyDocumentJSON, err := json.Marshal(legacyDocument)
+	if err != nil {
+		t.Fatalf("encode legacy fixture document: %v", err)
+	}
 	if _, err := pool.Exec(ctx, `INSERT INTO projects (id, capability_hash, name, source_image_key, source_image_content_type, source_image_size, document)
-VALUES ($1, $2, 'legacy', $3, 'image/png', $4, $5::jsonb)`, id, retiredHash, sourceImageKey(id), len(image), legacyDocument); err != nil {
+VALUES ($1, $2, 'legacy', $3, 'image/png', $4, $5::jsonb)`, id, retiredHash, sourceImageKey(id), len(image), legacyDocumentJSON); err != nil {
 		t.Fatalf("insert legacy project: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO legacy_project_recovery_authorizations (project_id, retired_capability_hash, authorized_by, case_reference)
