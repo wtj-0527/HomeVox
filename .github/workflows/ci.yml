@@ -42,7 +42,10 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      - run: go test ./...
+      # PostgreSQL regressions in internal/api and internal/db both exercise schema
+      # initialization against this single service. Keep packages serial so their
+      # destructive legacy-schema fixtures cannot race each other.
+      - run: go test -p 1 ./...
 
   frontend-and-wasm:
     name: Frontend, WASM, and production build
