@@ -14,6 +14,8 @@ export type ProductFlowContext = {
   hasDocument: boolean
   hasCanonicalGeometry: boolean
   hasThreeDGeometry: boolean
+  /** Step 5 is a revision-scoped acknowledgement, not a historical fact. */
+  hasCurrentLinkedReview?: boolean
 }
 
 /** The sole navigation guard. A document can unlock 2D data, but never stands
@@ -26,7 +28,7 @@ export function canOpenStep(step: ProductStep, context: ProductFlowContext): boo
     case 3: return completed.has(2) && context.hasDocument
     case 4: return completed.has(3) && context.hasCanonicalGeometry
     case 5: return completed.has(4) && context.hasCanonicalGeometry && context.hasThreeDGeometry
-    case 6: return completed.has(5) && context.hasDocument
+    case 6: return completed.has(5) && context.hasDocument && context.hasCurrentLinkedReview !== false
   }
 }
 
@@ -74,7 +76,12 @@ export function canApplyProductFlowEvent(
   if (state.activeStep !== event.step || !canOpenStep(event.step, flow)) return false
   if (!event.next) return true
   const completed = completeProductStep(state.completed, event.step)
-  return canOpenStep(event.next, { ...context, completed })
+  // Completing Step 5 is the explicit user acknowledgement of the currently
+  // admitted 3D revision; admission of its immediate next step may therefore
+  // include that acknowledgement. Subsequent canonical edits must provide a
+  // fresh context token and revoke it again.
+  const nextContext = event.step === 5 ? { ...context, hasCurrentLinkedReview: true } : context
+  return canOpenStep(event.next, { ...nextContext, completed })
 }
 
 /** The only transition entrance for sidebar, completion buttons, and reload. */

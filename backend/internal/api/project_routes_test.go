@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/project"
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/storage"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type fakeProjectRepo struct {
@@ -96,12 +98,22 @@ func (f *fakeProjectRepo) Update(_ context.Context, id, capabilityHash string, e
 	return project, nil
 }
 
-func (f *fakeProjectRepo) RecoverLegacy(_ context.Context, id, capabilityHash, _ string) (db.Project, error) {
+func (f *fakeProjectRepo) LegacyRecoveryCandidate(_ context.Context, id string) (db.Project, error) {
+	project, ok := f.projects[id]
+	if !ok {
+		return db.Project{}, db.ErrProjectNotFound
+	}
+	return project, nil
+}
+
+func (f *fakeProjectRepo) RecoverLegacy(_ context.Context, id, capabilityHash, _ string, document json.RawMessage) (db.Project, error) {
 	project, ok := f.projects[id]
 	if !ok || f.capabilityHashes[id] != "" {
 		return db.Project{}, db.ErrProjectNotFound
 	}
 	f.capabilityHashes[id] = capabilityHash
+	project.Document = document
+	f.projects[id] = project
 	return project, nil
 }
 
@@ -435,6 +447,94 @@ func TestLegacyProjectRecoveryRequiresOperatorKeyAndIssuesOneNewCapability(t *te
 	}
 }
 
+func TestLegacyRecoveryPostgresRouteUpgradesOldDocumentBeforeOneTimeClaim(t *testing.T) {
+	dsn := os.Getenv("HOMEVOX_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("HOMEVOX_TEST_DATABASE_URL not set; skipping PostgreSQL route regression")
+	}
+	ctx := context.Background()
+	repo, err := db.NewPostgresRepository(ctx, dsn)
+	if err != nil {
+		t.Fatalf("new postgres repository: %v", err)
+	}
+	defer repo.Close()
+	if err := repo.InitializeSchema(ctx); err != nil {
+		t.Fatalf("initialize schema: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("new postgres pool: %v", err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(ctx, `TRUNCATE TABLE projects CASCADE`); err != nil {
+		t.Fatalf("truncate projects: %v", err)
+	}
+
+	const id = "00000000-0000-4000-8000-000000000053"
+	const retiredHash = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	image := validPNG(t)
+	legacyDocument := strings.Replace(projectDocumentForSourceImage(t), `"pixel_to_unit":null`, ``, 1)
+	legacyDocument = strings.Replace(legacyDocument, `,"confidence":0.5`, ``, 1)
+	legacyDocument = strings.Replace(legacyDocument, `,"image_width":2`, ``, 1)
+	legacyDocument = strings.Replace(legacyDocument, `,"image_height":3`, ``, 1)
+	if _, err := pool.Exec(ctx, `INSERT INTO projects (id, capability_hash, name, source_image_key, source_image_content_type, source_image_size, document)
+VALUES ($1, $2, 'legacy', $3, 'image/png', $4, $5::jsonb)`, id, retiredHash, sourceImageKey(id), len(image), legacyDocument); err != nil {
+		t.Fatalf("insert legacy project: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO legacy_project_recovery_authorizations (project_id, retired_capability_hash, authorized_by, case_reference)
+VALUES ($1, $2, 'operator', 'INC-53')`, id, retiredHash); err != nil {
+		t.Fatalf("authorize legacy project: %v", err)
+	}
+	store := newFakeObjectStore()
+	store.objects[sourceImageKey(id)] = fakeObject{data: image, contentType: "image/png"}
+	router := newLegacyRecoveryRouter(repo, store, "operator-only-key")
+
+	recover := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/projects/"+id+"/recover", nil)
+		req.Header.Set("X-HomeVox-Legacy-Recovery-Key", "operator-only-key")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+	first := recover()
+	if first.Code != http.StatusOK {
+		t.Fatalf("first recovery status=%d body=%s", first.Code, first.Body.String())
+	}
+	var body struct {
+		Capability string `json:"capability"`
+		Document   struct {
+			Result struct {
+				Scale struct {
+					PixelToUnit *float64 `json:"pixel_to_unit"`
+				} `json:"scale"`
+				Metadata struct {
+					Confidence  float64 `json:"confidence"`
+					ImageWidth  int     `json:"image_width"`
+					ImageHeight int     `json:"image_height"`
+				} `json:"metadata"`
+			} `json:"result"`
+		} `json:"document"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode recovery response: %v", err)
+	}
+	if !projectCapabilityRegex.MatchString(body.Capability) || body.Document.Result.Scale.PixelToUnit != nil ||
+		body.Document.Result.Metadata.Confidence != 0 || body.Document.Result.Metadata.ImageWidth != 2 || body.Document.Result.Metadata.ImageHeight != 3 {
+		t.Fatalf("legacy recovery did not return normalized document: %+v", body)
+	}
+	second := recover()
+	if second.Code != http.StatusNotFound {
+		t.Fatalf("second recovery status=%d body=%s", second.Code, second.Body.String())
+	}
+	var auditCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM legacy_project_recovery_audit WHERE project_id = $1`, id).Scan(&auditCount); err != nil {
+		t.Fatalf("read recovery audit: %v", err)
+	}
+	if auditCount != 1 {
+		t.Fatalf("recovery audit count = %d, want 1", auditCount)
+	}
+}
+
 func TestProjectCreateRejectsOversizedMultipartBodyBeforeParsing(t *testing.T) {
 	router := newProjectRouter(newFakeProjectRepo(), newFakeObjectStore())
 	body := &bytes.Buffer{}
@@ -729,7 +829,10 @@ func (f newFailingProjectRepo) Get(context.Context, string, string) (db.Project,
 func (f newFailingProjectRepo) Update(context.Context, string, string, int, string, json.RawMessage) (db.Project, error) {
 	return db.Project{}, fmt.Errorf("forced failure")
 }
-func (f newFailingProjectRepo) RecoverLegacy(context.Context, string, string, string) (db.Project, error) {
+func (f newFailingProjectRepo) LegacyRecoveryCandidate(context.Context, string) (db.Project, error) {
+	return db.Project{}, db.ErrProjectNotFound
+}
+func (f newFailingProjectRepo) RecoverLegacy(context.Context, string, string, string, json.RawMessage) (db.Project, error) {
 	return db.Project{}, db.ErrProjectNotFound
 }
 func (f newFailingProjectRepo) Close() {}

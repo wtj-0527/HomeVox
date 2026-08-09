@@ -130,13 +130,13 @@ INSERT INTO projects (id, capability_hash, name, source_image_key, source_image_
 	if err := repo.InitializeSchema(ctx); err != nil {
 		t.Fatalf("migrate d53 schema: %v", err)
 	}
-	if _, err := repo.RecoverLegacy(ctx, legacyID, recoveredHash, "operator"); err != ErrProjectNotFound {
+	if _, err := repo.RecoverLegacy(ctx, legacyID, recoveredHash, "operator", json.RawMessage(`{}`)); err != ErrProjectNotFound {
 		t.Fatalf("unauthorized d53 recovery = %v, want ErrProjectNotFound", err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO legacy_project_recovery_authorizations (project_id, retired_capability_hash, authorized_by, case_reference) VALUES ($1, $2, 'operator', 'INC-19')`, legacyID, retiredHash); err != nil {
 		t.Fatalf("authorize d53 recovery: %v", err)
 	}
-	recovered, err := repo.RecoverLegacy(ctx, legacyID, recoveredHash, "operator")
+	recovered, err := repo.RecoverLegacy(ctx, legacyID, recoveredHash, "operator", json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("recover authorized d53 project: %v", err)
 	}
@@ -146,7 +146,7 @@ INSERT INTO projects (id, capability_hash, name, source_image_key, source_image_
 	if _, err := repo.Get(ctx, legacyID, recoveredHash); err != nil {
 		t.Fatalf("get recovered project: %v", err)
 	}
-	if _, err := repo.RecoverLegacy(ctx, bearerID, recoveredHash, "operator"); err != ErrProjectNotFound {
+	if _, err := repo.RecoverLegacy(ctx, bearerID, recoveredHash, "operator", json.RawMessage(`{}`)); err != ErrProjectNotFound {
 		t.Fatalf("bearer recovery = %v, want ErrProjectNotFound", err)
 	}
 	if _, err := repo.Get(ctx, bearerID, bearerHash); err != nil {

@@ -8,6 +8,13 @@ export const WALL_SHELL_FLOOR_MARGIN = 1
 export const WINDOW_SILL_HEIGHT = 0.92
 export const WINDOW_OPENING_HEIGHT = 1.12
 
+/** Single source for the window aperture used by both the visual selection
+ * pieces and the scalar field submitted to WASM. */
+export function windowOpeningVerticalSpan(wallHeight = WALL_SHELL_HEIGHT): { bottom: number; top: number } {
+  const bottom = Math.min(WINDOW_SILL_HEIGHT, wallHeight)
+  return { bottom, top: Math.min(bottom + WINDOW_OPENING_HEIGHT, wallHeight) }
+}
+
 export type WallShellWall = {
   id: string
   sourceIndex: number
@@ -279,8 +286,7 @@ export function buildWallShellPieces(model: WallShellModel): WallShellPiece[] {
       const end = Math.min(wall.length / 2, center + opening.width / 2)
       if (end <= start) continue
       const span = { start, end }
-      const sillHeight = Math.min(WINDOW_SILL_HEIGHT, wall.height)
-      const lintelBottom = Math.min(sillHeight + WINDOW_OPENING_HEIGHT, wall.height)
+      const { bottom: sillHeight, top: lintelBottom } = windowOpeningVerticalSpan(wall.height)
       if (sillHeight > 0) {
         const lower = fullHeightPiece(`${opening.id}-sill`, span)
         lower.y = sillHeight / 2

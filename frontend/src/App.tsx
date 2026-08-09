@@ -59,6 +59,7 @@ import { canExportCurrentThreeD } from './threeDExport'
 import { exportCurrentThreeDRevision, type ThreeDExportRevision } from './threeDExportSession'
 import { canonicalRevisionToken } from './floorplanSession'
 import { completesFinalSave } from './projectSaveCompletion'
+import { clearInitialProjectAccess } from './projectAccess'
 import { parseFailureMessage, parseNetworkFailureMessage, parseRetryFailureMessage } from './parseFeedback'
 import { e2EWasmLoader, isE2EInstrumentationEnabled, publishE2EState } from '@homevox-e2e'
 import './App.css'
@@ -254,6 +255,7 @@ export default function App() {
     frameRevision: null,
     renderer: null,
   })
+  const [linkedReviewRevision, setLinkedReviewRevision] = useState<string | null>(null)
 
   const result = parseResponse?.result ?? null
   // Pointer preview remains a 2D-only transient. Persisted canonical geometry and
@@ -300,12 +302,14 @@ export default function App() {
     canonicalRevision !== null &&
     canonicalRevision === geometryRevision
   const canOpenLinkedWorkspace = hasCanonicalGeometry && webGLAvailable && currentThreeDGeneration
+  const hasCurrentLinkedReview = canonicalRevision !== null && linkedReviewRevision === canonicalRevision
   const productFlowContext = useMemo(() => ({
     hasDocument: Boolean(durableDocument),
     hasCanonicalGeometry,
     hasThreeDGeometry: canOpenLinkedWorkspace,
-  }), [canOpenLinkedWorkspace, durableDocument, hasCanonicalGeometry])
-  const applyProductTransition = useCallback((event: Parameters<typeof productFlow.transition>[0], context = productFlowContext) => {
+    hasCurrentLinkedReview,
+  }), [canOpenLinkedWorkspace, durableDocument, hasCanonicalGeometry, hasCurrentLinkedReview])
+  const applyProductTransition = useCallback((event: Parameters<typeof productFlow.transition>[0], context: Omit<ProductFlowContext, 'completed'> = productFlowContext) => {
     transitionProductFlow(event, context)
   }, [productFlowContext, transitionProductFlow])
   const applyLoadedProject = useCallback((loaded: ProjectDetail, sourceImage: Blob) => {
@@ -857,6 +861,10 @@ export default function App() {
     setStatus('idle')
     setOriginalImageSize(null)
     setEffectiveImageSize(null)
+    setLinkedReviewRevision(null)
+    if (typeof window !== 'undefined') {
+      clearInitialProjectAccess(window.location, (path) => window.history.replaceState(null, '', path))
+    }
     clearCurrentProject()
     applyProductTransition({ type: 'reload', completed: file ? [1] : [] }, { hasDocument: false, hasCanonicalGeometry: false, hasThreeDGeometry: false })
 
@@ -1231,7 +1239,14 @@ export default function App() {
     geometryValidationError,
   }
 
-  const completeAndAdvance = (step: ProductStep, next: ProductStep) => applyProductTransition({ type: 'complete', step, next })
+  const completeAndAdvance = (step: ProductStep, next: ProductStep) => {
+    if (step === 5 && canonicalRevision !== null) {
+      setLinkedReviewRevision(canonicalRevision)
+      applyProductTransition({ type: 'complete', step, next }, { ...productFlowContext, hasCurrentLinkedReview: true })
+      return
+    }
+    applyProductTransition({ type: 'complete', step, next })
+  }
 
   const goNext = () => {
     if (activeStep === 3) completeAndAdvance(3, 4)
@@ -1256,7 +1271,7 @@ export default function App() {
         {activeStep === 3 && <TwoDWorkspace editor={editorProps} inspector={inspectorProps} snapshot={snapshot} canAdvance={canAdvance} onAdvance={goNext} />}
         {activeStep === 4 && <ThreeDConfirmation preview={threeDPreviewProps} previewAvailable={canRenderThreeDPreview} canOpenLinkedWorkspace={canOpenLinkedWorkspace} wasmState={wasmState} onBack={() => applyProductTransition({ type: 'open', step: 3 })} onComplete={() => completeAndAdvance(4, 5)} />}
         {activeStep === 5 && <LinkedWorkspace editor={editorProps} preview={threeDPreviewProps} inspector={inspectorProps} snapshot={snapshot} previewAvailable={canRenderThreeDPreview} canAdvance={canAdvance} onAdvance={goNext} onBack={() => applyProductTransition({ type: 'open', step: 3 })} />}
-        {activeStep === 6 && <ProjectSaveView projectName={projectName} currentProject={currentProject} projectMessage={projectMessage} projectMessageTone={projectMessageTone} projectBusy={projectBusy} canSave={hasCanonicalGeometry} onProjectNameChange={setProjectName} onSave={() => { void saveProject({ stage: 'final', canonicalRevision }) }} onCopyResumeLink={() => { void copyProjectResumeLink(window.location.href, (value) => navigator.clipboard.writeText(value)) }} />}
+        {activeStep === 6 && <ProjectSaveView projectName={projectName} currentProject={currentProject} projectMessage={projectMessage} projectMessageTone={projectMessageTone} projectBusy={projectBusy} canSave={hasCanonicalGeometry && hasCurrentLinkedReview} onProjectNameChange={setProjectName} onSave={() => { if (hasCurrentLinkedReview) void saveProject({ stage: 'final', canonicalRevision }) }} onCopyResumeLink={() => { void copyProjectResumeLink(window.location.href, (value) => navigator.clipboard.writeText(value)) }} />}
     </ProductShell>
   )
 }

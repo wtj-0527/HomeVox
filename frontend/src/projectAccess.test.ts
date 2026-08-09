@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   buildProjectResumeURL,
-	consumeInitialProjectAccess,
+  consumeInitialProjectAccess,
+  clearInitialProjectAccess,
   consumeProjectAccessFragment,
 	storeInitialProjectAccess,
   parseProjectAccessFragment,
@@ -60,4 +61,16 @@ describe('project capability fragment handoff', () => {
 		expect(consumeInitialProjectAccess()).toEqual(access)
 		expect(consumeInitialProjectAccess()).toBeNull()
 	})
+
+  it('drops both the startup access and URL fragment when the user replaces a failed project', () => {
+    storeInitialProjectAccess(access)
+    const replace = vi.fn()
+    clearInitialProjectAccess({
+      hash: `#project=${access.id}&cap=${access.capability}`,
+      pathname: '/',
+      search: '?e2e=instrument',
+    }, replace)
+    expect(consumeInitialProjectAccess()).toBeNull()
+    expect(replace).toHaveBeenCalledWith('/?e2e=instrument')
+  })
 })

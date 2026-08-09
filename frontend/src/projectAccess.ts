@@ -14,6 +14,11 @@ export function storeInitialProjectAccess(access: ProjectAccess | null): void {
 	initialProjectAccess = access
 }
 
+export function clearInitialProjectAccess(location: FragmentLocation, replace: (path: string) => void): void {
+  initialProjectAccess = null
+  clearProjectAccessFragment(location, replace)
+}
+
 export function consumeInitialProjectAccess(): ProjectAccess | null {
 	const access = initialProjectAccess
 	initialProjectAccess = null

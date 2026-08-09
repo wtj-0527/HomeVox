@@ -447,6 +447,15 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
 	})
 	await expect(replacementPage.getByRole('button', { name: '重试加载项目' })).toHaveCount(0)
 	await expect(replacementPage.getByRole('alert')).toHaveCount(0)
+	let staleReloadRequests = 0
+	await replacementPage.route(`**/api/projects/${createdSnapshot.id}`, (route) => {
+		if (route.request().method() === 'GET') staleReloadRequests += 1
+		return route.continue()
+	})
+	await replacementPage.reload()
+	await replacementPage.waitForTimeout(250)
+	expect(new URL(replacementPage.url()).hash).toBe('')
+	expect(staleReloadRequests).toBe(0)
 	await replacementContext.close()
 	await page.route(`**/api/projects/${createdSnapshot.id}`, (route) => route.request().method() === 'PUT'
 		? (expect(route.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true), route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'revision_conflict', message: 'project has changed' } }) }))
@@ -539,6 +548,17 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await page.getByTestId('complete-product-step').click()
   await expect(page.getByRole('button', { name: /2D\/3D 联动，已完成/ })).toBeVisible()
   await expect(page.getByRole('button', { name: /保存项目，当前步骤/ })).toBeVisible()
+  // A completed linked-review is tied to the exact canonical revision. Editing
+  // after it must revoke final-save access until the rebuilt 3D view is reviewed.
+  await page.getByRole('button', { name: /校正 2D，已完成/ }).click()
+  await page.getByTestId('opening-width').fill('61')
+  await expect(page.getByRole('button', { name: /保存项目，未解锁/ })).toBeDisabled()
+  await page.getByTestId('complete-product-step').click()
+  await expect(page.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
+  await page.getByRole('button', { name: '完成并打开 3D' }).click()
+  await waitForCurrentFrame(page)
+  await page.getByTestId('complete-product-step').click()
+  await expect(page.getByRole('button', { name: /保存项目，当前步骤/ })).toBeVisible()
   const hashes = await Promise.all(captures.map(async (path) => createHash('sha256').update(await readFile(path)).digest('hex')))
   expect(new Set(hashes).size).toBe(4)
 
@@ -553,7 +573,7 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   expect(savedProject.revision).toBe(2)
   await expect(page.getByRole('button', { name: /保存项目.*已完成/ })).toBeVisible()
   expect(savedProject.document.result.walls.find((wall) => wall.id === 'wall-1')).toEqual(editedWall)
-  expect(savedProject.document.result.windows).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'window-1', wallId: 'wall-2', width: 60 })]))
+  expect(savedProject.document.result.windows).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'window-1', wallId: 'wall-2', width: 61 })]))
 
   expect(restartURL).toBeTruthy()
   const restarted = await page.request.post(restartURL!)
@@ -582,7 +602,7 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
 	await restartedPage.getByRole('button', { name: /校正 2D，当前步骤/ }).click()
 	await expect(restartedPage.getByLabel('2D 墙体编辑器')).toBeVisible()
 	await restartedPage.getByTestId('opening-handle-window-1').click({ force: true })
-	await expect(restartedPage.getByTestId('opening-width')).toHaveValue('60')
+	await expect(restartedPage.getByTestId('opening-width')).toHaveValue('61')
 	await restartedPage.getByTestId('complete-product-step').click()
 	await expect(restartedPage.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
 	const reloadedGeometry = await e2eState(restartedPage)

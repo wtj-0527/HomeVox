@@ -81,6 +81,14 @@ HOMEVOX_FRONTEND_DIR="$PWD/frontend/dist" go -C backend run ./cmd/server
 
 部署包含 PostgreSQL 与 MinIO 持久服务，数据分别保存在 `/lzcapp/var/postgres` 和 `/lzcapp/var/minio`。数据库和对象存储使用 LazyCat `stable_secret` 生成实例内稳定密码；AI Provider 凭据不写入仓库或安装包，未配置时识别链路保持 fail-closed。
 
+### d53 历史项目恢复密钥
+
+LazyCat 安装或重新配置 HomeVox 时会要求输入 `legacy_recovery_key`（`secret`
+部署参数）。运行期将其仅映射为 `HOMEVOX_LEGACY_RECOVERY_KEY`；不要把值写入
+仓库、镜像、普通环境文件或日志。该值用于人工核验归属后调用一次性 d53
+恢复端点；未配置或不匹配时端点保持 `403` fail-closed。修改该参数需要重新配置
+应用实例，不需要也不应重新打包、安装或发布 LPK。
+
 ## 许可
 
 本项目采用 **GNU Affero General Public License v3.0 (AGPL-3.0)**。

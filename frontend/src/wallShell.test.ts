@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildWallShellModel, buildWallShellPieces, frameWallShellModel, WINDOW_OPENING_HEIGHT, WINDOW_SILL_HEIGHT } from './wallShell'
+import { buildWallShellModel, buildWallShellPieces, frameWallShellModel, windowOpeningVerticalSpan, WINDOW_OPENING_HEIGHT, WINDOW_SILL_HEIGHT } from './wallShell'
 import type { ParsedOpening } from './floorplanUi'
 
 const rectangleWalls = [
@@ -143,6 +143,10 @@ describe('3D scene framing', () => {
 })
 
 describe('3D visible wall pieces', () => {
+  it('publishes the same vertical window span for the shell overlay and voxel field', () => {
+    expect(windowOpeningVerticalSpan(2.8)).toEqual({ bottom: WINDOW_SILL_HEIGHT, top: WINDOW_SILL_HEIGHT + WINDOW_OPENING_HEIGHT })
+  })
+
   it('keeps canonical door and window spans as real holes instead of painting a solid selection shell over them', () => {
     const model = buildWallShellModel(
       rectangleWalls,

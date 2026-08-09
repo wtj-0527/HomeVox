@@ -71,6 +71,20 @@ func TestNormalizeDocumentRequiresExplicitScaleAndMetadataFields(t *testing.T) {
 	}
 }
 
+func TestNormalizeLegacyDocumentAddsOnlyHistoricalUnknownFields(t *testing.T) {
+	raw := []byte(`{"filename":"plan.png","contentType":"image/png","size":12,"result":{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px"},"metadata":{"source":"vision"}}}`)
+	doc, err := NormalizeLegacyDocument(raw, 640, 480)
+	if err != nil {
+		t.Fatalf("NormalizeLegacyDocument returned error: %v", err)
+	}
+	if doc.Result.Scale.PixelToUnit != nil || doc.Result.Metadata.Confidence != 0 {
+		t.Fatalf("legacy unknown facts were fabricated: %#v", doc.Result)
+	}
+	if doc.Result.Metadata.ImageWidth != 640 || doc.Result.Metadata.ImageHeight != 480 {
+		t.Fatalf("legacy image dimensions = %dx%d, want verified source dimensions", doc.Result.Metadata.ImageWidth, doc.Result.Metadata.ImageHeight)
+	}
+}
+
 func TestNormalizeDocumentRejectsInvalidJSON(t *testing.T) {
 	if _, err := NormalizeDocument([]byte(`invalid`)); err == nil {
 		t.Fatal("expected invalid json error")

@@ -22,6 +22,7 @@ describe('product flow', () => {
     expect(canOpenStep(5, context([1, 2, 3, 4]))).toBe(true)
     expect(canOpenStep(6, context([1, 2, 3, 4]))).toBe(false)
     expect(canOpenStep(6, context([1, 2, 3, 4, 5]))).toBe(true)
+    expect(canOpenStep(6, context([1, 2, 3, 4, 5], { hasCurrentLinkedReview: false }))).toBe(false)
   })
 
   it('does not allow an available document to bypass review transitions', () => {
@@ -60,5 +61,23 @@ describe('ProductFlowController', () => {
     expect(canApplyProductFlowEvent(state, { type: 'open', step: 5 }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false })).toBe(false)
     expect(canApplyProductFlowEvent(state, { type: 'complete', step: 5, next: 6 }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false })).toBe(false)
     expect(canApplyProductFlowEvent(state, { type: 'complete', step: 5, next: 6 }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: true })).toBe(true)
+  })
+
+  it('does not admit final save after a canonical edit invalidates the reviewed 3D revision', () => {
+    const state = { activeStep: 5 as const, completed: [1, 2, 3, 4] as ProductFlowContext['completed'] }
+    const reviewed = transitionProductFlow(state, { type: 'complete', step: 5, next: 6 }, {
+      hasDocument: true,
+      hasCanonicalGeometry: true,
+      hasThreeDGeometry: true,
+      hasCurrentLinkedReview: true,
+    })
+    expect(reviewed).toEqual({ activeStep: 6, completed: [1, 2, 3, 4, 5] })
+    expect(canOpenStep(6, {
+      completed: reviewed.completed,
+      hasDocument: true,
+      hasCanonicalGeometry: true,
+      hasThreeDGeometry: true,
+      hasCurrentLinkedReview: false,
+    })).toBe(false)
   })
 })

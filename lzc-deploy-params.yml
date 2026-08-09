@@ -1,1 +1,5 @@
-params: []
+params:
+  - id: legacy_recovery_key
+    type: secret
+    name: "Legacy recovery key"
+    description: "Operator-only key for one-time d53 legacy-project recovery. Leave this secret out of source control and ordinary logs."

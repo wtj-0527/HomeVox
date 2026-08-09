@@ -42,7 +42,8 @@ type ProjectRepository interface {
 	Create(ctx context.Context, id, capabilityHash, name, sourceImageKey, sourceImageContentType string, sourceImageSize int64, document json.RawMessage) (Project, error)
 	Get(ctx context.Context, id, capabilityHash string) (Project, error)
 	Update(ctx context.Context, id, capabilityHash string, expectedRevision int, name string, document json.RawMessage) (Project, error)
-	RecoverLegacy(ctx context.Context, id, capabilityHash, actor string) (Project, error)
+	LegacyRecoveryCandidate(ctx context.Context, id string) (Project, error)
+	RecoverLegacy(ctx context.Context, id, capabilityHash, actor string, document json.RawMessage) (Project, error)
 }
 
 type PostgresRepository struct {
@@ -214,12 +215,29 @@ RETURNING id, name, source_image_key, source_image_content_type, source_image_si
 	return normalizeProjectTimes(updated), nil
 }
 
-func (r *PostgresRepository) RecoverLegacy(ctx context.Context, id, capabilityHash, actor string) (Project, error) {
+func (r *PostgresRepository) LegacyRecoveryCandidate(ctx context.Context, id string) (Project, error) {
+	var candidate Project
+	err := r.pool.QueryRow(ctx, `
+SELECT id, name, source_image_key, source_image_content_type, source_image_size, revision, document, created_at, updated_at
+FROM projects WHERE id = $1;`, id).Scan(
+		&candidate.ID, &candidate.Name, &candidate.SourceImageKey, &candidate.SourceImageContentType,
+		&candidate.SourceImageSize, &candidate.Revision, &candidate.Document, &candidate.CreatedAt, &candidate.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Project{}, ErrProjectNotFound
+	}
+	if err != nil {
+		return Project{}, fmt.Errorf("get legacy recovery candidate: %w", err)
+	}
+	return normalizeProjectTimes(candidate), nil
+}
+
+func (r *PostgresRepository) RecoverLegacy(ctx context.Context, id, capabilityHash, actor string, document json.RawMessage) (Project, error) {
 	var recovered Project
 	err := r.pool.QueryRow(ctx, `
 WITH claimed AS (
   UPDATE projects AS project
-  SET capability_hash = $2
+  SET capability_hash = $2, document = $4
   WHERE project.id = $1
     AND NOT EXISTS (SELECT 1 FROM legacy_project_recovery_audit audit WHERE audit.project_id = project.id)
     AND (
@@ -235,7 +253,7 @@ WITH claimed AS (
 ), audit AS (
   INSERT INTO legacy_project_recovery_audit (project_id, actor) SELECT id, $3 FROM claimed
 )
-SELECT id, name, source_image_key, source_image_content_type, source_image_size, revision, document, created_at, updated_at FROM claimed;`, id, capabilityHash, actor).Scan(&recovered.ID, &recovered.Name, &recovered.SourceImageKey, &recovered.SourceImageContentType, &recovered.SourceImageSize, &recovered.Revision, &recovered.Document, &recovered.CreatedAt, &recovered.UpdatedAt)
+SELECT id, name, source_image_key, source_image_content_type, source_image_size, revision, document, created_at, updated_at FROM claimed;`, id, capabilityHash, actor, document).Scan(&recovered.ID, &recovered.Name, &recovered.SourceImageKey, &recovered.SourceImageContentType, &recovered.SourceImageSize, &recovered.Revision, &recovered.Document, &recovered.CreatedAt, &recovered.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Project{}, ErrProjectNotFound
 	}

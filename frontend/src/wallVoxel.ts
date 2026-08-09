@@ -4,6 +4,7 @@ import {
   buildWallShellModel,
   WALL_SHELL_HEIGHT,
   WALL_SHELL_THICKNESS,
+  windowOpeningVerticalSpan,
 } from './wallShell'
 
 export const WALL_VOXEL_GRID_SIZE = 17
@@ -105,7 +106,7 @@ export function buildWallVoxelModel(walls: readonly WallSegment[], doors: readon
           )
         }
         // Openings subtract from the same local-wall model. Doors reach the floor;
-        // windows cut only their wall face at a non-persisted preview elevation.
+        // windows use the same aperture definition as selection shell pieces.
         for (const opening of shell.openings) {
           const cos = Math.cos(opening.rotationY)
           const sin = Math.sin(opening.rotationY)
@@ -114,8 +115,9 @@ export function buildWallVoxelModel(walls: readonly WallSegment[], doors: readon
           const localX = cos * dx - sin * dz
           const localZ = sin * dx + cos * dz
           const halfWidth = opening.width / 2
-          const openingHeight = opening.kind === 'door' ? WALL_SHELL_HEIGHT : WALL_SHELL_HEIGHT * 0.42
-          const centerY = opening.kind === 'door' ? openingHeight / 2 : WALL_SHELL_HEIGHT * 0.62
+          const windowSpan = windowOpeningVerticalSpan(WALL_SHELL_HEIGHT)
+          const openingHeight = opening.kind === 'door' ? WALL_SHELL_HEIGHT : windowSpan.top - windowSpan.bottom
+          const centerY = opening.kind === 'door' ? openingHeight / 2 : windowSpan.bottom + openingHeight / 2
           const cut = -signedBoxDistance(
             localX,
             y - centerY,

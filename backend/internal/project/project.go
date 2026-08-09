@@ -73,6 +73,54 @@ func NormalizeDocument(raw json.RawMessage) (floorplan.ParseResponse, error) {
 	return doc, nil
 }
 
+// NormalizeLegacyDocument upgrades only the historically omitted durable
+// fields before applying the current strict schema. Source dimensions come
+// from the verified stored image, never from an inferred floorplan.
+func NormalizeLegacyDocument(raw json.RawMessage, imageWidth, imageHeight int) (floorplan.ParseResponse, error) {
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil || document == nil {
+		if err != nil {
+			return floorplan.ParseResponse{}, fmt.Errorf("invalid legacy document JSON: %w", err)
+		}
+		return floorplan.ParseResponse{}, errors.New("legacy document must be an object")
+	}
+	result, ok := document["result"].(map[string]any)
+	if !ok || result == nil {
+		return floorplan.ParseResponse{}, errors.New("legacy document result is required")
+	}
+	scale, ok := result["scale"].(map[string]any)
+	if !ok || scale == nil {
+		return floorplan.ParseResponse{}, errors.New("legacy document scale is required")
+	}
+	if _, exists := scale["unit"]; !exists {
+		scale["unit"] = "px"
+	}
+	if _, exists := scale["pixel_to_unit"]; !exists {
+		scale["pixel_to_unit"] = nil
+	}
+	metadata, ok := result["metadata"].(map[string]any)
+	if !ok || metadata == nil {
+		return floorplan.ParseResponse{}, errors.New("legacy document metadata is required")
+	}
+	if source, exists := metadata["source"].(string); !exists || strings.TrimSpace(source) == "" {
+		metadata["source"] = "legacy_unconfirmed"
+	}
+	if _, exists := metadata["confidence"]; !exists {
+		metadata["confidence"] = 0
+	}
+	if _, exists := metadata["image_width"]; !exists {
+		metadata["image_width"] = imageWidth
+	}
+	if _, exists := metadata["image_height"]; !exists {
+		metadata["image_height"] = imageHeight
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return floorplan.ParseResponse{}, fmt.Errorf("encode legacy document: %w", err)
+	}
+	return NormalizeDocument(encoded)
+}
+
 func validateDocumentEnvelope(doc floorplan.ParseResponse) error {
 	if strings.TrimSpace(doc.Filename) == "" {
 		return errors.New("document filename is required")

@@ -156,12 +156,41 @@ func registerProjectRoutes(router *gin.Engine, deps projectDependencies) {
 			writeProjectError(c, http.StatusBadRequest, "invalid_project_id", "id must be UUID")
 			return
 		}
+		candidate, err := deps.repo.LegacyRecoveryCandidate(c.Request.Context(), id)
+		if err != nil {
+			if err == db.ErrProjectNotFound {
+				writeProjectError(c, http.StatusNotFound, "legacy_project_not_found", "legacy project not found or already recovered")
+				return
+			}
+			writeProjectError(c, http.StatusServiceUnavailable, "database_unavailable", "failed to inspect legacy project")
+			return
+		}
+		sourceObject, err := deps.store.GetObject(c.Request.Context(), candidate.SourceImageKey)
+		if err != nil {
+			writeProjectError(c, http.StatusServiceUnavailable, "storage_unavailable", "failed to verify source image")
+			return
+		}
+		contentType, width, height, err := imagevalidate.Decode(sourceObject.Data)
+		if err != nil || contentType != candidate.SourceImageContentType || int64(len(sourceObject.Data)) != candidate.SourceImageSize {
+			writeProjectError(c, http.StatusInternalServerError, "corrupt_source_image", "stored source image is inconsistent")
+			return
+		}
+		normalized, err := project.NormalizeLegacyDocument(candidate.Document, width, height)
+		if err != nil {
+			writeProjectError(c, http.StatusInternalServerError, "corrupt_project_document", "failed to decode project document")
+			return
+		}
+		normalizedDocument, err := json.Marshal(normalized)
+		if err != nil {
+			writeProjectError(c, http.StatusInternalServerError, "corrupt_project_document", "failed to encode project document")
+			return
+		}
 		capability, err := newProjectCapability()
 		if err != nil {
 			writeProjectError(c, http.StatusServiceUnavailable, "persistence_unavailable", "failed to allocate project capability")
 			return
 		}
-		recovered, err := deps.repo.RecoverLegacy(c.Request.Context(), id, hashProjectCapability(capability), c.ClientIP())
+		recovered, err := deps.repo.RecoverLegacy(c.Request.Context(), id, hashProjectCapability(capability), c.ClientIP(), normalizedDocument)
 		if err != nil {
 			if err == db.ErrProjectNotFound {
 				writeProjectError(c, http.StatusNotFound, "legacy_project_not_found", "legacy project not found or already recovered")
