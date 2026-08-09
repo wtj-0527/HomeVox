@@ -1,5 +1,6 @@
 import type { ParseResponse } from './floorplanUi'
 import { buildProjectResumeURL, clearProjectAccessFragment, consumeInitialProjectAccess, type ProjectAccess } from './projectAccess'
+import type { ProjectSaveIntent } from './projectSaveCompletion'
 import {
   createProject,
   fetchProjectSourceImage,
@@ -74,7 +75,7 @@ export type ProjectSession = {
   projectBusy: ProjectBusy
   setProjectName: (name: string) => void
   clearCurrentProject: () => void
-  saveProject: () => Promise<void>
+  saveProject: (intent?: ProjectSaveIntent) => Promise<void>
   loadProject: (access: ProjectAccess) => Promise<void>
 	loadInitialProject: () => Promise<void>
   reloadProject: () => Promise<void>
@@ -103,7 +104,7 @@ export function createProjectSession({
   projectName: () => string
   currentProject: () => ProjectDetail | null
   initialAccess: ProjectAccess | null
-  onProjectSaved: (project: ProjectDetail) => void
+  onProjectSaved: (project: ProjectDetail, intent: ProjectSaveIntent) => void
   onProjectLoaded: (project: ProjectDetail, sourceImage: Blob) => void
   onState: (next: Partial<Pick<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy'>>) => void
 }, dependencies: ProjectSessionDependencies = defaultProjectSessionDependencies): Omit<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy' | 'setProjectName' | 'clearCurrentProject'> {
@@ -146,7 +147,7 @@ export function createProjectSession({
   }
 
   return {
-    async saveProject() {
+    async saveProject(intent: ProjectSaveIntent = { stage: 'snapshot', canonicalRevision: null }) {
       const issue = projectSaveIssue({
         document: document(),
         geometryValidationError: geometryValidationError(),
@@ -188,7 +189,7 @@ export function createProjectSession({
           projectMessage: existing ? '项目已保存' : '项目已创建',
           projectMessageTone: 'success',
         })
-        onProjectSaved(saved)
+        onProjectSaved(saved, intent)
       } catch (error) {
         if (!active.controller.signal.aborted && isCurrent(active)) onState({
           projectMessage: error instanceof ProjectAPIError && error.code === 'revision_conflict'

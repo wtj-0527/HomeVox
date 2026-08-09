@@ -91,6 +91,17 @@ CREATE TABLE IF NOT EXISTS legacy_project_recovery_audit (
     actor text NOT NULL
 );
 
+-- d53b949 replaced NULL legacy capabilities with random digests. Those digests
+-- are indistinguishable from real bearer hashes, so they are recoverable only
+-- after an operator records the exact observed digest and case reference.
+CREATE TABLE IF NOT EXISTS legacy_project_recovery_authorizations (
+    project_id uuid PRIMARY KEY REFERENCES projects(id),
+    retired_capability_hash text NOT NULL CHECK (retired_capability_hash ~ '^[0-9a-f]{64}$'),
+    authorized_at timestamptz NOT NULL DEFAULT timezone('UTC', now()),
+    authorized_by text NOT NULL,
+    case_reference text NOT NULL
+);
+
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -207,8 +218,20 @@ func (r *PostgresRepository) RecoverLegacy(ctx context.Context, id, capabilityHa
 	var recovered Project
 	err := r.pool.QueryRow(ctx, `
 WITH claimed AS (
-  UPDATE projects SET capability_hash = $2 WHERE id = $1 AND capability_hash IS NULL
-  RETURNING id, name, source_image_key, source_image_content_type, source_image_size, revision, document, created_at, updated_at
+  UPDATE projects AS project
+  SET capability_hash = $2
+  WHERE project.id = $1
+    AND NOT EXISTS (SELECT 1 FROM legacy_project_recovery_audit audit WHERE audit.project_id = project.id)
+    AND (
+      project.capability_hash IS NULL
+      OR EXISTS (
+        SELECT 1
+        FROM legacy_project_recovery_authorizations authorization
+        WHERE authorization.project_id = project.id
+          AND authorization.retired_capability_hash = project.capability_hash
+      )
+    )
+  RETURNING project.id, project.name, project.source_image_key, project.source_image_content_type, project.source_image_size, project.revision, project.document, project.created_at, project.updated_at
 ), audit AS (
   INSERT INTO legacy_project_recovery_audit (project_id, actor) SELECT id, $3 FROM claimed
 )

@@ -121,14 +121,31 @@ describe('ProjectSession controller', () => {
     pendingCreate.resolve({ project, capability })
     await createRequest
     expect(create.onProjectSaved).toHaveBeenCalledOnce()
-    expect(create.onProjectSaved).toHaveBeenCalledWith(project)
+    expect(create.onProjectSaved).toHaveBeenCalledWith(project, { stage: 'snapshot', canonicalRevision: null })
 
     const update = sessionHarness({ currentProject: project, sourceFile: null })
     await update.controller.saveProject()
     expect(update.dependencies.updateProject).toHaveBeenCalledWith(project.id, capability, 'Home', document, project.revision, expect.any(AbortSignal))
     expect(update.dependencies.createProject).not.toHaveBeenCalled()
     expect(update.onProjectSaved).toHaveBeenCalledOnce()
-    expect(update.onProjectSaved).toHaveBeenCalledWith({ ...project, revision: 3 })
+    expect(update.onProjectSaved).toHaveBeenCalledWith({ ...project, revision: 3 }, { stage: 'snapshot', canonicalRevision: null })
+  })
+
+
+  it('preserves the save intent captured at request start across a deferred response', async () => {
+    const pending = deferred<ProjectDetail>()
+    const update = sessionHarness({
+      currentProject: project,
+      sourceFile: null,
+      dependencies: { updateProject: vi.fn().mockReturnValue(pending.promise) },
+    })
+    const request = update.controller.saveProject({ stage: 'snapshot', canonicalRevision: 'step-3-revision' })
+    pending.resolve({ ...project, revision: 3 })
+    await request
+    expect(update.onProjectSaved).toHaveBeenCalledWith(
+      { ...project, revision: 3 },
+      { stage: 'snapshot', canonicalRevision: 'step-3-revision' },
+    )
   })
 
   it('publishes a safe revision-conflict state that can be recovered by loading the latest project', async () => {

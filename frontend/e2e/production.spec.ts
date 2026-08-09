@@ -12,7 +12,8 @@ const fixturePNG = Buffer.from(
 test.use({ baseURL, viewport: { width: 1440, height: 960 } })
 
 type E2EState = {
-  geometry: { positionCount: number; normalCount: number; finite: boolean; fingerprint: number }
+  geometry: { positionCount: number; normalCount: number; finite: boolean; fingerprint: number; meshVertexCountByWall: Record<string, number> }
+  wasm: { state: string; fallback: string | null }
   threeD: {
     canonicalRevision: string | null
     geometryRevision: string | null
@@ -408,9 +409,20 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
 	const visionRequestCountBeforeResume = visionFactsBeforeResume.length
 	const independentContext = await browser.newContext()
 	const independentPage = await independentContext.newPage()
+	let failFirstResume = true
+	await independentPage.route(`**/api/projects/${createdSnapshot.id}`, (route) => {
+		if (route.request().method() === 'GET' && failFirstResume) {
+			failFirstResume = false
+			return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: 'controlled resume outage' } }) })
+		}
+		return route.continue()
+	})
+	await independentPage.goto(`/?e2e=instrument#project=${createdSnapshot.id}&cap=${createdSnapshot.capability}`)
+	await expect(independentPage.getByRole('alert')).toContainText('项目加载失败')
+	await expect(independentPage.getByRole('button', { name: '重试加载项目' })).toBeVisible()
 	const independentProjectGet = independentPage.waitForRequest((request) => request.url().endsWith(`/api/projects/${createdSnapshot.id}`) && request.method() === 'GET')
 	const independentSourceGet = independentPage.waitForRequest((request) => request.url().endsWith(`/api/projects/${createdSnapshot.id}/source-image`) && request.method() === 'GET')
-	await independentPage.goto(`/?e2e=instrument#project=${createdSnapshot.id}&cap=${createdSnapshot.capability}`)
+	await independentPage.getByRole('button', { name: '重试加载项目' }).click()
 	await expect(independentPage.getByLabel('2D 墙体编辑器')).toBeVisible()
 	const independentProjectRequest = await independentProjectGet
 	const independentSourceRequest = await independentSourceGet
@@ -565,6 +577,30 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   expect(accessibility).not.toMatch(/(?:WASM|Grid|triangles|fallback|结构化 JSON)/i)
   await expect(restartedPage.locator('pre')).toHaveCount(0)
   await restartedContext.close()
+})
+
+test('meshes the short parallel wall through the compiled Rust/WASM path', async ({ page }) => {
+  const mixedOrientation: ParseFixture = {
+    ...canonicalFixture,
+    result: {
+      ...canonicalFixture.result,
+      walls: [
+        ...canonicalFixture.result.walls,
+        { id: 'long-interior', x1: 80, y1: 140, x2: 520, y2: 140 },
+        { id: 'short-parallel', x1: 240, y1: 260, x2: 360, y2: 260 },
+        { id: 'diagonal', x1: 360, y1: 200, x2: 450, y2: 290 },
+      ],
+      doors: [], windows: [],
+      metadata: canonicalFixture.result.metadata,
+    },
+  }
+  await page.route('**/api/floorplans/parse', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(mixedOrientation) }))
+  await page.goto('/?e2e=instrument')
+  await uploadAndParse(page)
+  await expect.poll(async () => (await e2eState(page)).wasm.state).toBe('active')
+  const state = await e2eState(page)
+  expect(state.geometry.finite).toBe(true)
+  expect(state.geometry.meshVertexCountByWall['short-parallel']).toBeGreaterThan(0)
 })
 
 test('keeps a selected composite candidate and adjusted crop after parse failure', async ({ page }) => {

@@ -58,6 +58,7 @@ import { useThreeDGenerationController } from './useThreeDGenerationController'
 import { canExportCurrentThreeD } from './threeDExport'
 import { exportCurrentThreeDRevision, type ThreeDExportRevision } from './threeDExportSession'
 import { canonicalRevisionToken } from './floorplanSession'
+import { completesFinalSave } from './projectSaveCompletion'
 import { parseFailureMessage, parseNetworkFailureMessage, parseRetryFailureMessage } from './parseFeedback'
 import { e2EWasmLoader, isE2EInstrumentationEnabled, publishE2EState } from '@homevox-e2e'
 import './App.css'
@@ -228,7 +229,7 @@ export default function App() {
   const [wasmGeometry, setWasmGeometry] = useState<BufferGeometry | null>(null)
   const [wasmState, setWasmState] = useState<'idle' | 'loading' | 'active' | 'fallback'>('idle')
   const [wasmMetrics, setWasmMetrics] = useState<MarchingCubesMetrics | null>(null)
-  const [, setWasmFallback] = useState<WasmFallbackReason | null>(null)
+  const [wasmFallback, setWasmFallback] = useState<WasmFallbackReason | null>(null)
   const webGLAvailable = useMemo(hasWebGLSupport, [])
   const exportSequenceRef = useRef(0)
 
@@ -338,8 +339,8 @@ export default function App() {
 		document: durableDocument,
 		geometryValidationError,
 		sourceFile: effectiveSource,
-    onProjectSaved: () => {
-      if (activeStep === 6) applyProductTransition({ type: 'complete', step: 6 }, productFlowContext)
+    onProjectSaved: (_project, intent) => {
+      if (completesFinalSave(activeStep, canonicalRevision, intent)) applyProductTransition({ type: 'complete', step: 6 }, productFlowContext)
     },
     onProjectLoaded: applyLoadedProject,
   })
@@ -417,12 +418,25 @@ export default function App() {
     publishE2EState({
       generation: wasmGenerationRef.current,
       wasmCalls: wasmCallsRef.current,
+      wasm: { state: wasmState, fallback: wasmFallback },
       metrics: wasmMetrics,
       geometry: {
         positionCount: positions?.count ?? 0,
         normalCount: normals?.count ?? 0,
         finite,
         fingerprint,
+        meshVertexCountByWall: positions ? Object.fromEntries(wallShellModel.walls.map((wall) => {
+          const tolerance = Math.max(...wallVoxelModel?.spacing ?? [0, 0, 0])
+          let count = 0
+          for (let index = 0; index < positions.array.length; index += 3) {
+            const dx = positions.array[index] - wall.x
+            const dz = positions.array[index + 2] - wall.z
+            const localX = Math.cos(wall.rotationY) * dx - Math.sin(wall.rotationY) * dz
+            const localZ = Math.sin(wall.rotationY) * dx + Math.cos(wall.rotationY) * dz
+            if (Math.abs(localX) <= wall.length / 2 + tolerance && Math.abs(localZ) <= wall.thickness / 2 + tolerance) count += 1
+          }
+          return [wall.id, count]
+        })) : {},
       },
       threeD: {
         canonicalRevision,
@@ -448,7 +462,7 @@ export default function App() {
         width: opening.width ?? null,
       })),
     })
-  }, [canonicalRevision, currentProject, currentThreeDGeneration, frameRevision, geometryRevision, openings, selectedOpeningID, selectedWallID, threeRenderer, walls, wasmGeometry, wasmMetrics, wasmState])
+  }, [canonicalRevision, currentProject, currentThreeDGeneration, frameRevision, geometryRevision, openings, selectedOpeningID, selectedWallID, threeRenderer, wallShellModel.walls, wallVoxelModel?.spacing, walls, wasmFallback, wasmGeometry, wasmMetrics, wasmState])
 
   function buildScopeFileName(scope: '2d' | '3d'): string {
     exportSequenceRef.current += 1
@@ -1197,7 +1211,7 @@ export default function App() {
     canSave: hasCanonicalGeometry,
     message: projectMessage,
     messageTone: projectMessageTone,
-    onSave: () => { void saveProject() },
+    onSave: () => { void saveProject({ stage: 'snapshot', canonicalRevision }) },
     onReload: () => { void reloadProject() },
 		onCopyResumeLink: () => { void copyProjectResumeLink(window.location.href, (value) => navigator.clipboard.writeText(value)) },
   }
@@ -1237,12 +1251,12 @@ export default function App() {
 
   return (
     <ProductShell activeStep={activeStep} completedSteps={completedSteps} flow={flow} hasDocument={Boolean(durableDocument)} onOpenStep={(step) => applyProductTransition({ type: 'open', step })} primaryAction={primaryAction}>
-        {activeStep === 1 && <SourceImportView selectedFile={originalSource} previewURL={originalPreviewURL} onFileChange={handleFileChange} status={status} error={error} />}
+        {activeStep === 1 && <SourceImportView selectedFile={originalSource} previewURL={originalPreviewURL} onFileChange={handleFileChange} status={status} error={error} projectMessage={projectMessage} projectMessageTone={projectMessageTone} projectBusy={projectBusy} onRetryProjectLoad={() => { void reloadProject() }} />}
         {activeStep === 2 && (crop ? <CropConfirmView selectedFile={originalSource} previewURL={originalPreviewURL} onFileChange={handleFileChange} imageSize={originalImageSize} detection={candidateDetection} crop={crop} status={status} error={error} onCropChange={(next) => originalImageSize && setCrop(clampCrop(next, originalImageSize))} onSelectCandidate={(index) => { if (originalImageSize) { const next = selectCandidate(candidateDetection?.candidates ?? [], index, originalImageSize); if (next) setCrop(next) } }} onRestoreRecommended={() => { if (originalImageSize) { const next = selectCandidate(candidateDetection?.candidates ?? [], 0, originalImageSize); setCrop(next ?? fullImageCrop(originalImageSize)) } }} onResetFullImage={() => originalImageSize && setCrop(fullImageCrop(originalImageSize))} onConfirm={() => { void confirmCrop() }} /> : <AIParseView selectedFile={originalSource} previewURL={originalPreviewURL} onFileChange={handleFileChange} status={status} error={error} />)}
         {activeStep === 3 && <TwoDWorkspace editor={editorProps} inspector={inspectorProps} snapshot={snapshot} canAdvance={canAdvance} onAdvance={goNext} />}
         {activeStep === 4 && <ThreeDConfirmation preview={threeDPreviewProps} previewAvailable={canRenderThreeDPreview} canOpenLinkedWorkspace={canOpenLinkedWorkspace} wasmState={wasmState} onBack={() => applyProductTransition({ type: 'open', step: 3 })} onComplete={() => completeAndAdvance(4, 5)} />}
         {activeStep === 5 && <LinkedWorkspace editor={editorProps} preview={threeDPreviewProps} inspector={inspectorProps} snapshot={snapshot} previewAvailable={canRenderThreeDPreview} canAdvance={canAdvance} onAdvance={goNext} onBack={() => applyProductTransition({ type: 'open', step: 3 })} />}
-        {activeStep === 6 && <ProjectSaveView projectName={projectName} currentProject={currentProject} projectMessage={projectMessage} projectMessageTone={projectMessageTone} projectBusy={projectBusy} canSave={hasCanonicalGeometry} onProjectNameChange={setProjectName} onSave={() => { void saveProject() }} onCopyResumeLink={() => { void copyProjectResumeLink(window.location.href, (value) => navigator.clipboard.writeText(value)) }} />}
+        {activeStep === 6 && <ProjectSaveView projectName={projectName} currentProject={currentProject} projectMessage={projectMessage} projectMessageTone={projectMessageTone} projectBusy={projectBusy} canSave={hasCanonicalGeometry} onProjectNameChange={setProjectName} onSave={() => { void saveProject({ stage: 'final', canonicalRevision }) }} onCopyResumeLink={() => { void copyProjectResumeLink(window.location.href, (value) => navigator.clipboard.writeText(value)) }} />}
     </ProductShell>
   )
 }

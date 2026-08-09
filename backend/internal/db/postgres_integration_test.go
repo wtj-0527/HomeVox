@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"regexp"
 	"testing"
 	"time"
 
@@ -94,7 +93,7 @@ func TestPostgresRepositoryLifecycle(t *testing.T) {
 	}
 }
 
-func TestInitializeSchemaRetiresLegacyProjectsAndConstrainsCapabilityHash(t *testing.T) {
+func TestInitializeSchemaRecoversAuthorizedD53LegacyProjectWithoutTouchingBearerProjects(t *testing.T) {
 	dsn := mustTestDatabaseURL(t)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
@@ -103,6 +102,11 @@ func TestInitializeSchemaRetiresLegacyProjectsAndConstrainsCapabilityHash(t *tes
 	}
 	defer pool.Close()
 
+	const legacyID = "00000000-0000-4000-8000-000000000099"
+	const bearerID = "00000000-0000-4000-8000-000000000098"
+	const retiredHash = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	const bearerHash = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	const recoveredHash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS projects CASCADE;
 CREATE TABLE projects (
     id uuid PRIMARY KEY,
@@ -113,36 +117,47 @@ CREATE TABLE projects (
     document jsonb NOT NULL,
     revision integer NOT NULL DEFAULT 1,
     created_at timestamptz NOT NULL DEFAULT timezone('UTC', now()),
-    updated_at timestamptz NOT NULL DEFAULT timezone('UTC', now())
+    updated_at timestamptz NOT NULL DEFAULT timezone('UTC', now()),
+    capability_hash text NOT NULL
 );
-INSERT INTO projects (id, name, source_image_key, source_image_content_type, source_image_size, document)
-VALUES ('00000000-0000-4000-8000-000000000099', 'Legacy', 'legacy/source.png', 'image/png', 12, '{}');`); err != nil {
-		t.Fatalf("create legacy schema: %v", err)
+INSERT INTO projects (id, capability_hash, name, source_image_key, source_image_content_type, source_image_size, document) VALUES
+('00000000-0000-4000-8000-000000000099', '`+retiredHash+`', 'd53 legacy', 'legacy/source.png', 'image/png', 12, '{}'),
+('00000000-0000-4000-8000-000000000098', '`+bearerHash+`', 'bearer project', 'bearer/source.png', 'image/png', 12, '{}');`); err != nil {
+		t.Fatalf("create d53 schema: %v", err)
 	}
 
 	repo := &PostgresRepository{pool: pool}
 	if err := repo.InitializeSchema(ctx); err != nil {
-		t.Fatalf("migrate legacy schema: %v", err)
+		t.Fatalf("migrate d53 schema: %v", err)
 	}
-	if err := repo.InitializeSchema(ctx); err != nil {
-		t.Fatalf("repeat legacy migration: %v", err)
+	if _, err := repo.RecoverLegacy(ctx, legacyID, recoveredHash, "operator"); err != ErrProjectNotFound {
+		t.Fatalf("unauthorized d53 recovery = %v, want ErrProjectNotFound", err)
 	}
-	var nullable string
-	if err := pool.QueryRow(ctx, `SELECT is_nullable FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'capability_hash'`).Scan(&nullable); err != nil {
-		t.Fatalf("read capability nullability: %v", err)
+	if _, err := pool.Exec(ctx, `INSERT INTO legacy_project_recovery_authorizations (project_id, retired_capability_hash, authorized_by, case_reference) VALUES ($1, $2, 'operator', 'INC-19')`, legacyID, retiredHash); err != nil {
+		t.Fatalf("authorize d53 recovery: %v", err)
 	}
-	if nullable != "NO" {
-		t.Fatalf("capability_hash nullable = %s, want NO", nullable)
+	recovered, err := repo.RecoverLegacy(ctx, legacyID, recoveredHash, "operator")
+	if err != nil {
+		t.Fatalf("recover authorized d53 project: %v", err)
 	}
-	var hash string
-	if err := pool.QueryRow(ctx, `SELECT capability_hash FROM projects WHERE id = '00000000-0000-4000-8000-000000000099'`).Scan(&hash); err != nil {
-		t.Fatalf("read retired legacy hash: %v", err)
+	if recovered.ID != legacyID {
+		t.Fatalf("recovered id = %s, want %s", recovered.ID, legacyID)
 	}
-	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(hash) {
-		t.Fatalf("legacy hash = %q, want retired random digest", hash)
+	if _, err := repo.Get(ctx, legacyID, recoveredHash); err != nil {
+		t.Fatalf("get recovered project: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO projects (id, capability_hash, name, source_image_key, source_image_content_type, source_image_size, document) VALUES ('00000000-0000-4000-8000-000000000098', 'invalid', 'Invalid', 'invalid/source.png', 'image/png', 12, '{}')`); err == nil {
-		t.Fatal("invalid capability hash should violate database constraint")
+	if _, err := repo.RecoverLegacy(ctx, bearerID, recoveredHash, "operator"); err != ErrProjectNotFound {
+		t.Fatalf("bearer recovery = %v, want ErrProjectNotFound", err)
+	}
+	if _, err := repo.Get(ctx, bearerID, bearerHash); err != nil {
+		t.Fatalf("bearer project was changed: %v", err)
+	}
+	var auditCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM legacy_project_recovery_audit WHERE project_id = $1`, legacyID).Scan(&auditCount); err != nil {
+		t.Fatalf("read recovery audit: %v", err)
+	}
+	if auditCount != 1 {
+		t.Fatalf("recovery audit count = %d, want 1", auditCount)
 	}
 }
 

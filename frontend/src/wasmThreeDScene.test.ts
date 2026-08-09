@@ -36,4 +36,3 @@ describe('visible WASM 3D scene contract', () => {
     expect(nearestWasmWallID(model, 3.02, 2.7)).toBe('wall-b')
   })
 })
-

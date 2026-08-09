@@ -8,7 +8,7 @@ type ProjectSessionOptions = {
   geometryValidationError: string | null
   sourceFile: File | null
 
-  onProjectSaved: (project: ProjectDetail) => void
+  onProjectSaved: (project: ProjectDetail, intent: import('./projectSaveCompletion').ProjectSaveIntent) => void
   onProjectLoaded: (project: ProjectDetail, sourceImage: Blob) => void
 }
 
@@ -50,7 +50,7 @@ export function useProjectSession(options: ProjectSessionOptions): UseProjectSes
       projectName: () => stateRef.current.projectName,
       currentProject: () => stateRef.current.currentProject,
 		initialAccess: null,
-      onProjectSaved: (project) => savedRef.current(project),
+      onProjectSaved: (project, intent) => savedRef.current(project, intent),
       onProjectLoaded: (project, sourceImage) => loadedRef.current(project, sourceImage),
       onState: (next) => {
         setState((current) => ({ ...current, ...next }))
