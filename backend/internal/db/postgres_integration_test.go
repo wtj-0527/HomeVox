@@ -168,6 +168,6 @@ func truncateProjectsTable(ctx context.Context, dsn string) error {
 	}
 	defer pool.Close()
 
-	_, err = pool.Exec(ctx, `TRUNCATE TABLE projects;`)
+	_, err = pool.Exec(ctx, `TRUNCATE TABLE projects CASCADE;`)
 	return err
 }

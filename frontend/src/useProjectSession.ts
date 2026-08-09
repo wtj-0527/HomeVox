@@ -69,7 +69,12 @@ export function useProjectSession(options: ProjectSessionOptions): UseProjectSes
     setProjectName: (projectName: string) => setState((current) => ({ ...current, projectName })),
     clearCurrentProject: () => {
       controller.clearAccess()
-      setState((current) => ({ ...current, currentProject: null }))
+      setState((current) => ({
+        ...current,
+        currentProject: null,
+        projectMessage: '',
+        projectMessageTone: 'success',
+      }))
     },
     saveProject: controller.saveProject,
     loadProject: controller.loadProject,

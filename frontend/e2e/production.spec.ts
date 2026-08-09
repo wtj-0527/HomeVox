@@ -432,6 +432,22 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
 	const visionFactsAfterResume = await (await independentPage.request.get(visionURL.toString())).json() as unknown[]
 	expect(visionFactsAfterResume).toHaveLength(visionRequestCountBeforeResume)
 	await independentContext.close()
+	const replacementContext = await browser.newContext()
+	const replacementPage = await replacementContext.newPage()
+	await replacementPage.route(`**/api/projects/${createdSnapshot.id}`, (route) => route.request().method() === 'GET'
+		? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: 'controlled replacement outage' } }) })
+		: route.continue())
+	await replacementPage.goto(`/?e2e=instrument#project=${createdSnapshot.id}&cap=${createdSnapshot.capability}`)
+	await expect(replacementPage.getByRole('alert')).toContainText('项目加载失败')
+	await expect(replacementPage.getByRole('button', { name: '重试加载项目' })).toBeVisible()
+	await replacementPage.locator('input[type="file"]').first().setInputFiles({
+		name: 'replacement-floorplan.png',
+		mimeType: 'image/png',
+		buffer: fixturePNG,
+	})
+	await expect(replacementPage.getByRole('button', { name: '重试加载项目' })).toHaveCount(0)
+	await expect(replacementPage.getByRole('alert')).toHaveCount(0)
+	await replacementContext.close()
 	await page.route(`**/api/projects/${createdSnapshot.id}`, (route) => route.request().method() === 'PUT'
 		? (expect(route.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true), route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'revision_conflict', message: 'project has changed' } }) }))
 		: route.continue())

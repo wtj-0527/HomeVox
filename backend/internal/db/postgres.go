@@ -226,9 +226,9 @@ WITH claimed AS (
       project.capability_hash IS NULL
       OR EXISTS (
         SELECT 1
-        FROM legacy_project_recovery_authorizations authorization
-        WHERE authorization.project_id = project.id
-          AND authorization.retired_capability_hash = project.capability_hash
+        FROM legacy_project_recovery_authorizations recovery_authorization
+        WHERE recovery_authorization.project_id = project.id
+          AND recovery_authorization.retired_capability_hash = project.capability_hash
       )
     )
   RETURNING project.id, project.name, project.source_image_key, project.source_image_content_type, project.source_image_size, project.revision, project.document, project.created_at, project.updated_at
