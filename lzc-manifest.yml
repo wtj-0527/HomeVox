@@ -21,6 +21,9 @@ services:
       - S3_ACCESS_KEY_ID=homevox
       - S3_SECRET_ACCESS_KEY={{ stable_secret "minio_password" }}
       - HOMEVOX_LEGACY_RECOVERY_KEY={{ .U.legacy_recovery_key }}
+      - AI_API_KEY=
+      - AI_BASE_URL=https://api.openai.com/v1
+      - AI_MODEL=gpt-4o-mini
     depends_on:
       - postgres
       - minio-init
