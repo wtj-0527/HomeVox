@@ -83,11 +83,11 @@ HOMEVOX_FRONTEND_DIR="$PWD/frontend/dist" go -C backend run ./cmd/server
 
 ### d53 历史项目恢复密钥
 
-LazyCat 安装或重新配置 HomeVox 时会要求输入 `legacy_recovery_key`（`secret`
-部署参数）。运行期将其仅映射为 `HOMEVOX_LEGACY_RECOVERY_KEY`；不要把值写入
-仓库、镜像、普通环境文件或日志。该值用于人工核验归属后调用一次性 d53
-恢复端点；未配置或不匹配时端点保持 `403` fail-closed。修改该参数需要重新配置
-应用实例，不需要也不应重新打包、安装或发布 LPK。
+`legacy_recovery_key` 是可选的 LazyCat `secret` 部署参数。运行期将其仅映射为
+`HOMEVOX_LEGACY_RECOVERY_KEY`；不要把值写入仓库、镜像、普通环境文件或日志。
+未配置时 HomeVox 正常启动，但一次性 d53 恢复端点保持 `403` fail-closed；该值仅
+用于人工核验归属后调用恢复端点。需要恢复时可重新配置应用实例，不需要也不应将
+密钥重新打包进 LPK。
 
 ## 许可
 

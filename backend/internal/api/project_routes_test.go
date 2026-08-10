@@ -447,6 +447,18 @@ func TestLegacyProjectRecoveryRequiresOperatorKeyAndIssuesOneNewCapability(t *te
 	}
 }
 
+func TestLegacyProjectRecoveryFailsClosedWhenOperatorKeyIsUnconfigured(t *testing.T) {
+	router := newLegacyRecoveryRouter(newFakeProjectRepo(), newFakeObjectStore(), "")
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/00000000-0000-0000-0000-000000000019/recover", nil)
+	response := httptest.NewRecorder()
+
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("unconfigured recovery key status=%d, want %d; body=%s", response.Code, http.StatusForbidden, response.Body.String())
+	}
+}
+
 func TestLegacyRecoveryPostgresRouteUpgradesOldDocumentBeforeOneTimeClaim(t *testing.T) {
 	dsn := os.Getenv("HOMEVOX_TEST_DATABASE_URL")
 	if dsn == "" {
