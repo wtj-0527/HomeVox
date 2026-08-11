@@ -4,6 +4,33 @@
 
 ### Added
 
+- 2D 校正工具栏可在生成 3D 前直接创建服务器端识别快照，后续墙体/门窗调整以 revision 更新同一个项目且不会重新调用候选分析或 Vision parse。项目 UUID 不作为访问凭证：创建时生成 256-bit capability，数据库只存 SHA-256；detail/source/update 必须携带专用 header，并全部使用 `Cache-Control: no-store`。继续编辑链接只在 URL fragment 中交接 capability，应用启动后立即清除 fragment；source-image URL 必须精确绑定当前项目同源 API；全局项目列表在没有 owner 身份边界时关闭。
+- capability schema 升级对旧项目采取显式 fail-closed：保留旧记录与对象，以随机不可兑换的 64-hex digest 替换缺失凭据，并把 `capability_hash` 固化为 `NOT NULL` 且受格式约束；不会让历史 UUID 退化为访问凭据。durable wall/opening ID 同时统一为前后端均可重载的 `[A-Za-z0-9_-]+`。
+- 选中墙体后可直接输入起点/终点四个 source-pixel 坐标；数值编辑保留共享端点、进入 Undo/Redo，并与拖拽共用 effective source 边界和 opening 校验。前端拒绝越界、非有限、退化或破坏开口的编辑，后端项目 create/update 同样拒绝超出 durable image grid 的墙体和房间边界。
+- 修复真实 Vision Provider 默认按内部预处理尺寸回报 `metadata.image_width/image_height`，导致有效裁切被错误拒绝的问题：解析请求显式提供后端已解码的原图精确尺寸与坐标网格，但 Provider 回报的 metadata 仅视为不可信的预处理信息；durable metadata 由上传字节的真实宽高覆盖，任何房间/墙体坐标超出 decoded image bounds 仍失败关闭。真实懒猫浏览器以 `4701 × 4501` 裁切验证 `/api/floorplans/parse` 返回 200，并进入同尺寸、可编辑墙体覆盖可见的 2D 校正页。
+- 裁切确认后的真实 Provider 等待阶段现在显示动态“正在判断当前裁切区域…”状态并禁用重复提交；若裁切图仍缺少完整、无遮挡的墙体边界，失败说明会明确要求继续调整或更换原始无遮挡图，不再重复泛化提示“裁切到单个户型”。
+- Issue #19 milestone C：导入链路改为自动候选判断；single 候选自动裁切后解析，composite/uncertain 和分析失败进入可继续的手动裁切。有效裁切图是解析、2D 底图和项目 source-image 的唯一来源，原图不持久化。生产 Playwright/fake-vision 合同验证受控提示词返回的真实矩形、裁切后的尺寸/内容及 parse 失败后的重试保留状态。
+- Issue #19 parity 的权威原型更新为 File `7622c4ac-2f6b-802b-8008-5f15321d47e8` / Page `7622c4ac-2f6b-802b-8008-5f15321d47e9`，版本 **HomeVox · 主流程 · 自动判断与裁切 · 草稿 04 · 视觉验收**，共 8 个 Board。
+- 图片在完整解码前限制单边 `16384` 像素和总计 `100,000,000` 像素，阻断压缩图片炸弹；项目创建与更新均以真实 effective source 的 MIME、字节数和像素宽高绑定 canonical document，更新时会回读不可变对象验证。
+
+- Add repository-owned LazyCat production LPK configuration: local development remains a direct `0.0.0.0:18088` process reached through the development machine's port-prefix URL, while the production LPK runs HomeVox on container port `18088`, persists PostgreSQL and MinIO under `/lzcapp/var`, and keeps every `.lpk` artifact ignored.
+- 修复真实高干扰营销户型图验收发现的比例尺合同矛盾：`scale.pixel_to_unit` 现在是**必填的有限 number 或显式 null**；比例未知时只能持久化为 `{ "unit": "px", "pixel_to_unit": null }`，绝不猜测物理尺寸。严格 JSON、项目保存/重载、前端 guard 与 fake vision 合同同步收紧，缺失字段、字符串 unknown、null confidence/图像尺寸、重复键和尾随 JSON 仍失败关闭。
+- AI 识别失败现在区分服务不可用、模型输出格式不完整和图片中无可靠户型拓扑；复杂营销复合图会明确提示裁切到单个户型或上传更清晰的平面图，不再误报为网络问题。
+
+- 修复 Issue #19 独立视觉验收发现的产品问题：移除普通用户界面的内部标识和工程术语，统一以「待确认 / 尚未测量 / 尚未识别」表达未确认信息；真实底层状态、选择、历史、导出与失败关闭链路不变。
+- 恢复 Tailwind spacing utilities 的正常层叠，并将 01、03、04、05 的 1440 × 960 live Penpot 卡片、网格、画布和边距写入 production DOM geometry gate；2D SVG 现在自适应居中，消除右侧黑色裁切和联动页下方无意义空白。
+- 3D 完成页现在只在可见空间预览真正准备好后显示完成态；生产测试同时约束客户可见文案、选择、真实像素、开洞、异步更新和过期导出拒绝。
+
+- 完成 Issue #19 的 Penpot 产品化闭环：直接通过已配置的 Streamable HTTP Penpot MCP 回读当前 live file/page 与 8 个 1440 × 960 Board，并将 232px 侧栏、72px 顶栏、Inter 字体层级、颜色、圆角、工作区与 unknown 语义固化为前端产品设计合同和 production layout gate。
+- 导入页选择真实图片后自动调用 `/api/floorplans/candidates`：清晰单户型自动裁切并进入 `/api/floorplans/parse`，复合图与不确定结果进入原像素裁切确认；任何分析失败都只降级为可操作的全图手动裁切，不伪造候选。
+- 校正、生成 3D、联动和保存页面改为对应 Penpot 的产品工作区；保留真实 canonical、R3F/Rust-WASM、双向选择、Undo/Redo、保存/reload 和 stale-export fail-closed 链路，同时不在普通界面暴露原始 ID、WASM/端口/时序或 JSON 诊断信息。
+- 为 Vite 8 开发模式补齐 React Refresh 浏览器 preamble；独立 5173 HMR 服务器可在不替换 18088 production preview 的情况下真实热更新 CSS 产品变更。
+
+### Verification
+
+- 生产 Playwright 在隔离 PostgreSQL + MinIO 中验证：2D 数值编辑后创建 revision 1 快照，独立 Chromium context 通过 capability fragment 恢复同一坐标，fragment 在请求前从地址栏清除，GET/source/PUT 均携带专用 header，候选/parse 请求计数不增加；继续编辑后保存 revision 2，服务重启后仍恢复同一 canonical 几何。
+- 新增 `productDesign` Vitest 合同和 production Playwright shell geometry gate（232px/72px）；固定 1440 × 960 screenshot、像素与交互门禁继续覆盖 01/03/04/05。
+
 - 完成 Issue #17 的受控 Vision 合同闭环：生产 Go multipart parse API 以 OpenAI-compatible `/chat/completions` 多模态请求处理浏览器图片，并对空/非 JSON envelope、schema-invalid opening geometry、timeout、429 与 5xx fail-closed；上游错误正文不会回显给浏览器。
 - AI 解析不再把缺少 `wallId`、局部 `position` 或 `width` 的 opening 推断为已确认结构；这些候选直接拒绝，避免最近墙体或预览默认值污染 durable document。
 - AI canonical 输出现在要求完整且唯一的 JSON object：拒绝未知字段、重复键、缺失或部分嵌套字段、`null`、错误 JSON 类型、legacy opening 字段及尾随第二个 JSON 值；parse 路径不再生成 ID、kind、source 或空集合。

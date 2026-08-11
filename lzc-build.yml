@@ -1,0 +1,9 @@
+manifest: ./lzc-manifest.yml
+pkgout: ./
+icon: ./lzc-icon.png
+
+images:
+  homevox-runtime:
+    context: .
+    dockerfile: ./images/Dockerfile
+    upstream-match: docker.io/library

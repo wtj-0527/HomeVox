@@ -55,7 +55,11 @@ func TestParseUsesOpenAICompatibleVisionContractAndRejectsInvalidOpeningGeometry
 		if request.Model != "vision-test" || len(request.Messages) != 2 {
 			t.Fatalf("vision request = %#v", request)
 		}
-		if request.Messages[0].Role != "system" || string(request.Messages[0].Content) != `"`+visionSystemPrompt+`"` {
+		expectedSystem, err := json.Marshal(visionSystemPrompt)
+		if err != nil {
+			t.Fatalf("marshal expected system prompt: %v", err)
+		}
+		if request.Messages[0].Role != "system" || string(request.Messages[0].Content) != string(expectedSystem) {
 			t.Fatalf("system message = %s", request.Messages[0].Content)
 		}
 		if request.Messages[1].Role != "user" {
@@ -77,6 +81,35 @@ func TestParseUsesOpenAICompatibleVisionContractAndRejectsInvalidOpeningGeometry
 	_, err := NewParser(ai.NewClient(server.URL+"/v1", "test-key", "vision-test")).Parse(context.Background(), imageDataURL)
 	if err == nil || !strings.Contains(err.Error(), "exceeds wall endpoints") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestParseAtDimensionsRejectsGeometryOutsideDecodedImage(t *testing.T) {
+	body := strings.Replace(canonicalParseJSON, `"x2":200,"y2":0`, `"x2":201,"y2":0`, 1)
+	server := visionServer(t, body, nil)
+	defer server.Close()
+
+	_, err := NewParser(ai.NewClient(server.URL+"/v1", "test-key", "vision-test")).ParseAtDimensions(
+		context.Background(), "data:image/png;base64,cG5n", 200, 80,
+	)
+	if err == nil || ErrorCode(err) != ParseErrorContent || !strings.Contains(err.Error(), "source image bounds") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestParseAtDimensionsOverridesProviderPreprocessingDimensions(t *testing.T) {
+	body := strings.Replace(canonicalParseJSON, `"image_width":200,"image_height":80`, `"image_width":100,"image_height":40`, 1)
+	server := visionServer(t, body, nil)
+	defer server.Close()
+
+	result, err := NewParser(ai.NewClient(server.URL+"/v1", "test-key", "vision-test")).ParseAtDimensions(
+		context.Background(), "data:image/png;base64,cG5n", 200, 80,
+	)
+	if err != nil {
+		t.Fatalf("ParseAtDimensions() error = %v", err)
+	}
+	if result.Metadata.ImageWidth != 200 || result.Metadata.ImageHeight != 80 {
+		t.Fatalf("metadata dimensions = %dx%d, want decoded 200x80", result.Metadata.ImageWidth, result.Metadata.ImageHeight)
 	}
 }
 
@@ -110,6 +143,8 @@ func TestParseRejectsNonCanonicalAIJSON(t *testing.T) {
 		"partial metadata":   strings.Replace(valid, `,"image_height":80`, ``, 1),
 		"null object":        strings.Replace(valid, `"scale":{"unit":"px","pixel_to_unit":1}`, `"scale":null`, 1),
 		"null array":         strings.Replace(valid, `"doors":[`, `"doors":null`, 1),
+		"unknown as string":  strings.Replace(valid, `"pixel_to_unit":1`, `"pixel_to_unit":"unknown"`, 1),
+		"null confidence":    strings.Replace(valid, `"confidence":0.9`, `"confidence":null`, 1),
 		"wrong type":         strings.Replace(valid, `"width":40`, `"width":"40"`, 1),
 		"duplicate key":      strings.Replace(valid, `"id":"wall-1"`, `"id":"wall-1","id":"wall-2"`, 1),
 		"trailing JSON":      valid + ` {"ignored":true}`,
@@ -134,8 +169,33 @@ func TestParseAcceptsOnlyCompleteCanonicalAIJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if result.Walls[0].ID != "wall-1" || result.Doors[0].Source != "ai" || result.Scale.PixelToUnit != 1 || result.Windows[0].Confirmed {
+	if result.Walls[0].ID != "wall-1" || result.Doors[0].Source != "ai" || result.Scale.PixelToUnit == nil || *result.Scale.PixelToUnit != 1 || result.Windows[0].Confirmed {
 		t.Fatalf("unexpected canonical result: %#v", result)
+	}
+}
+
+func TestParseAcceptsExplicitUnknownPixelScaleWithoutInventingMeasurement(t *testing.T) {
+	unknownScale := strings.Replace(canonicalParseJSON, `"unit":"px","pixel_to_unit":1`, `"unit":"px","pixel_to_unit":null`, 1)
+	server := visionServer(t, unknownScale, nil)
+	defer server.Close()
+
+	result, err := NewParser(ai.NewClient(server.URL+"/v1", "test-key", "vision-test")).Parse(context.Background(), "data:image/png;base64,cG5n")
+	if err != nil {
+		t.Fatalf("Parse() rejected explicit unknown pixel scale: %v", err)
+	}
+	if result.Scale.Unit != "px" || result.Scale.PixelToUnit != nil {
+		t.Fatalf("scale = %#v, want pixel coordinates with no fabricated conversion", result.Scale)
+	}
+}
+
+func TestParseRejectsUnknownScaleWithNonPixelUnit(t *testing.T) {
+	unknownScale := strings.Replace(canonicalParseJSON, `"unit":"px","pixel_to_unit":1`, `"unit":"m","pixel_to_unit":null`, 1)
+	server := visionServer(t, unknownScale, nil)
+	defer server.Close()
+
+	_, err := NewParser(ai.NewClient(server.URL+"/v1", "test-key", "vision-test")).Parse(context.Background(), "data:image/png;base64,cG5n")
+	if err == nil || ErrorCode(err) != ParseErrorContent {
+		t.Fatalf("error = %v, code = %s; want invalid semantic scale content error", err, ErrorCode(err))
 	}
 }
 
@@ -148,4 +208,61 @@ func visionServer(t *testing.T, content string, check func(*http.Request)) *http
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"content":%q}}]}`, content)
 	}))
+}
+
+func TestAnalyzeCandidatesUsesStrictContractAndRejectsUnsafeCrops(t *testing.T) {
+	valid := `{"mode":"composite","candidates":[{"x":10,"y":20,"width":100,"height":80},{"x":150,"y":20,"width":90,"height":80}]}`
+	server := visionServer(t, valid, func(r *http.Request) {
+		var request struct {
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if len(request.Messages) != 2 || request.Messages[0].Role != "system" {
+			t.Fatalf("messages=%#v", request.Messages)
+		}
+		var system string
+		if err := json.Unmarshal(request.Messages[0].Content, &system); err != nil || system != candidateSystemPrompt {
+			t.Fatalf("system=%q err=%v", system, err)
+		}
+	})
+	defer server.Close()
+	result, err := NewParser(ai.NewClient(server.URL, "test-key", "vision-test")).AnalyzeCandidates(context.Background(), "data:image/png;base64,cG5n", 300, 200)
+	if err != nil {
+		t.Fatalf("AnalyzeCandidates() error = %v", err)
+	}
+	if result.Mode != CandidateModeComposite || len(result.Candidates) != 2 || result.Candidates[1].X != 150 {
+		t.Fatalf("result=%#v", result)
+	}
+
+	uncertainServer := visionServer(t, `{"mode":"uncertain","candidates":[]}`, nil)
+	defer uncertainServer.Close()
+	uncertain, err := NewParser(ai.NewClient(uncertainServer.URL, "test-key", "vision-test")).AnalyzeCandidates(context.Background(), "data:image/png;base64,cG5n", 300, 200)
+	if err != nil || uncertain.Mode != CandidateModeUncertain || len(uncertain.Candidates) != 0 {
+		t.Fatalf("uncertain=%#v err=%v", uncertain, err)
+	}
+
+	for name, content := range map[string]string{
+		"empty single":  `{"mode":"single","candidates":[]}`,
+		"out of bounds": `{"mode":"single","candidates":[{"x":250,"y":0,"width":60,"height":80}]}`,
+		"zero area":     `{"mode":"single","candidates":[{"x":0,"y":0,"width":0,"height":80}]}`,
+		"overlap":       `{"mode":"composite","candidates":[{"x":0,"y":0,"width":100,"height":100},{"x":50,"y":0,"width":100,"height":100}]}`,
+		"unknown field": `{"mode":"single","candidates":[{"x":0,"y":0,"width":100,"height":80,"score":0.9}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := visionServer(t, content, nil)
+			defer s.Close()
+			_, err := NewParser(ai.NewClient(s.URL, "key", "model")).AnalyzeCandidates(context.Background(), "data:image/png;base64,cG5n", 300, 200)
+			if err == nil {
+				t.Fatalf("accepted unsafe result: %s", content)
+			}
+			if ErrorCode(err) != ParseErrorContent && name != "unknown field" {
+				t.Fatalf("code=%s error=%v", ErrorCode(err), err)
+			}
+		})
+	}
 }

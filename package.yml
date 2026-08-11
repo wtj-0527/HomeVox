@@ -1,0 +1,10 @@
+package: cloud.lazycat.app.homevox
+version: 2026.08.10.1056
+name: HomeVox
+locales:
+  zh:
+    name: 筑居
+description: AI-driven floor-plan digitization and voxel-based 3D home design
+min_os_version: v1.5.0
+license: https://www.gnu.org/licenses/agpl-3.0.html
+homepage: https://github.com/wtj-0527/HomeVox

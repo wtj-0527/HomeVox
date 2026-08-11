@@ -5,6 +5,9 @@
     "lib": ["ES2023", "DOM"],
     "module": "esnext",
     "types": ["vite/client"],
+    "ignoreDeprecations": "6.0",
+    "baseUrl": ".",
+    "paths": { "@homevox-e2e": ["src/e2eBridge.disabled.ts"] },
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
 

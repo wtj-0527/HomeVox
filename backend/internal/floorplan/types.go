@@ -1,5 +1,10 @@
 package floorplan
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 type Bounds struct {
 	X1 float64 `json:"x1"`
 	Y1 float64 `json:"y1"`
@@ -41,8 +46,10 @@ type Opening struct {
 }
 
 type Scale struct {
-	Unit        string  `json:"unit"`
-	PixelToUnit float64 `json:"pixel_to_unit"`
+	Unit        string   `json:"unit"`
+	PixelToUnit *float64 `json:"pixel_to_unit"`
+
+	pixelToUnitPresent bool
 }
 
 type Metadata struct {
@@ -50,6 +57,10 @@ type Metadata struct {
 	Confidence  float64 `json:"confidence"`
 	ImageWidth  int     `json:"image_width"`
 	ImageHeight int     `json:"image_height"`
+
+	confidencePresent  bool
+	imageWidthPresent  bool
+	imageHeightPresent bool
 }
 
 type ParseResult struct {
@@ -70,4 +81,143 @@ type ParseResponse struct {
 	ContentType string      `json:"contentType"`
 	Size        int         `json:"size"`
 	Result      ParseResult `json:"result"`
+}
+
+type CandidateDetectionMode string
+
+const (
+	CandidateModeSingle    CandidateDetectionMode = "single"
+	CandidateModeComposite CandidateDetectionMode = "composite"
+	CandidateModeUncertain CandidateDetectionMode = "uncertain"
+)
+
+type CandidateRect struct {
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
+type CandidateDetection struct {
+	Mode       CandidateDetectionMode `json:"mode"`
+	Candidates []CandidateRect        `json:"candidates"`
+}
+
+// HasPixelToUnit distinguishes an explicit null (an honest unknown physical
+// conversion) from an omitted field.  The field is part of the durable schema
+// and must always be present as either a finite number or null.
+func (s Scale) HasPixelToUnit() bool {
+	return s.pixelToUnitPresent
+}
+
+func (m Metadata) HasRequiredFields() bool {
+	return m.confidencePresent && m.imageWidthPresent && m.imageHeightPresent
+}
+
+func (s *Scale) UnmarshalJSON(data []byte) error {
+	fields, err := requiredObjectFields(data, "scale")
+	if err != nil {
+		return err
+	}
+	unit, err := requiredStringField(fields, "unit")
+	if err != nil {
+		return fmt.Errorf("scale: %w", err)
+	}
+	rawConversion, present := fields["pixel_to_unit"]
+	if !present {
+		return fmt.Errorf("scale: missing required field %q", "pixel_to_unit")
+	}
+	s.Unit = unit
+	s.pixelToUnitPresent = true
+	if string(rawConversion) == "null" {
+		s.PixelToUnit = nil
+		return nil
+	}
+	var conversion float64
+	if err := json.Unmarshal(rawConversion, &conversion); err != nil {
+		return fmt.Errorf("scale pixel_to_unit: %w", err)
+	}
+	s.PixelToUnit = &conversion
+	return nil
+}
+
+func (m *Metadata) UnmarshalJSON(data []byte) error {
+	fields, err := requiredObjectFields(data, "metadata")
+	if err != nil {
+		return err
+	}
+	source, err := requiredStringField(fields, "source")
+	if err != nil {
+		return fmt.Errorf("metadata: %w", err)
+	}
+	confidence, err := requiredFloatField(fields, "confidence")
+	if err != nil {
+		return fmt.Errorf("metadata: %w", err)
+	}
+	width, err := requiredIntegerField(fields, "image_width")
+	if err != nil {
+		return fmt.Errorf("metadata: %w", err)
+	}
+	height, err := requiredIntegerField(fields, "image_height")
+	if err != nil {
+		return fmt.Errorf("metadata: %w", err)
+	}
+	m.Source = source
+	m.Confidence = confidence
+	m.ImageWidth = width
+	m.ImageHeight = height
+	m.confidencePresent = true
+	m.imageWidthPresent = true
+	m.imageHeightPresent = true
+	return nil
+}
+
+func requiredObjectFields(data []byte, name string) (map[string]json.RawMessage, error) {
+	if string(data) == "null" {
+		return nil, fmt.Errorf("%s must be an object", name)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%s must be an object", name)
+	}
+	return fields, nil
+}
+
+func requiredStringField(fields map[string]json.RawMessage, name string) (string, error) {
+	raw, present := fields[name]
+	if !present || string(raw) == "null" {
+		return "", fmt.Errorf("missing required field %q", name)
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func requiredFloatField(fields map[string]json.RawMessage, name string) (float64, error) {
+	raw, present := fields[name]
+	if !present || string(raw) == "null" {
+		return 0, fmt.Errorf("missing required field %q", name)
+	}
+	var value float64
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return 0, err
+	}
+	return value, nil
+}
+
+func requiredIntegerField(fields map[string]json.RawMessage, name string) (int, error) {
+	raw, present := fields[name]
+	if !present || string(raw) == "null" {
+		return 0, fmt.Errorf("missing required field %q", name)
+	}
+	var value int
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return 0, err
+	}
+	return value, nil
 }

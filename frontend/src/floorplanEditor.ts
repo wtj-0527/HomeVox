@@ -1,4 +1,4 @@
-import { validateOpenings, type ParsedOpening } from './floorplanUi'
+import { MIN_CANONICAL_WALL_LENGTH, validateOpenings, type ParsedOpening } from './floorplanUi'
 
 export type Endpoint = 'start' | 'end'
 
@@ -26,6 +26,7 @@ export interface WallEditorState {
 }
 
 export interface EndpointMoveResult { walls: WallSegment[]; changed: boolean }
+export interface WallCoordinateEditResult extends EndpointMoveResult { error: string | null }
 export interface OpeningEditResult { openings: ParsedOpening[]; changed: boolean; error: string | null }
 
 function isFiniteNumber(value: number): value is number { return Number.isFinite(value) }
@@ -53,6 +54,34 @@ export function createWallEditorState(segments: readonly WallSegment[], openings
 
 export function getWallForEndpoint(state: WallEditorState, endpointRef: EndpointRef): Point | null { return isValidEndpointRef(state, endpointRef) ? endpointPoint(state.walls[endpointRef.wallIndex], endpointRef.endpoint) : null }
 export function moveEndpoint(state: WallEditorState, endpointRef: EndpointRef, cursor: Point): EndpointMoveResult { const anchor = getWallForEndpoint(state, endpointRef); if (!anchor || !isFinitePoint(cursor)) return { walls: cloneSegments(state.walls), changed: false }; const targets = state.sharedEndpoints.get(endpointKey(anchor)) ?? [endpointRef]; const moved = cloneSegments(state.walls); targets.forEach((target) => { if (isValidEndpointRef(state, target)) moved[target.wallIndex] = applyEndpointPoint(moved[target.wallIndex], target.endpoint, cursor) }); return { walls: moved, changed: !areSegmentsEqual(moved, state.walls) } }
+
+export function editWallCoordinates(
+  state: WallEditorState,
+  wallID: string,
+  coordinates: Pick<WallSegment, 'x1' | 'y1' | 'x2' | 'y2'>,
+  image: { width: number; height: number },
+): WallCoordinateEditResult {
+  const wallIndex = state.walls.findIndex((wall) => wall.id === wallID)
+  if (wallIndex < 0) return { walls: cloneSegments(state.walls), changed: false, error: 'wall is missing' }
+  if (![coordinates.x1, coordinates.y1, coordinates.x2, coordinates.y2, image.width, image.height].every(Number.isFinite)) return { walls: cloneSegments(state.walls), changed: false, error: 'wall coordinates must be finite' }
+  if (image.width <= 0 || image.height <= 0 || coordinates.x1 < 0 || coordinates.x1 > image.width || coordinates.x2 < 0 || coordinates.x2 > image.width || coordinates.y1 < 0 || coordinates.y1 > image.height || coordinates.y2 < 0 || coordinates.y2 > image.height) return { walls: cloneSegments(state.walls), changed: false, error: 'wall coordinates must remain inside the source image' }
+  if (!(Math.hypot(coordinates.x2 - coordinates.x1, coordinates.y2 - coordinates.y1) > MIN_CANONICAL_WALL_LENGTH)) return { walls: cloneSegments(state.walls), changed: false, error: 'wall length must be strictly greater than zero' }
+  const wall = state.walls[wallIndex]
+  const moved = cloneSegments(state.walls)
+  const applyShared = (endpoint: Endpoint, point: Point) => {
+    const targets = state.sharedEndpoints.get(endpointKey(endpointPoint(wall, endpoint))) ?? [{ wallIndex, endpoint }]
+    targets.forEach((target) => {
+      if (isValidEndpointRef(state, target)) moved[target.wallIndex] = applyEndpointPoint(moved[target.wallIndex], target.endpoint, point)
+    })
+  }
+  applyShared('start', { x: coordinates.x1, y: coordinates.y1 })
+  applyShared('end', { x: coordinates.x2, y: coordinates.y2 })
+  if (moved.some((item) => !isFiniteSegment(item) || !(Math.hypot(item.x2 - item.x1, item.y2 - item.y1) > MIN_CANONICAL_WALL_LENGTH))) return { walls: cloneSegments(state.walls), changed: false, error: 'wall length must be strictly greater than zero' }
+  if (moved.some((item) => item.x1 < 0 || item.x1 > image.width || item.x2 < 0 || item.x2 > image.width || item.y1 < 0 || item.y1 > image.height || item.y2 < 0 || item.y2 > image.height)) return { walls: cloneSegments(state.walls), changed: false, error: 'wall coordinates must remain inside the source image' }
+  const openingError = validateOpenings(moved, state.openings)
+  if (openingError) return { walls: cloneSegments(state.walls), changed: false, error: openingError }
+  return { walls: moved, changed: !areSegmentsEqual(moved, state.walls), error: null }
+}
 
 /** Commits one atomic wall/opening document snapshot. */
 export function pushWallSnapshot(state: WallEditorState, nextWalls: readonly WallSegment[], nextOpenings: readonly ParsedOpening[] = state.openings): WallEditorState {

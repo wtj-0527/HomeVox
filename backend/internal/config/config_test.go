@@ -32,6 +32,16 @@ func TestLoadReadsAIAPIKey(t *testing.T) {
 	}
 }
 
+func TestLoadReadsLegacyRecoveryKey(t *testing.T) {
+	t.Setenv("HOMEVOX_LEGACY_RECOVERY_KEY", "operator-only-recovery-key")
+
+	cfg := Load()
+
+	if cfg.LegacyRecoveryKey != "operator-only-recovery-key" {
+		t.Fatal("LegacyRecoveryKey was not loaded from HOMEVOX_LEGACY_RECOVERY_KEY")
+	}
+}
+
 func TestLoadRequiresExplicitFrontendDirectory(t *testing.T) {
 	t.Setenv("HOMEVOX_FRONTEND_DIR", "")
 

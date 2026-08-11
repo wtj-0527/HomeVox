@@ -7,31 +7,33 @@ import (
 )
 
 type Config struct {
-	ListenAddr  string
-	FrontendDir string
-	DatabaseURL string
-	S3Endpoint  string
-	S3Bucket    string
-	S3AccessKey string
-	S3SecretKey string
-	AIBaseURL   string
-	AIAPIKey    string
-	AIModel     string
+	ListenAddr        string
+	FrontendDir       string
+	DatabaseURL       string
+	S3Endpoint        string
+	S3Bucket          string
+	S3AccessKey       string
+	S3SecretKey       string
+	AIBaseURL         string
+	AIAPIKey          string
+	AIModel           string
+	LegacyRecoveryKey string
 }
 
 func Load() Config {
 	_ = godotenv.Load()
 	return Config{
-		ListenAddr:  fixedListenAddr(),
-		FrontendDir: os.Getenv("HOMEVOX_FRONTEND_DIR"),
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		S3Endpoint:  os.Getenv("S3_ENDPOINT"),
-		S3Bucket:    os.Getenv("S3_BUCKET"),
-		S3AccessKey: os.Getenv("S3_ACCESS_KEY_ID"),
-		S3SecretKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
-		AIBaseURL:   getEnv("AI_BASE_URL", "https://api.openai.com/v1"),
-		AIAPIKey:    os.Getenv("AI_API_KEY"),
-		AIModel:     getEnv("AI_MODEL", "gpt-4o-mini"),
+		ListenAddr:        fixedListenAddr(),
+		FrontendDir:       os.Getenv("HOMEVOX_FRONTEND_DIR"),
+		DatabaseURL:       os.Getenv("DATABASE_URL"),
+		S3Endpoint:        os.Getenv("S3_ENDPOINT"),
+		S3Bucket:          os.Getenv("S3_BUCKET"),
+		S3AccessKey:       os.Getenv("S3_ACCESS_KEY_ID"),
+		S3SecretKey:       os.Getenv("S3_SECRET_ACCESS_KEY"),
+		AIBaseURL:         getEnv("AI_BASE_URL", "https://api.openai.com/v1"),
+		AIAPIKey:          os.Getenv("AI_API_KEY"),
+		AIModel:           getEnv("AI_MODEL", "gpt-4o-mini"),
+		LegacyRecoveryKey: os.Getenv("HOMEVOX_LEGACY_RECOVERY_KEY"),
 	}
 }
 

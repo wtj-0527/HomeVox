@@ -1,12 +1,22 @@
 import type { WallSegment } from './floorplanEditor'
-import { openingLabel, validateOpenings, type ParsedOpening } from './floorplanUi'
+import { openingLabel, validateCanonicalFloorplan, type ParsedOpening } from './floorplanUi'
 
 export const WALL_SHELL_HEIGHT = 2.8
 export const WALL_SHELL_THICKNESS = 0.18
 export const WALL_SHELL_TARGET_SPAN = 10
 export const WALL_SHELL_FLOOR_MARGIN = 1
+export const WINDOW_SILL_HEIGHT = 0.92
+export const WINDOW_OPENING_HEIGHT = 1.12
+
+/** Single source for the window aperture used by both the visual selection
+ * pieces and the scalar field submitted to WASM. */
+export function windowOpeningVerticalSpan(wallHeight = WALL_SHELL_HEIGHT): { bottom: number; top: number } {
+  const bottom = Math.min(WINDOW_SILL_HEIGHT, wallHeight)
+  return { bottom, top: Math.min(bottom + WINDOW_OPENING_HEIGHT, wallHeight) }
+}
 
 export type WallShellWall = {
+  id: string
   sourceIndex: number
   x: number
   z: number
@@ -44,6 +54,18 @@ export type WallShellModel = {
   validationError: string | null
 }
 
+export type WallShellPiece = {
+  id: string
+  wallId: string
+  x: number
+  y: number
+  z: number
+  length: number
+  height: number
+  thickness: number
+  rotationY: number
+}
+
 type ValidWall = WallSegment & {
   sourceIndex: number
   sourceLength: number
@@ -77,9 +99,14 @@ export function buildWallShellModel(
   doors: readonly ParsedOpening[],
   windows: readonly ParsedOpening[],
 ): WallShellModel {
+  const validationError = validateCanonicalFloorplan(walls, [...doors, ...windows])
+  if (validationError) {
+    return { ...emptyWallShellModel(), validationError }
+  }
+
   const valid = validWalls(walls)
   if (valid.length === 0) {
-    return emptyWallShellModel()
+    return { ...emptyWallShellModel(), validationError: 'floorplan must contain at least one wall' }
   }
 
   const xs = valid.flatMap((wall) => [wall.x1, wall.x2])
@@ -105,6 +132,7 @@ export function buildWallShellModel(
     const dy = wall.y2 - wall.y1
     const rawRotationY = -Math.atan2(dy, dx)
     return {
+      id: wall.id ?? `wall-${wall.sourceIndex + 1}`,
       sourceIndex: wall.sourceIndex,
       x: ((wall.x1 + wall.x2) / 2 - centerX) * scale,
       z: ((wall.y1 + wall.y2) / 2 - centerY) * scale,
@@ -126,14 +154,6 @@ export function buildWallShellModel(
   )
   if (!wallsAreFinite || !allFinite([floor.x, floor.z, floor.width, floor.depth])) {
     return emptyWallShellModel()
-  }
-
-  // This is the single geometry admission gate. Never normalize, voxelize, or
-  // pass an opening to WASM unless the same durable document accepted by editing
-  // and persistence passes the canonical validator.
-  const validationError = validateOpenings(walls, [...doors, ...windows])
-  if (validationError) {
-    return { walls: normalizedWalls, openings: [], floor, scale, validationError }
   }
 
   const normalizedOpenings: WallShellOpening[] = []
@@ -190,4 +210,96 @@ export function buildWallShellModel(
     scale,
     validationError: null,
   }
+}
+
+export type ThreeDFrame = {
+  position: readonly [number, number, number]
+  target: readonly [number, number, number]
+  floorSpan: number
+}
+
+/** Camera derived from normalized floorplan bounds and the actual canvas aspect
+ * ratio. The previous fixed-distance framing made a valid floorplan occupy too
+ * little of Step 4/5 on production layouts. */
+export function frameWallShellModel(model: WallShellModel, aspectRatio = 16 / 9): ThreeDFrame {
+  const floorSpan = Math.max(model.floor?.width ?? 0, model.floor?.depth ?? 0, 1)
+  const aspect = Number.isFinite(aspectRatio) ? Math.min(2.6, Math.max(0.8, aspectRatio)) : 16 / 9
+  const horizontalDistance = floorSpan * (aspect >= 1.2 ? 0.92 : 1.06) + WALL_SHELL_HEIGHT * 0.55
+  const elevation = Math.max(WALL_SHELL_HEIGHT * 2.25, floorSpan * 0.58 + WALL_SHELL_HEIGHT * 0.7)
+  return {
+    position: [horizontalDistance, elevation, horizontalDistance],
+    target: [0, WALL_SHELL_HEIGHT * 0.38, 0],
+    floorSpan,
+  }
+}
+
+/** Builds visible wall spans from canonical openings.  The renderer uses these
+ * pieces instead of a translucent solid selection shell, so door/window holes
+ * remain visible even while a wall is selected. */
+export function buildWallShellPieces(model: WallShellModel): WallShellPiece[] {
+  const openingsByWall = new Map<string, WallShellOpening[]>()
+  for (const opening of model.openings) {
+    if (!opening.wallId || opening.width <= 0) continue
+    openingsByWall.set(opening.wallId, [...(openingsByWall.get(opening.wallId) ?? []), opening])
+  }
+
+  return model.walls.flatMap((wall) => {
+    const intervals = (openingsByWall.get(wall.id) ?? [])
+      .map((opening) => {
+        const center = (opening.x - wall.x) * Math.cos(wall.rotationY) - (opening.z - wall.z) * Math.sin(wall.rotationY)
+        return {
+          start: Math.max(-wall.length / 2, center - opening.width / 2),
+          end: Math.min(wall.length / 2, center + opening.width / 2),
+        }
+      })
+      .filter((interval) => interval.end > interval.start)
+      .sort((a, b) => a.start - b.start)
+
+    const solidSpans: Array<{ start: number; end: number }> = []
+    let cursor = -wall.length / 2
+    for (const interval of intervals) {
+      if (interval.start > cursor) solidSpans.push({ start: cursor, end: interval.start })
+      cursor = Math.max(cursor, interval.end)
+    }
+    if (cursor < wall.length / 2) solidSpans.push({ start: cursor, end: wall.length / 2 })
+
+    const fullHeightPiece = (id: string, span: { start: number; end: number }): WallShellPiece => {
+      const along = (span.start + span.end) / 2
+      return {
+        id,
+        wallId: wall.id,
+        x: wall.x + Math.cos(wall.rotationY) * along,
+        y: wall.height / 2,
+        z: wall.z - Math.sin(wall.rotationY) * along,
+        length: span.end - span.start,
+        height: wall.height,
+        thickness: wall.thickness,
+        rotationY: wall.rotationY,
+      }
+    }
+    const pieces = solidSpans.map((span, index) => fullHeightPiece(`${wall.id}-span-${index}`, span))
+
+    for (const opening of openingsByWall.get(wall.id) ?? []) {
+      if (opening.kind !== 'window') continue
+      const center = (opening.x - wall.x) * Math.cos(wall.rotationY) - (opening.z - wall.z) * Math.sin(wall.rotationY)
+      const start = Math.max(-wall.length / 2, center - opening.width / 2)
+      const end = Math.min(wall.length / 2, center + opening.width / 2)
+      if (end <= start) continue
+      const span = { start, end }
+      const { bottom: sillHeight, top: lintelBottom } = windowOpeningVerticalSpan(wall.height)
+      if (sillHeight > 0) {
+        const lower = fullHeightPiece(`${opening.id}-sill`, span)
+        lower.y = sillHeight / 2
+        lower.height = sillHeight
+        pieces.push(lower)
+      }
+      if (lintelBottom < wall.height) {
+        const upper = fullHeightPiece(`${opening.id}-lintel`, span)
+        upper.y = lintelBottom + (wall.height - lintelBottom) / 2
+        upper.height = wall.height - lintelBottom
+        pieces.push(upper)
+      }
+    }
+    return pieces
+  })
 }

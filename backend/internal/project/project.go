@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -19,11 +20,14 @@ const (
 	MaxCreateRequestBytes    = MaxDocumentBytes + MaxSourceImageBytes + MaxCreateRequestOverhead
 	MaxUpdateRequestBytes    = MaxDocumentBytes + MaxCreateRequestOverhead
 	MinNameLength            = 1
+	MinCanonicalWallLength   = 1e-3
 )
 
 var SupportedImageContentTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
 
 var imageContentTypeSet = map[string]struct{}{}
+
+var stableGeometryIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 func init() {
 	for _, contentType := range SupportedImageContentTypes {
@@ -69,6 +73,54 @@ func NormalizeDocument(raw json.RawMessage) (floorplan.ParseResponse, error) {
 	return doc, nil
 }
 
+// NormalizeLegacyDocument upgrades only the historically omitted durable
+// fields before applying the current strict schema. Source dimensions come
+// from the verified stored image, never from an inferred floorplan.
+func NormalizeLegacyDocument(raw json.RawMessage, imageWidth, imageHeight int) (floorplan.ParseResponse, error) {
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil || document == nil {
+		if err != nil {
+			return floorplan.ParseResponse{}, fmt.Errorf("invalid legacy document JSON: %w", err)
+		}
+		return floorplan.ParseResponse{}, errors.New("legacy document must be an object")
+	}
+	result, ok := document["result"].(map[string]any)
+	if !ok || result == nil {
+		return floorplan.ParseResponse{}, errors.New("legacy document result is required")
+	}
+	scale, ok := result["scale"].(map[string]any)
+	if !ok || scale == nil {
+		return floorplan.ParseResponse{}, errors.New("legacy document scale is required")
+	}
+	if _, exists := scale["unit"]; !exists {
+		scale["unit"] = "px"
+	}
+	if _, exists := scale["pixel_to_unit"]; !exists {
+		scale["pixel_to_unit"] = nil
+	}
+	metadata, ok := result["metadata"].(map[string]any)
+	if !ok || metadata == nil {
+		return floorplan.ParseResponse{}, errors.New("legacy document metadata is required")
+	}
+	if source, exists := metadata["source"].(string); !exists || strings.TrimSpace(source) == "" {
+		metadata["source"] = "legacy_unconfirmed"
+	}
+	if _, exists := metadata["confidence"]; !exists {
+		metadata["confidence"] = 0
+	}
+	if _, exists := metadata["image_width"]; !exists {
+		metadata["image_width"] = imageWidth
+	}
+	if _, exists := metadata["image_height"]; !exists {
+		metadata["image_height"] = imageHeight
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return floorplan.ParseResponse{}, fmt.Errorf("encode legacy document: %w", err)
+	}
+	return NormalizeDocument(encoded)
+}
+
 func validateDocumentEnvelope(doc floorplan.ParseResponse) error {
 	if strings.TrimSpace(doc.Filename) == "" {
 		return errors.New("document filename is required")
@@ -82,19 +134,32 @@ func validateDocumentEnvelope(doc floorplan.ParseResponse) error {
 	if strings.TrimSpace(doc.Result.Scale.Unit) == "" {
 		return errors.New("document scale unit is required")
 	}
+	if !doc.Result.Scale.HasPixelToUnit() || !doc.Result.Metadata.HasRequiredFields() {
+		return errors.New("document has missing required scale or metadata fields")
+	}
 	if strings.TrimSpace(doc.Result.Metadata.Source) == "" {
 		return errors.New("document metadata source is required")
 	}
 	if doc.Result.Metadata.ImageWidth < 0 || doc.Result.Metadata.ImageHeight < 0 {
 		return errors.New("document metadata image dimensions must not be negative")
 	}
-	if isNotFinite(doc.Result.Metadata.Confidence) || isNotFinite(doc.Result.Scale.PixelToUnit) {
+	if isNotFinite(doc.Result.Metadata.Confidence) {
 		return errors.New("document has invalid numeric metadata")
+	}
+	if conversion := doc.Result.Scale.PixelToUnit; conversion == nil {
+		if doc.Result.Scale.Unit != "px" {
+			return errors.New("unknown document scale must use pixel coordinates")
+		}
+	} else if isNotFinite(*conversion) || *conversion <= 0 {
+		return errors.New("document has invalid scale conversion")
 	}
 	if err := validateSegmentSet(doc.Result.Walls); err != nil {
 		return err
 	}
 	if err := validateBounds(doc.Result.Rooms); err != nil {
+		return err
+	}
+	if err := validateImageBounds(doc); err != nil {
 		return err
 	}
 	allOpenings := append(append([]floorplan.Opening{}, doc.Result.Doors...), doc.Result.Windows...)
@@ -104,11 +169,29 @@ func validateDocumentEnvelope(doc floorplan.ParseResponse) error {
 	return nil
 }
 
+func validateImageBounds(doc floorplan.ParseResponse) error {
+	width := float64(doc.Result.Metadata.ImageWidth)
+	height := float64(doc.Result.Metadata.ImageHeight)
+	inside := func(x, y float64) bool { return x >= 0 && x <= width && y >= 0 && y <= height }
+	for i, wall := range doc.Result.Walls {
+		if !inside(wall.X1, wall.Y1) || !inside(wall.X2, wall.Y2) {
+			return fmt.Errorf("wall[%d] exceeds source image bounds", i)
+		}
+	}
+	for i, room := range doc.Result.Rooms {
+		bounds := room.ApproximateBounds
+		if !inside(bounds.X1, bounds.Y1) || !inside(bounds.X2, bounds.Y2) {
+			return fmt.Errorf("room[%d] exceeds source image bounds", i)
+		}
+	}
+	return nil
+}
+
 func validateSegmentSet(segments []floorplan.Segment) error {
 	seen := map[string]struct{}{}
 	for i, segment := range segments {
-		if strings.TrimSpace(segment.ID) == "" {
-			return fmt.Errorf("wall[%d] id is required", i)
+		if !stableGeometryIDPattern.MatchString(segment.ID) {
+			return fmt.Errorf("wall[%d] must use a stable id", i)
 		}
 		if _, ok := seen[segment.ID]; ok {
 			return fmt.Errorf("wall[%d] has duplicate id", i)
@@ -117,7 +200,7 @@ func validateSegmentSet(segments []floorplan.Segment) error {
 		if isNotFinite(segment.X1) || isNotFinite(segment.Y1) || isNotFinite(segment.X2) || isNotFinite(segment.Y2) {
 			return fmt.Errorf("wall[%d] has invalid numeric value", i)
 		}
-		if math.Hypot(segment.X2-segment.X1, segment.Y2-segment.Y1) <= 0 {
+		if math.Hypot(segment.X2-segment.X1, segment.Y2-segment.Y1) <= MinCanonicalWallLength {
 			return fmt.Errorf("wall[%d] is degenerate", i)
 		}
 	}
@@ -177,8 +260,8 @@ func validateOpenings(walls []floorplan.Segment, openings []floorplan.Opening) e
 	seen := map[string]struct{}{}
 	grouped := map[string][]floorplan.Opening{}
 	for i, o := range openings {
-		if strings.TrimSpace(o.ID) == "" {
-			return fmt.Errorf("opening[%d] id is required", i)
+		if !stableGeometryIDPattern.MatchString(o.ID) {
+			return fmt.Errorf("opening[%d] must use a stable id", i)
 		}
 		if _, ok := seen[o.ID]; ok {
 			return fmt.Errorf("opening[%d] has duplicate id", i)
@@ -237,7 +320,7 @@ func IsSupportedContentType(contentType string) bool {
 
 // ValidateSourceImageMetadata makes the durable document's source-image
 // metadata agree with the immutable object bytes stored for the project.
-func ValidateSourceImageMetadata(doc floorplan.ParseResponse, filename, contentType string, size int64) error {
+func ValidateSourceImageMetadata(doc floorplan.ParseResponse, filename, contentType string, size int64, width, height int) error {
 	if doc.Filename != filename {
 		return errors.New("document filename must match source_image filename")
 	}
@@ -246,6 +329,9 @@ func ValidateSourceImageMetadata(doc floorplan.ParseResponse, filename, contentT
 	}
 	if int64(doc.Size) != size {
 		return errors.New("document size must match source_image size")
+	}
+	if doc.Result.Metadata.ImageWidth != width || doc.Result.Metadata.ImageHeight != height {
+		return errors.New("document image dimensions must match source_image dimensions")
 	}
 	return nil
 }

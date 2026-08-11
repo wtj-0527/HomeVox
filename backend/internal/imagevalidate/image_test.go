@@ -3,11 +3,14 @@ package imagevalidate
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"strings"
 	"testing"
 )
 
@@ -53,6 +56,16 @@ func TestDecodeRejectsTruncatedOrCorruptImages(t *testing.T) {
 		if _, _, _, err := Decode(fixture[:len(fixture)/2]); err == nil {
 			t.Fatal("Decode accepted truncated image")
 		}
+	}
+}
+
+func TestDecodeRejectsOversizedDimensionsBeforeFullDecode(t *testing.T) {
+	data := mustEncode(t, func(w *bytes.Buffer, value image.Image) error { return png.Encode(w, value) })
+	binary.BigEndian.PutUint32(data[16:20], uint32(MaxImageDimension+1))
+	binary.BigEndian.PutUint32(data[20:24], 1)
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	if _, _, _, err := Decode(data); err == nil || !strings.Contains(err.Error(), "dimensions exceed") {
+		t.Fatalf("Decode oversized IHDR error = %v", err)
 	}
 }
 

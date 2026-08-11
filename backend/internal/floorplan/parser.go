@@ -3,6 +3,7 @@ package floorplan
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -11,8 +12,37 @@ import (
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/ai"
 )
 
-const visionSystemPrompt = "You extract residential floor-plan structure. Return only one strict JSON object matching this schema: {rooms:[{name,type,approximate_bounds:{x1,y1,x2,y2},area_ratio}], walls:[{id,x1,y1,x2,y2}], doors:[{id,kind,wallId,position,width,source,confirmed}], windows:[{id,kind,wallId,position,width,source,confirmed}], scale:{unit,pixel_to_unit}, metadata:{source,confidence,image_width,image_height}}. Every listed field is required, no additional fields are accepted, and arrays may be empty. Use pixel coordinates when exact scale is unknown. Never infer or fabricate wall associations, opening widths, architectural dimensions, scale, orientation, height, thickness, or load-bearing status."
+const visionSystemPrompt = "You extract residential floor-plan structure. Return only one strict JSON object matching this schema: {rooms:[{name,type,approximate_bounds:{x1,y1,x2,y2},area_ratio}], walls:[{id,x1,y1,x2,y2}], doors:[{id,kind,wallId,position,width,source,confirmed}], windows:[{id,kind,wallId,position,width,source,confirmed}], scale:{unit,pixel_to_unit}, metadata:{source,confidence,image_width,image_height}}. Every listed field is required, no additional fields are accepted, and arrays may be empty. All coordinates and opening widths are image pixels. scale.pixel_to_unit must be either a finite number or null, never a string: when no physical scale is explicitly visible, return exactly scale:{unit:\"px\",pixel_to_unit:null}; do not infer a conversion, orientation, height, thickness, or load-bearing status. metadata.confidence must be a finite number and image_width/image_height must be integers."
 const visionUserPrompt = "Parse this floor-plan image into the required JSON structure. Do not include markdown fences. Omit an opening if its wall-local position or width cannot be established."
+const dimensionedVisionUserPrompt = "Parse this floor-plan image into the required JSON structure. The original uploaded image is exactly %d pixels wide and %d pixels high. Use that exact original %d x %d pixel coordinate grid for every room bound, wall endpoint, and opening width, and return metadata.image_width exactly %d and metadata.image_height exactly %d. Do not include markdown fences. Omit an opening if its wall-local position or width cannot be established."
+const candidateSystemPrompt = "Find reliable single-floor-plan crops in this source image. Return only one strict JSON object matching this schema: {mode:string,candidates:[{x:number,y:number,width:number,height:number}]}. mode must be exactly one of \"single\", \"composite\", or \"uncertain\". Candidates must be absolute integer-pixel rectangles on the source image. Return mode \"uncertain\" with candidates:[] when no reliable crop can be established. Return \"single\" with exactly one candidate; return \"composite\" with two or more non-overlapping candidates. Do not add fields or markdown."
+const candidateUserPrompt = "Detect reliable crop rectangles that each contain one standalone floor plan. Do not guess a crop when the image is ambiguous."
+
+const minCandidateAreaPixels = 64
+
+type ParseErrorCode string
+
+const (
+	ParseErrorTransport ParseErrorCode = "transport"
+	ParseErrorSchema    ParseErrorCode = "schema"
+	ParseErrorContent   ParseErrorCode = "content"
+)
+
+type ParseError struct {
+	Code ParseErrorCode
+	Err  error
+}
+
+func (e *ParseError) Error() string { return e.Err.Error() }
+func (e *ParseError) Unwrap() error { return e.Err }
+
+func ErrorCode(err error) ParseErrorCode {
+	var parseError *ParseError
+	if errors.As(err, &parseError) {
+		return parseError.Code
+	}
+	return ParseErrorTransport
+}
 
 type Parser struct {
 	client *ai.Client
@@ -23,6 +53,18 @@ func NewParser(client *ai.Client) *Parser {
 }
 
 func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, error) {
+	return p.parse(ctx, imageDataURL, visionUserPrompt, 0, 0)
+}
+
+func (p *Parser) ParseAtDimensions(ctx context.Context, imageDataURL string, imageWidth, imageHeight int) (ParseResult, error) {
+	if imageWidth <= 0 || imageHeight <= 0 {
+		return ParseResult{}, &ParseError{Code: ParseErrorContent, Err: fmt.Errorf("source image dimensions must be positive")}
+	}
+	prompt := fmt.Sprintf(dimensionedVisionUserPrompt, imageWidth, imageHeight, imageWidth, imageHeight, imageWidth, imageHeight)
+	return p.parse(ctx, imageDataURL, prompt, imageWidth, imageHeight)
+}
+
+func (p *Parser) parse(ctx context.Context, imageDataURL, userPrompt string, imageWidth, imageHeight int) (ParseResult, error) {
 	if p.client == nil || p.client.APIKey == "" {
 		return ParseResult{}, fmt.Errorf("AI_API_KEY is required to parse floor plans")
 	}
@@ -38,7 +80,7 @@ func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, e
 		{
 			Role: "user",
 			Content: []map[string]any{
-				{"type": "text", "text": visionUserPrompt},
+				{"type": "text", "text": userPrompt},
 				{"type": "image_url", "image_url": map[string]string{"url": imageDataURL}},
 			},
 		},
@@ -46,19 +88,32 @@ func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, e
 
 	response, err := p.client.Chat(ctx, messages)
 	if err != nil {
-		return ParseResult{}, err
+		return ParseResult{}, &ParseError{Code: ParseErrorTransport, Err: err}
 	}
 	content, err := firstChoiceContent(response)
 	if err != nil {
-		return ParseResult{}, err
+		return ParseResult{}, &ParseError{Code: ParseErrorSchema, Err: err}
 	}
 
 	result, err := decodeCanonicalParseResult(content)
 	if err != nil {
-		return ParseResult{}, err
+		return ParseResult{}, &ParseError{Code: ParseErrorSchema, Err: err}
+	}
+	if imageWidth > 0 && imageHeight > 0 {
+		// Provider preprocessing may self-report different dimensions even when
+		// the returned geometry follows the requested source-pixel grid. Decoded
+		// upload bytes remain authoritative; geometry is checked against those
+		// bounds below instead of trusting provider metadata.
+		result.Metadata.ImageWidth = imageWidth
+		result.Metadata.ImageHeight = imageHeight
 	}
 	if err := validateParsedResult(result); err != nil {
-		return ParseResult{}, err
+		return ParseResult{}, &ParseError{Code: ParseErrorContent, Err: err}
+	}
+	if imageWidth > 0 && imageHeight > 0 {
+		if err := validateParsedBounds(result, imageWidth, imageHeight); err != nil {
+			return ParseResult{}, &ParseError{Code: ParseErrorContent, Err: err}
+		}
 	}
 	// Vision output is an unmeasured interpretation, never an architectural
 	// confirmation. Preserve only explicit manual/measurement confirmations.
@@ -71,12 +126,159 @@ func (p *Parser) Parse(ctx context.Context, imageDataURL string) (ParseResult, e
 	return result, nil
 }
 
+func validateParsedBounds(result ParseResult, imageWidth, imageHeight int) error {
+	inBounds := func(x, y float64) bool {
+		return x >= 0 && x <= float64(imageWidth) && y >= 0 && y <= float64(imageHeight)
+	}
+	for i, room := range result.Rooms {
+		bounds := room.ApproximateBounds
+		if bounds.X1 > bounds.X2 || bounds.Y1 > bounds.Y2 || !inBounds(bounds.X1, bounds.Y1) || !inBounds(bounds.X2, bounds.Y2) {
+			return fmt.Errorf("room[%d] exceeds source image bounds", i)
+		}
+	}
+	for i, wall := range result.Walls {
+		if !inBounds(wall.X1, wall.Y1) || !inBounds(wall.X2, wall.Y2) {
+			return fmt.Errorf("wall[%d] exceeds source image bounds", i)
+		}
+	}
+	return nil
+}
+
+// AnalyzeCandidates finds reliable source-image crop candidates without
+// creating a fallback rectangle. Returned coordinates stay in original pixels.
+func (p *Parser) AnalyzeCandidates(ctx context.Context, imageDataURL string, imageWidth, imageHeight int) (CandidateDetection, error) {
+	if p.client == nil || p.client.APIKey == "" {
+		return CandidateDetection{}, fmt.Errorf("AI_API_KEY is required to analyze floor-plan candidates")
+	}
+	if p.client.BaseURL == "" || p.client.Model == "" {
+		return CandidateDetection{}, fmt.Errorf("AI_BASE_URL and AI_MODEL are required to analyze floor-plan candidates")
+	}
+	if imageWidth <= 0 || imageHeight <= 0 {
+		return CandidateDetection{}, &ParseError{Code: ParseErrorContent, Err: fmt.Errorf("source image dimensions must be positive")}
+	}
+	response, err := p.client.Chat(ctx, []ai.Message{
+		{Role: "system", Content: candidateSystemPrompt},
+		{Role: "user", Content: []map[string]any{
+			{"type": "text", "text": candidateUserPrompt},
+			{"type": "image_url", "image_url": map[string]string{"url": imageDataURL}},
+		}},
+	})
+	if err != nil {
+		return CandidateDetection{}, &ParseError{Code: ParseErrorTransport, Err: err}
+	}
+	content, err := firstChoiceContent(response)
+	if err != nil {
+		return CandidateDetection{}, &ParseError{Code: ParseErrorSchema, Err: err}
+	}
+	result, err := decodeCandidateDetection(content)
+	if err != nil {
+		return CandidateDetection{}, &ParseError{Code: ParseErrorSchema, Err: err}
+	}
+	if err := validateCandidateDetection(result, imageWidth, imageHeight); err != nil {
+		return CandidateDetection{}, &ParseError{Code: ParseErrorContent, Err: err}
+	}
+	return result, nil
+}
+
+func decodeCandidateDetection(content string) (CandidateDetection, error) {
+	decoder := json.NewDecoder(strings.NewReader(content))
+	if err := validateJSONValue(decoder, true); err != nil {
+		return CandidateDetection{}, fmt.Errorf("decode ai candidate result: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return CandidateDetection{}, fmt.Errorf("decode ai candidate result: trailing JSON value")
+		}
+		return CandidateDetection{}, fmt.Errorf("decode ai candidate result: trailing content: %w", err)
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(content), &root); err != nil {
+		return CandidateDetection{}, fmt.Errorf("decode ai candidate result: %w", err)
+	}
+	if err := validateObject(root, map[string]rawValidator{
+		"mode": validateString, "candidates": validateCandidateRects,
+	}); err != nil {
+		return CandidateDetection{}, fmt.Errorf("decode ai candidate result: %w", err)
+	}
+	var result CandidateDetection
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		return CandidateDetection{}, fmt.Errorf("decode ai candidate result: %w", err)
+	}
+	return result, nil
+}
+
+func validateCandidateRects(raw json.RawMessage) error {
+	return validateArray(raw, func(item json.RawMessage) error {
+		object, err := decodeObject(item)
+		if err != nil {
+			return err
+		}
+		return validateObject(object, map[string]rawValidator{
+			"x": validateNumber, "y": validateNumber, "width": validateNumber, "height": validateNumber,
+		})
+	})
+}
+
+func validateCandidateDetection(result CandidateDetection, imageWidth, imageHeight int) error {
+	switch result.Mode {
+	case CandidateModeUncertain:
+		if len(result.Candidates) != 0 {
+			return fmt.Errorf("uncertain candidate detection must not fabricate candidates")
+		}
+		return nil
+	case CandidateModeSingle:
+		if len(result.Candidates) != 1 {
+			return fmt.Errorf("single candidate detection must contain exactly one candidate")
+		}
+	case CandidateModeComposite:
+		if len(result.Candidates) < 2 {
+			return fmt.Errorf("composite candidate detection must contain at least two candidates")
+		}
+	default:
+		return fmt.Errorf("candidate detection has invalid mode")
+	}
+	for i, candidate := range result.Candidates {
+		if !finite(candidate.X) || !finite(candidate.Y) || !finite(candidate.Width) || !finite(candidate.Height) ||
+			math.Trunc(candidate.X) != candidate.X || math.Trunc(candidate.Y) != candidate.Y ||
+			math.Trunc(candidate.Width) != candidate.Width || math.Trunc(candidate.Height) != candidate.Height ||
+			candidate.X < 0 || candidate.Y < 0 || candidate.Width <= 0 || candidate.Height <= 0 ||
+			candidate.Width*candidate.Height < minCandidateAreaPixels ||
+			candidate.X+candidate.Width > float64(imageWidth) || candidate.Y+candidate.Height > float64(imageHeight) {
+			return fmt.Errorf("candidate[%d] has invalid source-pixel rectangle", i)
+		}
+		for j := 0; j < i; j++ {
+			if overlaps(candidate, result.Candidates[j]) {
+				return fmt.Errorf("candidate[%d] overlaps candidate[%d]", i, j)
+			}
+		}
+	}
+	return nil
+}
+
+func overlaps(a, b CandidateRect) bool {
+	left, top := math.Max(a.X, b.X), math.Max(a.Y, b.Y)
+	right, bottom := math.Min(a.X+a.Width, b.X+b.Width), math.Min(a.Y+a.Height, b.Y+b.Height)
+	return right > left && bottom > top
+}
+
 func validateParsedResult(result ParseResult) error {
-	if strings.TrimSpace(result.Metadata.Source) == "" || strings.TrimSpace(result.Scale.Unit) == "" {
+	if strings.TrimSpace(result.Metadata.Source) == "" || strings.TrimSpace(result.Scale.Unit) == "" ||
+		!result.Scale.HasPixelToUnit() || !result.Metadata.HasRequiredFields() {
 		return fmt.Errorf("ai result is missing required schema fields")
 	}
-	if !finite(result.Metadata.Confidence) || !finite(result.Scale.PixelToUnit) {
+	if !finite(result.Metadata.Confidence) {
 		return fmt.Errorf("ai result has invalid numeric metadata")
+	}
+	if result.Scale.PixelToUnit == nil {
+		if result.Scale.Unit != "px" {
+			return fmt.Errorf("unknown scale must use pixel coordinates")
+		}
+	} else if !finite(*result.Scale.PixelToUnit) || *result.Scale.PixelToUnit <= 0 {
+		return fmt.Errorf("ai result has invalid scale conversion")
+	}
+	if len(result.Walls) == 0 {
+		return fmt.Errorf("ai result has no reliable wall topology")
 	}
 	wallIDs := make(map[string]Segment, len(result.Walls))
 	for i, wall := range result.Walls {
@@ -294,6 +496,13 @@ func validateNumber(raw json.RawMessage) error {
 	return nil
 }
 
+func validateNullableNumber(raw json.RawMessage) error {
+	if string(raw) == "null" {
+		return nil
+	}
+	return validateNumber(raw)
+}
+
 func validateInteger(raw json.RawMessage) error {
 	var value any
 	if err := json.Unmarshal(raw, &value); err != nil {
@@ -370,7 +579,7 @@ func validateScale(raw json.RawMessage) error {
 	if err != nil {
 		return err
 	}
-	return validateObject(object, map[string]rawValidator{"unit": validateString, "pixel_to_unit": validateNumber})
+	return validateObject(object, map[string]rawValidator{"unit": validateString, "pixel_to_unit": validateNullableNumber})
 }
 
 func validateMetadata(raw json.RawMessage) error {

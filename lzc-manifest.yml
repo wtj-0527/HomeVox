@@ -1,0 +1,73 @@
+application:
+  subdomain: homevox
+  routes:
+    - /=http://homevox:18088
+  multi_instance: false
+  public_path:
+    - /
+  health_check:
+    test_url: http://homevox:18088/api/health
+    start_period: 180s
+    timeout: 5s
+
+services:
+  homevox:
+    image: embed:homevox-runtime
+    environment:
+      - HOMEVOX_FRONTEND_DIR=/app/frontend
+      - DATABASE_URL=postgres://homevox:{{ stable_secret "postgres_password" }}@postgres:5432/homevox?sslmode=disable
+      - S3_ENDPOINT=http://minio:9000
+      - S3_BUCKET=homevox
+      - S3_ACCESS_KEY_ID=homevox
+      - S3_SECRET_ACCESS_KEY={{ stable_secret "minio_password" }}
+      - HOMEVOX_LEGACY_RECOVERY_KEY={{ .U.legacy_recovery_key }}
+      - AI_API_KEY=
+      - AI_BASE_URL=https://api.openai.com/v1
+      - AI_MODEL=gpt-4o-mini
+    depends_on:
+      - postgres
+      - minio-init
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl --fail --silent --show-error http://127.0.0.1:18088/api/health >/dev/null
+      start_period: 60s
+
+  postgres:
+    image: registry.cn-shanghai.aliyuncs.com/wtjking/postgres:16-alpine
+    environment:
+      - POSTGRES_DB=homevox
+      - POSTGRES_USER=homevox
+      - POSTGRES_PASSWORD={{ stable_secret "postgres_password" }}
+      - POSTGRES_INITDB_ARGS=--data-checksums
+    binds:
+      - /lzcapp/var/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U homevox -d homevox
+      start_period: 30s
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data
+    environment:
+      - MINIO_ROOT_USER=homevox
+      - MINIO_ROOT_PASSWORD={{ stable_secret "minio_password" }}
+    binds:
+      - /lzcapp/var/minio:/data
+    healthcheck:
+      test_url: http://localhost:9000/minio/health/live
+      start_period: 30s
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    entrypoint: /bin/sh
+    command: -c 'until mc alias set local http://minio:9000 homevox "{{ stable_secret "minio_password" }}"; do sleep 2; done; mc mb --ignore-existing local/homevox; while true; do sleep 3600; done'
+    depends_on:
+      - minio
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mc stat local/homevox
+      start_period: 30s

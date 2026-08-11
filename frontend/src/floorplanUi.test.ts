@@ -4,6 +4,7 @@ import {
   canvasUnitsForCssPixels,
   isParseResponse,
   openingLabel,
+  validateCanonicalFloorplan,
 } from './floorplanUi'
 
 const validResponse = {
@@ -21,8 +22,8 @@ const validResponse = {
     walls: [{ x1: 0, y1: 0, x2: 100, y2: 0 }],
     doors: [{ type: 'door', x: 50, y: 0 }],
     windows: [{ from: '客厅', to: '室外', x: 80, y: 0 }],
-    scale: { unit: 'px' },
-    metadata: { source: 'test', image_width: 4000, image_height: 3000 },
+    scale: { unit: 'px', pixel_to_unit: null },
+    metadata: { source: 'test', confidence: 0.5, image_width: 4000, image_height: 3000 },
   },
 }
 
@@ -47,7 +48,23 @@ describe('2D editor view helpers', () => {
 
   it('accepts only a complete finite parse response', () => {
     expect(isParseResponse(validResponse)).toBe(true)
+    expect(isParseResponse({
+      ...validResponse,
+      result: { ...validResponse.result, scale: { unit: 'px', pixel_to_unit: null } },
+    })).toBe(true)
     expect(isParseResponse({ ...validResponse, result: undefined })).toBe(false)
+    expect(isParseResponse({
+      ...validResponse,
+      result: { ...validResponse.result, scale: { unit: 'px' } },
+    })).toBe(false)
+    expect(isParseResponse({
+      ...validResponse,
+      result: { ...validResponse.result, scale: { unit: 'px', pixel_to_unit: 'unknown' } },
+    })).toBe(false)
+    expect(isParseResponse({
+      ...validResponse,
+      result: { ...validResponse.result, metadata: { source: 'test', image_width: 4000, image_height: 3000 } },
+    })).toBe(false)
     expect(
       isParseResponse({
         ...validResponse,
@@ -102,5 +119,20 @@ describe('durable local wall openings', () => {
 
     expect(isParseResponse(loadedDocument)).toBe(true)
     expect(validateOpenings(loadedDocument.result.walls, [...loadedDocument.result.doors, ...loadedDocument.result.windows])).toContain('wall id must be unique')
+  })
+})
+
+
+describe('canonical floorplan admission', () => {
+  it('rejects any missing stable ID, non-finite coordinate, or zero-length wall before 3D or persistence', () => {
+    expect(validateCanonicalFloorplan([{ id: 'wall-a', x1: 0, y1: 0, x2: 0, y2: 0 }], [])).toContain('strictly greater than zero')
+    expect(validateCanonicalFloorplan([{ x1: 0, y1: 0, x2: 100, y2: 0 }], [])).toContain('stable id')
+    expect(validateCanonicalFloorplan([{ id: 'wall-a', x1: 0, y1: 0, x2: Number.NaN, y2: 0 }], [])).toContain('finite')
+  })
+
+  it('rejects wall coordinates outside the effective source image', () => {
+    const walls = [{ id: 'wall-a', x1: 0, y1: 0, x2: 101, y2: 0 }]
+    expect(validateCanonicalFloorplan(walls, [], { width: 100, height: 80 })).toContain('source image')
+    expect(validateCanonicalFloorplan([{ ...walls[0], x2: 100 }], [], { width: 100, height: 80 })).toBeNull()
   })
 })

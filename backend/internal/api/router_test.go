@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"image"
+	"image/png"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -16,23 +19,66 @@ import (
 	"github.com/KingBoyAndGirl/HomeVox/backend/internal/config"
 )
 
-func TestRouterAppliesCorsHeaders(t *testing.T) {
+func TestRouterAllowsOnlySameHostCorsPreflight(t *testing.T) {
 	router := NewRouter(config.Config{})
 	req := httptest.NewRequest(http.MethodOptions, "/api/config", nil)
-	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Origin", "http://example.com")
 	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	req.Header.Set("Access-Control-Request-Headers", projectCapabilityHeader)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
 
-	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Fatalf("Access-Control-Allow-Origin = %q, want *", got)
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "http://example.com" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want exact same-host origin", got)
 	}
 	if got := w.Header().Get("Access-Control-Allow-Methods"); got == "" {
 		t.Fatal("Access-Control-Allow-Methods header missing")
 	}
+	if got := w.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, projectCapabilityHeader) {
+		t.Fatalf("Access-Control-Allow-Headers = %q, want project capability header", got)
+	}
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("OPTIONS status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+}
+
+func TestRouterRejectsCrossHostCorsPreflight(t *testing.T) {
+	router := NewRouter(config.Config{})
+	req := httptest.NewRequest(http.MethodOptions, "/api/projects/00000000-0000-0000-0000-000000000001", nil)
+	req.Header.Set("Origin", "https://attacker.example")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	req.Header.Set("Access-Control-Request-Headers", projectCapabilityHeader)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("OPTIONS status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("cross-host response exposed Access-Control-Allow-Origin %q", got)
+	}
+}
+
+func TestRouterAllowsSamePublicOriginBehindIngress(t *testing.T) {
+	router := NewRouter(config.Config{})
+	req := httptest.NewRequest(http.MethodOptions, "/api/projects/00000000-0000-0000-0000-000000000001", nil)
+	req.Host = "homevox:18088"
+	req.Header.Set("Origin", "https://homevox.example")
+	req.Header.Set("X-Forwarded-Host", "homevox.example")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	req.Header.Set("Access-Control-Request-Headers", projectCapabilityHeader)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("proxied same-origin OPTIONS status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://homevox.example" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want public origin", got)
 	}
 }
 
@@ -117,6 +163,25 @@ func TestConfiguredUnresponsivePersistenceOnlyDisablesProjectAPIs(t *testing.T) 
 	}
 }
 
+func TestRouterPassesLegacyRecoveryKeyToProjectDependencies(t *testing.T) {
+	var received databaseConfig
+	router, cleanup := newRouterWithCleanup(
+		config.Config{LegacyRecoveryKey: "operator-only-key"},
+		time.Second,
+		func(_ context.Context, cfg databaseConfig) projectDependencies {
+			received = cfg
+			return projectDependencies{databaseStatus: statusNotConfigured, s3Status: statusNotConfigured}
+		},
+	)
+	defer cleanup()
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	if received.LegacyRecoveryKey != "operator-only-key" {
+		t.Fatalf("LegacyRecoveryKey = %q, want configured operator key", received.LegacyRecoveryKey)
+	}
+}
+
 func TestParseFloorplanRequiresImageFile(t *testing.T) {
 	router := NewRouter(config.Config{})
 	body := &bytes.Buffer{}
@@ -162,6 +227,123 @@ func TestParseFloorplanReportsMissingAIConfig(t *testing.T) {
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("parse status = %d, want %d; body=%s", w.Code, http.StatusServiceUnavailable, w.Body.String())
+	}
+}
+
+func TestParseFloorplanBindsProviderCoordinatesToDecodedImageDimensions(t *testing.T) {
+	content := `{"rooms":[],"walls":[{"id":"wall-1","x1":0,"y1":0,"x2":1,"y2":0}],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"vision","confidence":0.8,"image_width":20,"image_height":30}}`
+	vision := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Messages []struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.Messages) != 2 {
+			t.Fatalf("decode request: %v", err)
+		}
+		var user []struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(request.Messages[1].Content, &user); err != nil || len(user) != 2 ||
+			!strings.Contains(user[0].Text, "exactly 2 pixels wide and 3 pixels high") {
+			t.Fatalf("dimension-bound prompt = %s", request.Messages[1].Content)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"content":%q}}]}`, content)
+	}))
+	defer vision.Close()
+	router := NewRouter(config.Config{AIBaseURL: vision.URL, AIAPIKey: "controlled-test-key", AIModel: "test-model"})
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("floorplan", "effective-crop.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write(validPNG(t)) // 2 × 3 pixels
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/floorplans/parse", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var parsed struct {
+		Result struct {
+			Metadata struct {
+				ImageWidth  int `json:"image_width"`
+				ImageHeight int `json:"image_height"`
+			} `json:"metadata"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if parsed.Result.Metadata.ImageWidth != 2 || parsed.Result.Metadata.ImageHeight != 3 {
+		t.Fatalf("metadata dimensions = %dx%d, want decoded 2x3", parsed.Result.Metadata.ImageWidth, parsed.Result.Metadata.ImageHeight)
+	}
+}
+
+func TestParseFloorplanClassifiesInvalidAIOutputWithoutLeakingDiagnostics(t *testing.T) {
+	tests := map[string]struct {
+		content  string
+		wantCode string
+		wantText string
+	}{
+		"schema": {
+			content:  `{"rooms":[],"walls":[{"id":"wall-1","x1":0,"y1":0,"x2":100,"y2":0}],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":"unknown"},"metadata":{"source":"vision","confidence":0.8,"image_width":100,"image_height":80}}`,
+			wantCode: "ai_schema_invalid",
+			wantText: "格式不完整",
+		},
+		"unreliable topology": {
+			content:  `{"rooms":[],"walls":[],"doors":[],"windows":[],"scale":{"unit":"px","pixel_to_unit":null},"metadata":{"source":"vision","confidence":0.2,"image_width":100,"image_height":80}}`,
+			wantCode: "ai_content_unreliable",
+			wantText: "裁切",
+		},
+	}
+	for name, testCase := range tests {
+		t.Run(name, func(t *testing.T) {
+			vision := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"content":%q}}]}`, testCase.content)
+			}))
+			defer vision.Close()
+			router := NewRouter(config.Config{AIBaseURL: vision.URL, AIAPIKey: "test-key", AIModel: "test-model"})
+			body := &bytes.Buffer{}
+			writer := multipart.NewWriter(body)
+			part, err := writer.CreateFormFile("floorplan", "plan.png")
+			if err != nil {
+				t.Fatalf("create form file: %v", err)
+			}
+			_, _ = part.Write(validPNG(t))
+			if err := writer.Close(); err != nil {
+				t.Fatalf("close multipart writer: %v", err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/api/floorplans/parse", body)
+			request.Header.Set("Content-Type", writer.FormDataContentType())
+			response := httptest.NewRecorder()
+
+			router.ServeHTTP(response, request)
+
+			if response.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
+			}
+			var payload struct {
+				Code  string `json:"code"`
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if payload.Code != testCase.wantCode || !strings.Contains(payload.Error, testCase.wantText) {
+				t.Fatalf("payload = %#v", payload)
+			}
+			if strings.Contains(payload.Error, "pixel_to_unit") || strings.Contains(payload.Error, "decode ai") {
+				t.Fatalf("internal parser diagnostics leaked: %q", payload.Error)
+			}
+		})
 	}
 }
 
@@ -260,5 +442,66 @@ func TestParseFloorplanRejectsCorruptImagesBeforeVision(t *testing.T) {
 	}
 	if visionCalls != 0 {
 		t.Fatalf("corrupt images reached Vision %d times", visionCalls)
+	}
+}
+
+func TestAnalyzeFloorplanCandidatesReturnsSourcePixelRectsAndFailsClosed(t *testing.T) {
+	vision := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"mode\":\"single\",\"candidates\":[{\"x\":1,\"y\":2,\"width\":10,\"height\":10}]}"}}]}`))
+	}))
+	defer vision.Close()
+	router := NewRouter(config.Config{AIBaseURL: vision.URL, AIAPIKey: "test-key", AIModel: "test-model"})
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("floorplan", "plan.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageData := &bytes.Buffer{}
+	if err := png.Encode(imageData, image.NewRGBA(image.Rect(0, 0, 20, 20))); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write(imageData.Bytes())
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/floorplans/candidates", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"mode":"single"`) || !strings.Contains(response.Body.String(), `"width":10`) {
+		t.Fatalf("body=%s", response.Body.String())
+	}
+}
+
+func TestAnalyzeFloorplanCandidatesRejectsOversizedMultipartBeforeImageHandling(t *testing.T) {
+	router := NewRouter(config.Config{AIBaseURL: "https://example.test/v1", AIAPIKey: "test-key", AIModel: "test-model"})
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("floorplan", "oversized.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte("x"), maxFloorplanUploadBytes+maxMultipartOverheadBytes+1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/floorplans/candidates", body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "10 MiB") {
+		t.Fatalf("expected actionable size error, body=%s", response.Body.String())
 	}
 }

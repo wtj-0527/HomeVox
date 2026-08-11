@@ -4,6 +4,7 @@ import {
   buildWallShellModel,
   WALL_SHELL_HEIGHT,
   WALL_SHELL_THICKNESS,
+  windowOpeningVerticalSpan,
 } from './wallShell'
 
 export const WALL_VOXEL_GRID_SIZE = 17
@@ -45,10 +46,17 @@ export function buildWallVoxelModel(walls: readonly WallSegment[], doors: readon
   const shell = buildWallShellModel(walls, doors, windows)
   if (shell.validationError || shell.walls.length === 0) return null
 
-  const minX = Math.min(...shell.walls.map((wall) => wall.x - wall.length / 2))
-  const maxX = Math.max(...shell.walls.map((wall) => wall.x + wall.length / 2))
-  const minZ = Math.min(...shell.walls.map((wall) => wall.z - wall.length / 2))
-  const maxZ = Math.max(...shell.walls.map((wall) => wall.z + wall.length / 2))
+  // Project each rotated wall box onto world axes. Extending both axes by
+  // length/2 made sparse 17³ sampling miss short, parallel walls.
+  const xExtents = shell.walls.map((wall) => {
+    const cos = Math.abs(Math.cos(wall.rotationY))
+    const sin = Math.abs(Math.sin(wall.rotationY))
+    return { x: wall.length / 2 * cos + WALL_SHELL_THICKNESS / 2 * sin, z: wall.length / 2 * sin + WALL_SHELL_THICKNESS / 2 * cos }
+  })
+  const minX = Math.min(...shell.walls.map((wall, index) => wall.x - xExtents[index].x))
+  const maxX = Math.max(...shell.walls.map((wall, index) => wall.x + xExtents[index].x))
+  const minZ = Math.min(...shell.walls.map((wall, index) => wall.z - xExtents[index].z))
+  const maxZ = Math.max(...shell.walls.map((wall, index) => wall.z + xExtents[index].z))
   const padding = Math.max(WALL_SHELL_THICKNESS, 0.35)
   const bounds = [
     minX - padding,
@@ -98,7 +106,7 @@ export function buildWallVoxelModel(walls: readonly WallSegment[], doors: readon
           )
         }
         // Openings subtract from the same local-wall model. Doors reach the floor;
-        // windows cut only their wall face at a non-persisted preview elevation.
+        // windows use the same aperture definition as selection shell pieces.
         for (const opening of shell.openings) {
           const cos = Math.cos(opening.rotationY)
           const sin = Math.sin(opening.rotationY)
@@ -107,8 +115,9 @@ export function buildWallVoxelModel(walls: readonly WallSegment[], doors: readon
           const localX = cos * dx - sin * dz
           const localZ = sin * dx + cos * dz
           const halfWidth = opening.width / 2
-          const openingHeight = opening.kind === 'door' ? WALL_SHELL_HEIGHT : WALL_SHELL_HEIGHT * 0.42
-          const centerY = opening.kind === 'door' ? openingHeight / 2 : WALL_SHELL_HEIGHT * 0.62
+          const windowSpan = windowOpeningVerticalSpan(WALL_SHELL_HEIGHT)
+          const openingHeight = opening.kind === 'door' ? WALL_SHELL_HEIGHT : windowSpan.top - windowSpan.bottom
+          const centerY = opening.kind === 'door' ? openingHeight / 2 : windowSpan.bottom + openingHeight / 2
           const cut = -signedBoxDistance(
             localX,
             y - centerY,

@@ -1,0 +1,85 @@
+name: HomeVox CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homevox-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_DB: homevox_test
+          POSTGRES_USER: homevox
+          POSTGRES_PASSWORD: homevox
+        options: >-
+          --health-cmd "pg_isready -U homevox -d homevox_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      HOMEVOX_TEST_DATABASE_URL: postgres://homevox:homevox@localhost:5432/homevox_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      # PostgreSQL regressions in internal/api and internal/db both exercise schema
+      # initialization against this single service. Keep packages serial so their
+      # destructive legacy-schema fixtures cannot race each other.
+      - run: go test -p 1 ./...
+
+  frontend-and-wasm:
+    name: Frontend, WASM, and production build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm --prefix frontend ci
+      - run: ./scripts/bootstrap-wasm.sh
+      - run: cargo +1.96.1 test --manifest-path wasm/Cargo.toml
+      - run: npm --prefix frontend run lint
+      - run: npm --prefix frontend test
+      - run: npm --prefix frontend run build
+
+  production-browser-e2e:
+    name: Production browser persistence E2E
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm --prefix frontend ci
+      - run: HOMEVOX_E2E_ARTIFACT_DIR="$RUNNER_TEMP/homevox-e2e-artifacts" HOMEVOX_KEEP_E2E_ARTIFACTS=1 npm --prefix frontend run test:e2e
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-browser-e2e-${{ github.sha }}
+          path: ${{ runner.temp }}/homevox-e2e-artifacts
+          if-no-files-found: warn
