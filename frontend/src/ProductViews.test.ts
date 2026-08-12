@@ -27,18 +27,18 @@ const inspector: InspectorPanelProps = {
 
 describe('2D recognition snapshot controls', () => {
   it('offers creation before 3D and explicit updates after the snapshot exists', () => {
-    const create = renderToStaticMarkup(createElement(WorkspaceToolbar, { inspector, canAdvance: true, onAdvance: vi.fn(), snapshot: { exists: false, busy: false, message: '', messageTone: 'success', onSave: vi.fn(), onReload: vi.fn(), onCopyResumeLink: vi.fn() } }))
+    const create = renderToStaticMarkup(createElement(WorkspaceToolbar, { inspector, canAdvance: true, onAdvance: vi.fn(), snapshot: { exists: false, busy: false, message: '', messageTone: 'success', saveState: 'idle', onSave: vi.fn(), onRetry: vi.fn(), onReload: vi.fn(), onCopyResumeLink: vi.fn() } }))
     expect(create).toContain('创建识别快照')
     expect(create).not.toContain('复制编辑链接')
 
-    const update = renderToStaticMarkup(createElement(WorkspaceToolbar, { inspector, canAdvance: true, onAdvance: vi.fn(), snapshot: { exists: true, busy: false, message: '识别快照已保存', messageTone: 'success', onSave: vi.fn(), onReload: vi.fn(), onCopyResumeLink: vi.fn() } }))
-    expect(update).toContain('保存当前修改')
-    expect(update).toContain('识别快照已保存')
+    const update = renderToStaticMarkup(createElement(WorkspaceToolbar, { inspector, canAdvance: true, onAdvance: vi.fn(), snapshot: { exists: true, busy: false, message: '已保存', messageTone: 'success', saveState: 'saved', onSave: vi.fn(), onRetry: vi.fn(), onReload: vi.fn(), onCopyResumeLink: vi.fn() } }))
+    expect(update).not.toContain('保存当前修改')
+    expect(update).toContain('已保存')
     expect(update).toContain('复制编辑链接')
   })
 
   it('renders revision conflict as an error with an explicit latest-version recovery', () => {
-    const markup = renderToStaticMarkup(createElement(WorkspaceToolbar, { inspector, canAdvance: true, onAdvance: vi.fn(), snapshot: { exists: true, busy: false, message: '项目已在其他页面更新，请加载最新版本后再保存', messageTone: 'error', onSave: vi.fn(), onReload: vi.fn(), onCopyResumeLink: vi.fn() } }))
+    const markup = renderToStaticMarkup(createElement(WorkspaceToolbar, { inspector, canAdvance: true, onAdvance: vi.fn(), snapshot: { exists: true, busy: false, message: '项目已在其他页面更新，请加载最新版本后再保存', messageTone: 'error', saveState: 'conflict', onSave: vi.fn(), onRetry: vi.fn(), onReload: vi.fn(), onCopyResumeLink: vi.fn() } }))
     expect(markup).toContain('text-red-700')
     expect(markup).toContain('加载最新版本')
     expect(markup).not.toContain('00000000-')
@@ -71,9 +71,7 @@ describe('product save disclosure', () => {
       hasDocument: true,
       onOpenStep: vi.fn(),
     }, 'editor'))
-    expect(markup).not.toContain('自动保存')
-    expect(markup).not.toContain('已同步')
-    expect(markup).toContain('修改需手动保存')
+    expect(markup).not.toContain('修改需手动保存')
   })
 
   it('offers explicit secure resume-link copying without a global project list', () => {

@@ -2,11 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { createProjectSession, projectSaveIssue, type ProjectSessionDependencies } from './projectSession'
 import { storeInitialProjectAccess, type ProjectAccess } from './projectAccess'
 import { ProjectAPIError, type ProjectDetail } from './projects'
+import type { ParseResponse } from './floorplanUi'
 
 const capability = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 const access: ProjectAccess = { id: '00000000-0000-0000-0000-000000000001', capability }
 
-const document = {
+const document: ParseResponse = {
   filename: 'plan.png',
   contentType: 'image/png',
   size: 3,
@@ -51,11 +52,13 @@ function sessionHarness({
   currentProject = null,
   sourceFile = new File(['png'], 'plan.png', { type: 'image/png' }),
   initialAccess = currentProject ? access : null,
+  currentDocument = () => document,
   dependencies = {},
 }: {
   currentProject?: ProjectDetail | null
   sourceFile?: File | null
   initialAccess?: ProjectAccess | null
+  currentDocument?: () => ParseResponse
   dependencies?: Partial<ProjectSessionDependencies>
 } = {}) {
   const states: Array<Record<string, unknown>> = []
@@ -68,7 +71,7 @@ function sessionHarness({
     fetchSourceImage: vi.fn().mockResolvedValue(new Blob(['png'], { type: 'image/png' })),
   }
   const controller = createProjectSession({
-    document: () => document,
+    document: currentDocument,
     geometryValidationError: () => null,
     sourceFile: () => sourceFile,
     projectName: () => 'Home',
@@ -145,6 +148,72 @@ describe('ProjectSession controller', () => {
     expect(update.onProjectSaved).toHaveBeenCalledWith(
       { ...project, revision: 3 },
       { stage: 'snapshot', canonicalRevision: 'step-3-revision' },
+    )
+  })
+
+  it('serializes automatic saves and persists only the latest queued canonical intent', async () => {
+    const first = deferred<ProjectDetail>()
+    const documents = [
+      { ...document, result: { ...document.result, walls: [{ id: 'wall-a', x1: 0, y1: 0, x2: 40, y2: 0 }] } },
+      { ...document, result: { ...document.result, walls: [{ id: 'wall-a', x1: 0, y1: 0, x2: 60, y2: 0 }] } },
+      { ...document, result: { ...document.result, walls: [{ id: 'wall-a', x1: 0, y1: 0, x2: 80, y2: 0 }] } },
+    ]
+    let currentDocument = documents[0]
+    const updateProject = vi.fn()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce({ ...project, revision: 4, document: documents[2] })
+    const update = sessionHarness({
+      currentProject: project,
+      sourceFile: null,
+      currentDocument: () => currentDocument,
+      dependencies: { updateProject },
+    })
+
+    const firstSave = update.controller.queueAutoSave({ stage: 'snapshot', canonicalRevision: 'wall-40' })
+    currentDocument = documents[1]
+    const superseded = update.controller.queueAutoSave({ stage: 'snapshot', canonicalRevision: 'wall-60' })
+    currentDocument = documents[2]
+    const latest = update.controller.queueAutoSave({ stage: 'snapshot', canonicalRevision: 'wall-80' })
+
+    expect(updateProject).toHaveBeenCalledTimes(1)
+    expect(updateProject.mock.calls[0][4]).toBe(2)
+    first.resolve({ ...project, revision: 3, document: documents[0] })
+    await Promise.all([firstSave, superseded, latest])
+
+    expect(updateProject).toHaveBeenCalledTimes(2)
+    expect(updateProject.mock.calls[1][3]).toEqual(documents[2])
+    expect(updateProject.mock.calls[1][4]).toBe(3)
+    expect(update.onProjectSaved).toHaveBeenLastCalledWith(
+      { ...project, revision: 4, document: documents[2] },
+      { stage: 'snapshot', canonicalRevision: 'wall-80' },
+    )
+    expect(update.states).toEqual(expect.arrayContaining([
+      expect.objectContaining({ projectSaveState: 'saving' }),
+      expect.objectContaining({ projectSaveState: 'saved' }),
+    ]))
+  })
+
+  it('fails closed on an automatic-save revision conflict and retries the same latest intent explicitly', async () => {
+    const updateProject = vi.fn()
+      .mockRejectedValueOnce(new ProjectAPIError('revision_conflict', '项目已在其他页面更新，请加载最新版本后再保存'))
+      .mockResolvedValueOnce({ ...project, revision: 3 })
+    const update = sessionHarness({
+      currentProject: project,
+      sourceFile: null,
+      dependencies: { updateProject },
+    })
+
+    await update.controller.queueAutoSave({ stage: 'snapshot', canonicalRevision: 'conflicted' })
+    expect(update.states).toEqual(expect.arrayContaining([
+      expect.objectContaining({ projectSaveState: 'conflict' }),
+    ]))
+    expect(update.onProjectSaved).not.toHaveBeenCalled()
+
+    await update.controller.retryProjectSave()
+    expect(updateProject).toHaveBeenCalledTimes(2)
+    expect(update.onProjectSaved).toHaveBeenCalledWith(
+      { ...project, revision: 3 },
+      { stage: 'snapshot', canonicalRevision: 'conflicted' },
     )
   })
 

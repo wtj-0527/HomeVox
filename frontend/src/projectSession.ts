@@ -13,6 +13,7 @@ import {
 
 export type ProjectBusy = 'save' | 'load' | null
 export type ProjectMessageTone = 'success' | 'error'
+export type ProjectSaveState = 'idle' | 'saving' | 'saved' | 'failed' | 'conflict'
 
 export function projectSaveIssue({
   document,
@@ -73,9 +74,12 @@ export type ProjectSession = {
   projectMessage: string
   projectMessageTone: ProjectMessageTone
   projectBusy: ProjectBusy
+  projectSaveState: ProjectSaveState
   setProjectName: (name: string) => void
   clearCurrentProject: () => void
   saveProject: (intent?: ProjectSaveIntent) => Promise<void>
+  queueAutoSave: (intent: ProjectSaveIntent) => Promise<void>
+  retryProjectSave: () => Promise<void>
   loadProject: (access: ProjectAccess) => Promise<void>
 	loadInitialProject: () => Promise<void>
   reloadProject: () => Promise<void>
@@ -106,13 +110,18 @@ export function createProjectSession({
   initialAccess: ProjectAccess | null
   onProjectSaved: (project: ProjectDetail, intent: ProjectSaveIntent) => void
   onProjectLoaded: (project: ProjectDetail, sourceImage: Blob) => void
-  onState: (next: Partial<Pick<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy'>>) => void
-}, dependencies: ProjectSessionDependencies = defaultProjectSessionDependencies): Omit<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy' | 'setProjectName' | 'clearCurrentProject'> {
+  onState: (next: Partial<Pick<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy' | 'projectSaveState'>>) => void
+}, dependencies: ProjectSessionDependencies = defaultProjectSessionDependencies): Omit<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy' | 'projectSaveState' | 'setProjectName' | 'clearCurrentProject'> {
   let request: Request | null = null
   let sequence = 0
   let disposed = false
   let access = initialAccess
   let initialLoadComplete = false
+  let knownProject = currentProject()
+  type AutoSaveRequest = { document: ParseResponse; name: string; intent: ProjectSaveIntent }
+  let pendingAutoSave: AutoSaveRequest | null = null
+  let failedAutoSave: AutoSaveRequest | null = null
+  let autoSavePromise: Promise<void> | null = null
 
   const beginRequest = (): Request | null => {
     if (disposed) return null
@@ -134,7 +143,9 @@ export function createProjectSession({
       const sourceImage = await dependencies.fetchSourceImage(loaded.sourceImageURL, nextAccess.capability, active.controller.signal)
       if (!isCurrent(active)) return false
       access = nextAccess
-      onState({ currentProject: loaded, projectName: loaded.name, projectMessage: '项目已加载', projectMessageTone: 'success' })
+      knownProject = loaded
+      failedAutoSave = null
+      onState({ currentProject: loaded, projectName: loaded.name, projectMessage: '项目已加载', projectMessageTone: 'success', projectSaveState: 'saved' })
       onProjectLoaded(loaded, sourceImage)
       if (typeof window !== 'undefined') clearProjectAccessFragment(window.location, (path) => window.history.replaceState(null, '', path))
       return true
@@ -146,8 +157,75 @@ export function createProjectSession({
     }
   }
 
+  const runAutoSaveQueue = async (): Promise<void> => {
+    while (!disposed && pendingAutoSave) {
+      const queued = pendingAutoSave
+      pendingAutoSave = null
+      const existing = knownProject ?? currentProject()
+      if (!existing || !access || access.id !== existing.id) {
+        failedAutoSave = queued
+        onState({
+          projectMessage: '当前项目缺少有效访问凭据，请通过继续编辑链接重新打开',
+          projectMessageTone: 'error',
+          projectSaveState: 'failed',
+        })
+        return
+      }
+      const active = beginRequest()
+      if (!active) return
+      onState({ projectBusy: 'save', projectMessage: '保存中…', projectMessageTone: 'success', projectSaveState: 'saving' })
+      try {
+        const saved = await dependencies.updateProject(
+          existing.id,
+          access.capability,
+          queued.name,
+          queued.document,
+          existing.revision,
+          active.controller.signal,
+        )
+        if (!isCurrent(active)) return
+        knownProject = saved
+        failedAutoSave = null
+        onState({
+          currentProject: saved,
+          projectName: saved.name,
+          projectMessage: '已保存',
+          projectMessageTone: 'success',
+          projectSaveState: 'saved',
+        })
+        onProjectSaved(saved, queued.intent)
+      } catch (error) {
+        if (active.controller.signal.aborted || !isCurrent(active)) return
+        failedAutoSave = pendingAutoSave ?? queued
+        pendingAutoSave = null
+        const conflict = error instanceof ProjectAPIError && error.code === 'revision_conflict'
+        onState({
+          projectMessage: conflict
+            ? error.message
+            : `保存失败：${error instanceof Error ? error.message : '未知错误'}`,
+          projectMessageTone: 'error',
+          projectSaveState: conflict ? 'conflict' : 'failed',
+        })
+        return
+      } finally {
+        if (isCurrent(active)) onState({ projectBusy: null })
+      }
+    }
+  }
+
+  const startAutoSaveQueue = (): Promise<void> => {
+    if (!autoSavePromise) {
+      autoSavePromise = runAutoSaveQueue().finally(() => {
+        autoSavePromise = null
+        if (pendingAutoSave && !disposed) startAutoSaveQueue()
+      })
+    }
+    return autoSavePromise
+  }
+
   return {
     async saveProject(intent: ProjectSaveIntent = { stage: 'snapshot', canonicalRevision: null }) {
+      if (autoSavePromise) await autoSavePromise
       const issue = projectSaveIssue({
         document: document(),
         geometryValidationError: geometryValidationError(),
@@ -160,7 +238,7 @@ export function createProjectSession({
         return
       }
       const durableDocument = document()
-      const existing = currentProject()
+      const existing = knownProject ?? currentProject()
       if (existing && (!access || access.id !== existing.id)) {
         onState({ projectMessage: '当前项目缺少有效访问凭据，请通过继续编辑链接重新打开', projectMessageTone: 'error' })
         return
@@ -183,11 +261,14 @@ export function createProjectSession({
         // Retain it before observing UI cancellation; cancellation only stops UI updates.
         if (createdAccess) access = createdAccess
         if (!isCurrent(active)) return
+        knownProject = saved
+        failedAutoSave = null
         onState({
           currentProject: saved,
           projectName: saved.name,
           projectMessage: existing ? '项目已保存' : '项目已创建',
           projectMessageTone: 'success',
+          projectSaveState: 'saved',
         })
         onProjectSaved(saved, intent)
       } catch (error) {
@@ -196,10 +277,24 @@ export function createProjectSession({
             ? error.message
             : `项目保存失败：${error instanceof Error ? error.message : '未知错误'}`,
           projectMessageTone: 'error',
+          projectSaveState: error instanceof ProjectAPIError && error.code === 'revision_conflict' ? 'conflict' : 'failed',
         })
       } finally {
         if (isCurrent(active)) onState({ projectBusy: null })
       }
+    },
+    queueAutoSave(intent) {
+      const nextDocument = document()
+      if (!nextDocument || geometryValidationError()) return Promise.resolve()
+      pendingAutoSave = { document: nextDocument, name: projectName(), intent }
+      failedAutoSave = null
+      return startAutoSaveQueue()
+    },
+    retryProjectSave() {
+      if (!failedAutoSave) return Promise.resolve()
+      pendingAutoSave = failedAutoSave
+      failedAutoSave = null
+      return startAutoSaveQueue()
     },
     async loadProject(nextAccess) {
       await loadAccess(nextAccess)
@@ -230,10 +325,13 @@ export function createProjectSession({
     },
     clearAccess() {
       access = null
+      knownProject = null
+      pendingAutoSave = null
+      failedAutoSave = null
 		request?.controller.abort()
 		sequence += 1
 		request = null
-		onState({ projectBusy: null })
+		onState({ projectBusy: null, projectSaveState: 'idle' })
     },
     activate() {
       disposed = false

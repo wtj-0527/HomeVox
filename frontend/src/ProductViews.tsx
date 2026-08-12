@@ -14,7 +14,9 @@ export type TwoDWorkspaceProps = {
     canSave?: boolean
     message: string
     messageTone: 'success' | 'error'
+    saveState: 'idle' | 'saving' | 'saved' | 'failed' | 'conflict'
     onSave: () => void
+    onRetry: () => void
     onReload: () => void
     onCopyResumeLink: () => void
   }
@@ -23,16 +25,28 @@ export type TwoDWorkspaceProps = {
 }
 
 export function WorkspaceToolbar({ inspector, snapshot, linked = false, onAdvance, canAdvance }: Pick<TwoDWorkspaceProps, 'inspector' | 'snapshot' | 'onAdvance' | 'canAdvance'> & { linked?: boolean }) {
+  const saveStateLabel = snapshot.saveState === 'saving' ? '保存中…'
+    : snapshot.saveState === 'saved' ? '已保存'
+      : snapshot.saveState === 'failed' ? '保存失败'
+        : snapshot.saveState === 'conflict' ? '版本冲突'
+          : ''
+  const saveStateClass = snapshot.saveState === 'saving' ? 'bg-blue-50 text-blue-700'
+    : snapshot.saveState === 'saved' ? 'bg-emerald-50 text-emerald-700'
+      : snapshot.saveState === 'failed' ? 'bg-red-50 text-red-700'
+        : snapshot.saveState === 'conflict' ? 'bg-amber-50 text-amber-800'
+          : ''
   return <div className="workspace-toolbar">
     <div className="flex min-w-0 items-center gap-2">
       <span className="toolbar-chip">{linked ? '并排视图' : '2D 编辑'}</span>
       {linked ? <span className="truncate text-xs font-semibold text-emerald-700">平面图与空间预览已同步</span> : <span className="text-xs font-semibold text-slate-500">调整完成后可查看 3D</span>}
     </div>
     <div className="flex items-center gap-2">
-      {snapshot.message && <span role={snapshot.messageTone === 'error' ? 'alert' : 'status'} className={`max-w-44 truncate text-xs font-semibold ${snapshot.messageTone === 'error' ? 'text-red-700' : 'text-emerald-700'}`}>{snapshot.message}</span>}
-      {snapshot.exists && snapshot.messageTone === 'error' && <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={snapshot.onReload}>加载最新版本</button>}
+      {snapshot.exists && saveStateLabel && <span data-testid="autosave-state" role="status" className={`rounded-lg px-2 py-1 text-xs font-semibold ${saveStateClass}`}>{saveStateLabel}</span>}
+      {snapshot.message && (snapshot.saveState === 'failed' || snapshot.saveState === 'conflict') && <span role="alert" className="max-w-44 truncate text-xs font-semibold text-red-700">{snapshot.message}</span>}
+      {snapshot.exists && snapshot.saveState === 'failed' && <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={snapshot.onRetry}>重试</button>}
+      {snapshot.exists && snapshot.saveState === 'conflict' && <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={snapshot.onReload}>加载最新版本</button>}
       {snapshot.exists && <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={snapshot.onCopyResumeLink}>复制编辑链接</button>}
-      <button data-testid="save-recognition-snapshot" type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy || snapshot.canSave === false} onClick={snapshot.onSave}>{snapshot.busy ? '保存中…' : snapshot.exists ? '保存当前修改' : '创建识别快照'}</button>
+      {!snapshot.exists && <button data-testid="save-recognition-snapshot" type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy || snapshot.canSave === false} onClick={snapshot.onSave}>{snapshot.busy ? '保存中…' : '创建识别快照'}</button>}
       <button type="button" className="toolbar-button whitespace-nowrap" disabled={!inspector.canUndo} onClick={inspector.onUndo}>撤销</button>
       <button type="button" className="toolbar-button whitespace-nowrap" disabled={!inspector.canRedo} onClick={inspector.onRedo}>重做</button>
       {linked

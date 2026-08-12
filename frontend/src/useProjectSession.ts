@@ -12,7 +12,7 @@ type ProjectSessionOptions = {
   onProjectLoaded: (project: ProjectDetail, sourceImage: Blob) => void
 }
 
-type ProjectSessionState = Pick<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy'>
+type ProjectSessionState = Pick<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy' | 'projectSaveState'>
 
 const initialState: ProjectSessionState = {
   projectName: '',
@@ -20,6 +20,7 @@ const initialState: ProjectSessionState = {
   projectMessage: '',
   projectMessageTone: 'success',
   projectBusy: null,
+  projectSaveState: 'idle',
 }
 
 export type UseProjectSession = ProjectSession
@@ -77,6 +78,8 @@ export function useProjectSession(options: ProjectSessionOptions): UseProjectSes
       }))
     },
     saveProject: controller.saveProject,
+    queueAutoSave: controller.queueAutoSave,
+    retryProjectSave: controller.retryProjectSave,
     loadProject: controller.loadProject,
 		loadInitialProject: controller.loadInitialProject,
     reloadProject: controller.reloadProject,

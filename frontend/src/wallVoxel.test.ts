@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildWallVoxelModel, WALL_VOXEL_GRID_SIZE } from './wallVoxel'
+import { buildWallVoxelModel, buildWallVoxelModels, WALL_VOXEL_GRID_SIZE } from './wallVoxel'
 import type { ParsedOpening } from './floorplanUi'
 import { WALL_SHELL_THICKNESS } from './wallShell'
 
@@ -127,4 +127,31 @@ describe('buildWallVoxelModel', () => {
     expect(model.spacing[2]).toBeLessThan(WALL_SHELL_THICKNESS * 1.2)
     expect(Array.from(model.data).some((value) => value > 0)).toBe(true)
   })
+
+  it('builds one adaptive WASM field per stable wall so long spans cannot erase, merge, or misidentify short walls', () => {
+    const walls = [
+      { id: 'long', x1: 0, y1: 0, x2: 4000, y2: 0 },
+      { id: 'short-parallel', x1: 1800, y1: 120, x2: 1860, y2: 120 },
+      { id: 'connected', x1: 4000, y1: 0, x2: 4000, y2: 800 },
+      { id: 'diagonal', x1: 2500, y1: 500, x2: 2700, y2: 700 },
+    ]
+    const models = buildWallVoxelModels(
+      walls,
+      [{ id: 'door-long', kind: 'door', wallId: 'long', position: 0.25, width: 120 }],
+      [{ id: 'window-short', kind: 'window', wallId: 'short-parallel', position: 0.5, width: 20 }],
+    )
+
+    expect(models.map((model) => model.wallId)).toEqual(walls.map((wall) => wall.id))
+    expect(new Set(models.map((model) => model.wallId)).size).toBe(walls.length)
+    expect(models.every((model) => model.dimensions[0] >= WALL_VOXEL_GRID_SIZE)).toBe(true)
+    expect(models.find((model) => model.wallId === 'long')!.dimensions[0]).toBeGreaterThan(WALL_VOXEL_GRID_SIZE)
+    const ranges = models.map((model) => ({
+      wallId: model.wallId,
+      min: Math.min(...model.data),
+      max: Math.max(...model.data),
+    }))
+    expect(models.every((model) => Array.from(model.data).some((value) => value > 0)), JSON.stringify(ranges)).toBe(true)
+    expect(models.every((model) => Array.from(model.data).some((value) => value < 0))).toBe(true)
+  })
+
 })

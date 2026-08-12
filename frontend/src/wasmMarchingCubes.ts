@@ -47,7 +47,7 @@ let bindingsPromise: Promise<WasmBindings> | null = null
 
 function validDimensions(dimensions: readonly number[]): boolean {
   return dimensions.length === 3 &&
-    dimensions.every((value) => Number.isInteger(value) && value >= 2 && value <= 32)
+    dimensions.every((value) => Number.isInteger(value) && value >= 2 && value <= 128)
 }
 
 function validate(input: MarchingCubesInput): string | null {

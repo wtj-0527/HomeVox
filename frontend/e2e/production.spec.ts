@@ -460,7 +460,9 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
 	await page.route(`**/api/projects/${createdSnapshot.id}`, (route) => route.request().method() === 'PUT'
 		? (expect(route.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true), route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'revision_conflict', message: 'project has changed' } }) }))
 		: route.continue())
-  await page.getByTestId('save-recognition-snapshot').click()
+  await page.getByTestId('wall-hit-wall-1').click({ position: { x: 80, y: 1 }, force: true })
+  await page.getByLabel('起点 X').fill('91')
+  await page.getByRole('button', { name: '应用坐标' }).click()
   const conflictAlert = page.getByRole('alert')
   await expect(conflictAlert).toContainText('项目已在其他页面更新，请加载最新版本后再保存')
   await expect(conflictAlert).not.toContainText(createdSnapshot.id)
@@ -559,6 +561,7 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await waitForCurrentFrame(page)
   await page.getByTestId('complete-product-step').click()
   await expect(page.getByRole('button', { name: /保存项目，当前步骤/ })).toBeVisible()
+  const finalGeometry = await e2eState(page)
   const hashes = await Promise.all(captures.map(async (path) => createHash('sha256').update(await readFile(path)).digest('hex')))
   expect(new Set(hashes).size).toBe(4)
 
@@ -570,7 +573,7 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   expect(saved.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true)
   const savedProject = await saved.json() as { id: string; revision: number; document: { result: { walls: Array<{ id: string; x1: number; y1: number; x2: number; y2: number }>; windows: Array<{ id: string; wallId: string; position: number; width: number }> } } }
   expect(savedProject.id).toMatch(/^[0-9a-f-]{36}$/i)
-  expect(savedProject.revision).toBe(2)
+  expect(savedProject.revision).toBeGreaterThan(1)
   await expect(page.getByRole('button', { name: /保存项目.*已完成/ })).toBeVisible()
   expect(savedProject.document.result.walls.find((wall) => wall.id === 'wall-1')).toEqual(editedWall)
   expect(savedProject.document.result.windows).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'window-1', wallId: 'wall-2', width: 61 })]))
@@ -607,7 +610,7 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
 	await expect(restartedPage.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
 	const reloadedGeometry = await e2eState(restartedPage)
   expect(reloadedGeometry.geometry.finite).toBe(true)
-  expect(reloadedGeometry.geometry.fingerprint).toBe(geometryAfterEndpointEdit.geometry.fingerprint)
+  expect(reloadedGeometry.geometry.fingerprint).toBe(finalGeometry.geometry.fingerprint)
   expect(reloadedGeometry.walls.find((wall) => wall.id === 'wall-1')).toEqual(editedWall)
   const accessibility = await restartedPage.locator('body').ariaSnapshot()
   expect(accessibility).not.toMatch(/(?:WASM|Grid|triangles|fallback|结构化 JSON)/i)

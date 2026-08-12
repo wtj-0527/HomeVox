@@ -1,5 +1,6 @@
 import type { BufferGeometry } from 'three'
 import type { WallShellModel } from './wallShell'
+import type { WasmWallGeometry } from './wasmGeometry'
 
 export type WasmWallMeshPresentation = {
   geometry: BufferGeometry
@@ -61,4 +62,20 @@ export function wasmWallMeshPresentation(
       if (wallID) onSelectWall(wallID)
     },
   }
+}
+
+export function wasmWallMeshPresentations(
+  wasmActive: boolean,
+  geometries: readonly WasmWallGeometry[],
+  onSelectWall: (wallID: string) => void,
+): Array<WasmWallMeshPresentation & { wallId: string }> {
+  if (!wasmActive) return []
+  return geometries.map(({ wallId, geometry }) => ({
+    wallId,
+    geometry,
+    visible: true,
+    castShadow: true,
+    receiveShadow: true,
+    onSelectAt: () => onSelectWall(wallId),
+  }))
 }

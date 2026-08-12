@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
-import type { BufferGeometry } from 'three'
 import {
   type EndpointRef,
   type WallSegment,
@@ -28,9 +27,9 @@ import {
   type Viewport,
 } from './floorplanUi'
 import { buildWallShellModel } from './wallShell'
-import { buildWallVoxelModel, type WallVoxelModel } from './wallVoxel'
+import { buildWallVoxelModels, type WallVoxelModel } from './wallVoxel'
 import { runMarchingCubes, type MarchingCubesMetrics, type WasmFallbackReason } from './wasmMarchingCubes'
-import { buildWasmWallGeometry, disposeWasmWallGeometry } from './wasmGeometry'
+import { buildWasmWallGeometry, disposeWasmWallGeometries, type WasmWallGeometry } from './wasmGeometry'
 import {
   buildExportFileName,
   downloadBlobAsPng,
@@ -227,12 +226,14 @@ export default function App() {
   const [originalImageSize, setOriginalImageSize] = useState<{ width: number; height: number } | null>(null)
   const [effectiveImageSize, setEffectiveImageSize] = useState<{ width: number; height: number } | null>(null)
   const [editorSize, setEditorSize] = useState({ width: 0, height: 0 })
-  const [wasmGeometry, setWasmGeometry] = useState<BufferGeometry | null>(null)
+  const [wasmGeometries, setWasmGeometries] = useState<WasmWallGeometry[]>([])
   const [wasmState, setWasmState] = useState<'idle' | 'loading' | 'active' | 'fallback'>('idle')
   const [wasmMetrics, setWasmMetrics] = useState<MarchingCubesMetrics | null>(null)
   const [wasmFallback, setWasmFallback] = useState<WasmFallbackReason | null>(null)
   const webGLAvailable = useMemo(hasWebGLSupport, [])
   const exportSequenceRef = useRef(0)
+  const persistedProjectIdentityRef = useRef('')
+  const queuedAutoSaveRevisionRef = useRef<string | null>(null)
 
   const editorRef = useRef<SVGSVGElement | null>(null)
   const svgUrlRef = useRef('')
@@ -246,7 +247,7 @@ export default function App() {
 
   const wasmGenerationRef = useRef(0)
   const [, setWasmGeneration] = useState(0)
-  const wasmGeometryRef = useRef<BufferGeometry | null>(null)
+  const wasmGeometriesRef = useRef<WasmWallGeometry[]>([])
   const wasmCallsRef = useRef(0)
   const threeDExportRevisionRef = useRef<ThreeDExportRevision<ThreeDRenderer>>({
     canonicalRevision: null,
@@ -291,14 +292,14 @@ export default function App() {
     unmountRenderer,
     acknowledgeFrame,
   } = threeDGeneration
-  const currentThreeDGeneration = isCurrentThreeDGeneration(wasmState === 'active' && wasmGeometry !== null)
+  const currentThreeDGeneration = isCurrentThreeDGeneration(wasmState === 'active' && wasmGeometries.length === canonicalWalls.length)
   // Confirmation mounts the renderer that completes the revision handshake.
   // It may show only a current canonical/WASM pair; entering Step 5 additionally
   // requires the renderer token through currentThreeDGeneration.
   const canRenderThreeDPreview = hasCanonicalGeometry &&
     webGLAvailable &&
     wasmState === 'active' &&
-    wasmGeometry !== null &&
+    wasmGeometries.length === canonicalWalls.length &&
     canonicalRevision !== null &&
     canonicalRevision === geometryRevision
   const canOpenLinkedWorkspace = hasCanonicalGeometry && webGLAvailable && currentThreeDGeneration
@@ -354,18 +355,38 @@ export default function App() {
     projectMessage,
     projectMessageTone,
     projectBusy,
+    projectSaveState,
     setProjectName,
     clearCurrentProject,
     saveProject,
+    queueAutoSave,
+    retryProjectSave,
 		loadInitialProject,
     reloadProject,
-		copyProjectResumeLink,
+    copyProjectResumeLink,
     } = projectSession
   const wallShellModel = useMemo(
     () => buildWallShellModel(canonicalWalls, doors, windows),
     [canonicalWalls, doors, windows],
   )
-  const wallVoxelModel = useMemo(() => buildWallVoxelModel(canonicalWalls, doors, windows), [canonicalWalls, doors, windows])
+  const wallVoxelModels = useMemo(() => buildWallVoxelModels(canonicalWalls, doors, windows), [canonicalWalls, doors, windows])
+
+  useEffect(() => {
+    if (!currentProject) {
+      persistedProjectIdentityRef.current = ''
+      queuedAutoSaveRevisionRef.current = null
+      return
+    }
+    const identity = `${currentProject.id}:${currentProject.revision}`
+    if (persistedProjectIdentityRef.current !== identity) {
+      persistedProjectIdentityRef.current = identity
+      queuedAutoSaveRevisionRef.current = canonicalRevision
+      return
+    }
+    if (!canonicalRevision || geometryValidationError || queuedAutoSaveRevisionRef.current === canonicalRevision) return
+    queuedAutoSaveRevisionRef.current = canonicalRevision
+    void queueAutoSave({ stage: 'snapshot', canonicalRevision })
+  }, [canonicalRevision, currentProject, geometryValidationError, queueAutoSave])
 
   const viewport = chooseViewport(result, effectiveImageSize)
   const editorScale = canvasScale(editorSize, viewport)
@@ -388,7 +409,7 @@ export default function App() {
     hasModel: canExportModel,
     webGLAvailable,
     wasmActive: wasmState === 'active',
-    hasWasmGeometry: wasmGeometry !== null,
+    hasWasmGeometry: wasmGeometries.length === wallShellModel.walls.length && wasmGeometries.length > 0,
     rendererMounted: threeRenderer !== null,
     rendererGeneration: threeRenderer?.generation ?? null,
     geometryGeneration: geometryRevision,
@@ -408,39 +429,34 @@ export default function App() {
 
   useEffect(() => {
     if (!isE2EInstrumentationEnabled()) return
-    const positions = wasmGeometry?.getAttribute('position')
-    const normals = wasmGeometry?.getAttribute('normal')
+    const geometryAttributes = wasmGeometries.map(({ wallId, geometry }) => ({
+      wallId,
+      positions: geometry.getAttribute('position'),
+      normals: geometry.getAttribute('normal'),
+    }))
+    const positionCount = geometryAttributes.reduce((total, item) => total + (item.positions?.count ?? 0), 0)
+    const normalCount = geometryAttributes.reduce((total, item) => total + (item.normals?.count ?? 0), 0)
     const finite = Boolean(
-      positions &&
-      normals &&
-      Array.from(positions.array).every(Number.isFinite) &&
-      Array.from(normals.array).every(Number.isFinite),
+      geometryAttributes.length > 0 &&
+      geometryAttributes.every(({ positions, normals }) =>
+        positions &&
+        normals &&
+        Array.from(positions.array).every(Number.isFinite) &&
+        Array.from(normals.array).every(Number.isFinite)),
     )
-    const fingerprint = positions
-      ? Array.from(positions.array).reduce((total, value, index) => total + value * (index + 1), 0)
-      : 0
+    const fingerprint = geometryAttributes.reduce((total, { positions }, geometryIndex) =>
+      total + (positions ? Array.from(positions.array).reduce((sum, value, index) => sum + value * (index + 1) * (geometryIndex + 1), 0) : 0), 0)
     publishE2EState({
       generation: wasmGenerationRef.current,
       wasmCalls: wasmCallsRef.current,
       wasm: { state: wasmState, fallback: wasmFallback },
       metrics: wasmMetrics,
       geometry: {
-        positionCount: positions?.count ?? 0,
-        normalCount: normals?.count ?? 0,
+        positionCount,
+        normalCount,
         finite,
         fingerprint,
-        meshVertexCountByWall: positions ? Object.fromEntries(wallShellModel.walls.map((wall) => {
-          const tolerance = Math.max(...wallVoxelModel?.spacing ?? [0, 0, 0])
-          let count = 0
-          for (let index = 0; index < positions.array.length; index += 3) {
-            const dx = positions.array[index] - wall.x
-            const dz = positions.array[index + 2] - wall.z
-            const localX = Math.cos(wall.rotationY) * dx - Math.sin(wall.rotationY) * dz
-            const localZ = Math.sin(wall.rotationY) * dx + Math.cos(wall.rotationY) * dz
-            if (Math.abs(localX) <= wall.length / 2 + tolerance && Math.abs(localZ) <= wall.thickness / 2 + tolerance) count += 1
-          }
-          return [wall.id, count]
-        })) : {},
+        meshVertexCountByWall: Object.fromEntries(geometryAttributes.map(({ wallId, positions }) => [wallId, positions?.count ?? 0])),
       },
       threeD: {
         canonicalRevision,
@@ -448,6 +464,10 @@ export default function App() {
         rendererRevision: threeRenderer?.generation ?? null,
         frameRevision,
         currentFrame: currentThreeDGeneration,
+        canRender: canRenderThreeDPreview,
+        webGLAvailable,
+        geometryCount: wasmGeometries.length,
+        wallCount: canonicalWalls.length,
       },
       currentProjectId: currentProject?.id ?? null,
       selectedWallId: selectedWallID,
@@ -466,7 +486,7 @@ export default function App() {
         width: opening.width ?? null,
       })),
     })
-  }, [canonicalRevision, currentProject, currentThreeDGeneration, frameRevision, geometryRevision, openings, selectedOpeningID, selectedWallID, threeRenderer, wallShellModel.walls, wallVoxelModel?.spacing, walls, wasmFallback, wasmGeometry, wasmMetrics, wasmState])
+  }, [canRenderThreeDPreview, canonicalRevision, canonicalWalls.length, currentProject, currentThreeDGeneration, frameRevision, geometryRevision, openings, selectedOpeningID, selectedWallID, threeRenderer, wallShellModel.walls, walls, wasmFallback, wasmGeometries, wasmMetrics, wasmState, webGLAvailable])
 
   function buildScopeFileName(scope: '2d' | '3d'): string {
     exportSequenceRef.current += 1
@@ -502,8 +522,8 @@ export default function App() {
   }, [])
 
   useEffect(() => () => {
-    disposeWasmWallGeometry(wasmGeometryRef.current)
-    wasmGeometryRef.current = null
+    disposeWasmWallGeometries(wasmGeometriesRef.current)
+    wasmGeometriesRef.current = []
   }, [])
 
   useEffect(() => {
@@ -512,14 +532,14 @@ export default function App() {
     wasmGenerationRef.current = generation
     setWasmGeneration(generation)
     invalidateGeometry()
-    const replaceGeometry = (next: BufferGeometry | null) => {
-      disposeWasmWallGeometry(wasmGeometryRef.current)
-      wasmGeometryRef.current = next
-      setWasmGeometry(next)
+    const replaceGeometries = (next: WasmWallGeometry[]) => {
+      disposeWasmWallGeometries(wasmGeometriesRef.current)
+      wasmGeometriesRef.current = next
+      setWasmGeometries(next)
     }
 
-    if (!wallVoxelModel || !revision) {
-      replaceGeometry(null)
+    if (wallVoxelModels.length === 0 || wallVoxelModels.length !== wallShellModel.walls.length || !revision) {
+      replaceGeometries([])
       setWasmMetrics(null)
       setWasmFallback(geometryValidationError ? 'invalid-input' : 'empty-model')
       setWasmState('fallback')
@@ -529,44 +549,58 @@ export default function App() {
     setWasmState('loading')
     setWasmFallback(null)
     setWasmMetrics(null)
-    void (async (model: WallVoxelModel) => {
-      wasmCallsRef.current += 1
-      const result = await runMarchingCubes(
-        {
-          data: model.data,
-          dimensions: model.dimensions,
-          isoLevel: model.isoLevel,
-        },
-        e2EWasmLoader(),
-      )
-      if (disposed || wasmGenerationRef.current !== generation || canonicalRevision !== revision) return
-      if (!result.ok) {
-        replaceGeometry(null)
-        setWasmFallback(result.reason)
-        setWasmState('fallback')
-        return
-      }
-      const nextGeometry = buildWasmWallGeometry(result.vertices, model)
-      if (!nextGeometry) {
-        replaceGeometry(null)
-        setWasmFallback('invalid-output')
-        setWasmState('fallback')
-        return
+    void (async (models: WallVoxelModel[]) => {
+      const nextGeometries: WasmWallGeometry[] = []
+      const metrics: MarchingCubesMetrics[] = []
+      for (const model of models) {
+        wasmCallsRef.current += 1
+        const result = await runMarchingCubes(
+          { data: model.data, dimensions: model.dimensions, isoLevel: model.isoLevel },
+          e2EWasmLoader(),
+        )
+        if (disposed || wasmGenerationRef.current !== generation || canonicalRevision !== revision) {
+          disposeWasmWallGeometries(nextGeometries)
+          return
+        }
+        if (!result.ok || !model.wallId) {
+          disposeWasmWallGeometries(nextGeometries)
+          replaceGeometries([])
+          setWasmFallback(result.ok ? 'invalid-output' : result.reason)
+          setWasmState('fallback')
+          return
+        }
+        const geometry = buildWasmWallGeometry(result.vertices, model)
+        if (!geometry) {
+          disposeWasmWallGeometries(nextGeometries)
+          replaceGeometries([])
+          setWasmFallback('invalid-output')
+          setWasmState('fallback')
+          return
+        }
+        nextGeometries.push({ wallId: model.wallId, geometry })
+        metrics.push(result.metrics)
       }
       if (disposed || wasmGenerationRef.current !== generation || canonicalRevision !== revision) {
-        disposeWasmWallGeometry(nextGeometry)
+        disposeWasmWallGeometries(nextGeometries)
         return
       }
-      replaceGeometry(nextGeometry)
-      setWasmMetrics(result.metrics)
+      replaceGeometries(nextGeometries)
+      setWasmMetrics({
+        grid: metrics[0]?.grid ?? [0, 0, 0],
+        inputBytes: metrics.reduce((sum, item) => sum + item.inputBytes, 0),
+        outputBytes: metrics.reduce((sum, item) => sum + item.outputBytes, 0),
+        vertexCount: metrics.reduce((sum, item) => sum + item.vertexCount, 0),
+        triangleCount: metrics.reduce((sum, item) => sum + item.triangleCount, 0),
+        elapsedMs: metrics.reduce((sum, item) => sum + item.elapsedMs, 0),
+      })
       resolveGeometry(revision)
       setWasmState('active')
-    })(wallVoxelModel)
+    })(wallVoxelModels)
 
     return () => {
       disposed = true
     }
-  }, [canonicalRevision, geometryValidationError, invalidateGeometry, resolveGeometry, wallVoxelModel])
+  }, [canonicalRevision, geometryValidationError, invalidateGeometry, resolveGeometry, wallShellModel.walls.length, wallVoxelModels])
 
   // The fragment-selected project is consumed once by the persistence controller;
   // later editor changes must never reload it over local edits.
@@ -1219,14 +1253,16 @@ export default function App() {
     canSave: hasCanonicalGeometry,
     message: projectMessage,
     messageTone: projectMessageTone,
+    saveState: projectSaveState,
     onSave: () => { void saveProject({ stage: 'snapshot', canonicalRevision }) },
+    onRetry: () => { void retryProjectSave() },
     onReload: () => { void reloadProject() },
 		onCopyResumeLink: () => { void copyProjectResumeLink(window.location.href, (value) => navigator.clipboard.writeText(value)) },
   }
   const threeDPreviewProps: ThreeDPreviewPanelProps = {
     canonicalRevision,
     model: wallShellModel,
-    wasmGeometry,
+    wasmGeometries,
     wasmActive: wasmState === 'active',
     webGLAvailable,
     selectedWallID,

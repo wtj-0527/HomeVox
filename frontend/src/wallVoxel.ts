@@ -11,11 +11,14 @@ export const WALL_VOXEL_GRID_SIZE = 17
 export const WALL_VOXEL_ISO_LEVEL = 0
 
 export type WallVoxelModel = {
+  wallId?: string
   dimensions: readonly [number, number, number]
   data: Float32Array
   isoLevel: number
   origin: readonly [number, number, number]
   spacing: readonly [number, number, number]
+  rotationY?: number
+  worldCenter?: readonly [number, number]
 }
 
 function finite(value: number): boolean {
@@ -141,4 +144,102 @@ export function buildWallVoxelModel(walls: readonly WallSegment[], doors: readon
     origin: [bounds[0], bounds[2], bounds[4]],
     spacing,
   }
+}
+
+function adaptiveAxisSamples(span: number, targetSpacing: number, minimum: number, maximum: number): number {
+  const intervals = Math.ceil(span / targetSpacing)
+  return Math.min(maximum, Math.max(minimum, intervals + 1))
+}
+
+/**
+ * Builds one independent WASM field for every canonical wall. Keeping the
+ * stable wall identity at the mesh boundary prevents a coarse whole-plan union
+ * from erasing short walls, joining nearby parallel walls, or making a click
+ * resolve through a nearest-wall heuristic.
+ */
+export function buildWallVoxelModels(
+  walls: readonly WallSegment[],
+  doors: readonly ParsedOpening[] = [],
+  windows: readonly ParsedOpening[] = [],
+): WallVoxelModel[] {
+  const shell = buildWallShellModel(walls, doors, windows)
+  if (shell.validationError || shell.walls.length === 0) return []
+  const openingsByWall = new Map<string, typeof shell.openings>()
+  for (const opening of shell.openings) {
+    if (!opening.wallId) return []
+    openingsByWall.set(opening.wallId, [...(openingsByWall.get(opening.wallId) ?? []), opening])
+  }
+
+  return shell.walls.map((wall) => {
+    const wallOpenings = openingsByWall.get(wall.id) ?? []
+    const narrowestOpening = wallOpenings.length > 0
+      ? Math.min(...wallOpenings.map((opening) => opening.width))
+      : Number.POSITIVE_INFINITY
+    const targetXSpacing = Math.max(0.01, Math.min(0.16, narrowestOpening / 5))
+    const paddingX = Math.max(WALL_SHELL_THICKNESS, targetXSpacing * 1.5)
+    const paddingY = Math.max(WALL_SHELL_THICKNESS, 0.24)
+    const paddingZ = WALL_SHELL_THICKNESS
+    const bounds = [
+      -wall.length / 2 - paddingX,
+      wall.length / 2 + paddingX,
+      -paddingY,
+      WALL_SHELL_HEIGHT + paddingY,
+      -WALL_SHELL_THICKNESS / 2 - paddingZ,
+      WALL_SHELL_THICKNESS / 2 + paddingZ,
+    ] as const
+    const nx = adaptiveAxisSamples(bounds[1] - bounds[0], targetXSpacing, WALL_VOXEL_GRID_SIZE, 97)
+    const ny = 33
+    const nz = 9
+    const spacing: [number, number, number] = [
+      (bounds[1] - bounds[0]) / (nx - 1),
+      (bounds[3] - bounds[2]) / (ny - 1),
+      (bounds[5] - bounds[4]) / (nz - 1),
+    ]
+    const data = new Float32Array(nx * ny * nz)
+    for (let zIndex = 0; zIndex < nz; zIndex += 1) {
+      for (let yIndex = 0; yIndex < ny; yIndex += 1) {
+        for (let xIndex = 0; xIndex < nx; xIndex += 1) {
+          const x = bounds[0] + xIndex * spacing[0]
+          const y = bounds[2] + yIndex * spacing[1]
+          const z = bounds[4] + zIndex * spacing[2]
+          let field = -signedBoxDistance(
+            x,
+            y - WALL_SHELL_HEIGHT / 2,
+            z,
+            wall.length / 2,
+            WALL_SHELL_HEIGHT / 2,
+            WALL_SHELL_THICKNESS / 2,
+          )
+          for (const opening of wallOpenings) {
+            const centerX =
+              (opening.x - wall.x) * Math.cos(wall.rotationY) -
+              (opening.z - wall.z) * Math.sin(wall.rotationY)
+            const windowSpan = windowOpeningVerticalSpan(WALL_SHELL_HEIGHT)
+            const openingHeight = opening.kind === 'door' ? WALL_SHELL_HEIGHT : windowSpan.top - windowSpan.bottom
+            const centerY = opening.kind === 'door' ? openingHeight / 2 : windowSpan.bottom + openingHeight / 2
+            const cut = -signedBoxDistance(
+              x - centerX,
+              y - centerY,
+              z,
+              opening.width / 2,
+              openingHeight / 2,
+              WALL_SHELL_THICKNESS,
+            )
+            field = Math.min(field, -cut)
+          }
+          data[xIndex + yIndex * nx + zIndex * nx * ny] = field
+        }
+      }
+    }
+    return {
+      wallId: wall.id,
+      dimensions: [nx, ny, nz] as const,
+      data,
+      isoLevel: WALL_VOXEL_ISO_LEVEL,
+      origin: [bounds[0], bounds[2], bounds[4]] as const,
+      spacing,
+      rotationY: wall.rotationY,
+      worldCenter: [wall.x, wall.z] as const,
+    }
+  })
 }
