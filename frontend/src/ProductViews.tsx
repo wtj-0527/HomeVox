@@ -4,6 +4,7 @@ import type { InspectorPanelProps } from './InspectorPanel'
 import { InspectorPanel } from './InspectorPanel'
 import type { ThreeDPreviewPanelProps } from './ThreeDPreviewPanel'
 import { ThreeDPreviewPanel } from './ThreeDPreviewPanel'
+import type { ProjectConflictChoice } from './projectSession'
 
 export type TwoDWorkspaceProps = {
   editor: FloorplanEditorPanelProps
@@ -17,7 +18,7 @@ export type TwoDWorkspaceProps = {
     saveState: 'idle' | 'saving' | 'saved' | 'failed' | 'conflict'
     onSave: () => void
     onRetry: () => void
-    onReload: () => void
+    onResolveConflict: (choice: ProjectConflictChoice) => void
     onCopyResumeLink: () => void
   }
   canAdvance: boolean
@@ -42,9 +43,13 @@ export function WorkspaceToolbar({ inspector, snapshot, linked = false, onAdvanc
     </div>
     <div className="flex items-center gap-2">
       {snapshot.exists && saveStateLabel && <span data-testid="autosave-state" role="status" className={`rounded-lg px-2 py-1 text-xs font-semibold ${saveStateClass}`}>{saveStateLabel}</span>}
-      {snapshot.message && (snapshot.saveState === 'failed' || snapshot.saveState === 'conflict') && <span role="alert" className="max-w-44 truncate text-xs font-semibold text-red-700">{snapshot.message}</span>}
+      {snapshot.message && (snapshot.saveState === 'failed' || snapshot.saveState === 'conflict') && <span role="alert" className={`max-w-44 truncate text-xs font-semibold ${snapshot.saveState === 'conflict' ? 'text-amber-800' : 'text-red-700'}`}>{snapshot.message}</span>}
       {snapshot.exists && snapshot.saveState === 'failed' && <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={snapshot.onRetry}>重试</button>}
-      {snapshot.exists && snapshot.saveState === 'conflict' && <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={snapshot.onReload}>加载最新版本</button>}
+      {snapshot.exists && snapshot.saveState === 'conflict' && <>
+        <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={() => snapshot.onResolveConflict('local')}>使用本地版本</button>
+        <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={() => snapshot.onResolveConflict('remote')}>使用远端版本</button>
+        <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={() => snapshot.onResolveConflict('merge')}>生成合并版本</button>
+      </>}
       {snapshot.exists && <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={snapshot.onCopyResumeLink}>复制编辑链接</button>}
       {!snapshot.exists && <button data-testid="save-recognition-snapshot" type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy || snapshot.canSave === false} onClick={snapshot.onSave}>{snapshot.busy ? '保存中…' : '创建识别快照'}</button>}
       <button type="button" className="toolbar-button whitespace-nowrap" disabled={!inspector.canUndo} onClick={inspector.onUndo}>撤销</button>

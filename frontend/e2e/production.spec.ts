@@ -465,16 +465,24 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await page.getByLabel('起点 X').fill('91')
   await page.getByRole('button', { name: '应用坐标' }).click()
   const conflictAlert = page.getByRole('alert')
-  await expect(conflictAlert).toContainText('项目已在其他页面更新，请加载最新版本后再保存')
+  await expect(conflictAlert).toContainText('项目已在其他页面更新，请选择本地版本、远端版本或生成合并版本')
   await expect(conflictAlert).not.toContainText(createdSnapshot.id)
   await expect(conflictAlert).not.toContainText(/revision|HTTP 409/i)
   await page.unroute(`**/api/projects/${createdSnapshot.id}`)
-  const reload = page.waitForResponse((response) => response.url().endsWith(`/api/projects/${createdSnapshot.id}`) && response.request().method() === 'GET')
-  await page.getByRole('button', { name: '加载最新版本' }).click()
-  const reloadResponse = await reload
-  expect(reloadResponse.status()).toBe(200)
-  expect(reloadResponse.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true)
-  await expect(page.getByTestId('wall-hit-wall-1')).toHaveAttribute('x1', '90')
+  await expect(page.getByRole('button', { name: '使用本地版本' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '使用远端版本' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '生成合并版本' })).toBeVisible()
+  const conflictFetch = page.waitForResponse((response) => response.url().endsWith(`/api/projects/${createdSnapshot.id}`) && response.request().method() === 'GET')
+  const conflictSave = page.waitForResponse((response) => response.url().endsWith(`/api/projects/${createdSnapshot.id}`) && response.request().method() === 'PUT')
+  await page.getByRole('button', { name: '生成合并版本' }).click()
+  const conflictFetchResponse = await conflictFetch
+  const conflictSaveResponse = await conflictSave
+  expect(conflictFetchResponse.status()).toBe(200)
+  expect(conflictSaveResponse.status()).toBe(200)
+  expect(conflictFetchResponse.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true)
+  expect(conflictSaveResponse.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true)
+  await expect(page.getByTestId('wall-hit-wall-1')).toHaveAttribute('x1', '91')
+  await expect(page.getByTestId('autosave-state')).toContainText('已保存')
   captures.push(await screenshot(page, testInfo, 'issue-19-2d-correction.png'))
 
   await page.getByTestId('complete-product-step').click()
@@ -845,7 +853,7 @@ test('makes parse retry and persistence-unavailable states actionable', async ({
   await page.getByRole('button', { name: '保存项目' }).click()
   await page.getByLabel('项目名称').fill('Unavailable persistence')
   await page.getByRole('button', { name: '创建项目' }).click()
-  await expect(page.getByRole('alert')).toContainText('项目保存失败')
+  await expect(page.getByTestId('project-save-state')).toContainText('项目保存失败')
 })
 
 test('keeps the narrow-screen workflow keyboard reachable', async ({ page }) => {

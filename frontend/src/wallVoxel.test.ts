@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { buildWallVoxelModel, buildWallVoxelModels, WALL_VOXEL_GRID_SIZE } from './wallVoxel'
 import type { ParsedOpening } from './floorplanUi'
 import { WALL_SHELL_THICKNESS } from './wallShell'
+import { readFileSync } from 'node:fs'
+import initWasm, { marching_cubes } from '../../wasm/pkg/homevox_wasm.js'
+import { Mesh, MeshBasicMaterial, Raycaster, Vector3 } from 'three'
+import { buildWasmWallGeometry } from './wasmGeometry'
 
 function voxelAt(model: NonNullable<ReturnType<typeof buildWallVoxelModel>>, xIndex: number, yIndex: number, zIndex: number): number {
   const [nx, ny] = model.dimensions
@@ -141,10 +145,10 @@ describe('buildWallVoxelModel', () => {
       [{ id: 'window-short', kind: 'window', wallId: 'short-parallel', position: 0.5, width: 20 }],
     )
 
-    expect(models.map((model) => model.wallId)).toEqual(walls.map((wall) => wall.id))
+    expect(new Set(models.map((model) => model.wallId))).toEqual(new Set(walls.map((wall) => wall.id)))
     expect(new Set(models.map((model) => model.wallId)).size).toBe(walls.length)
     expect(models.every((model) => model.dimensions[0] >= WALL_VOXEL_GRID_SIZE)).toBe(true)
-    expect(models.find((model) => model.wallId === 'long')!.dimensions[0]).toBeGreaterThan(WALL_VOXEL_GRID_SIZE)
+    expect(models.filter((model) => model.wallId === 'long').some((model) => model.dimensions[0] > WALL_VOXEL_GRID_SIZE)).toBe(true)
     const ranges = models.map((model) => ({
       wallId: model.wallId,
       min: Math.min(...model.data),
@@ -152,6 +156,35 @@ describe('buildWallVoxelModel', () => {
     }))
     expect(models.every((model) => Array.from(model.data).some((value) => value > 0)), JSON.stringify(ranges)).toBe(true)
     expect(models.every((model) => Array.from(model.data).some((value) => value < 0))).toBe(true)
+  })
+
+  it('keeps the minimum legal narrow door visibly open in real WASM geometry on a long wall', async () => {
+    await initWasm({ module_or_path: readFileSync(new URL('../../wasm/pkg/homevox_wasm_bg.wasm', import.meta.url)) })
+    const walls = [{ id: 'wall-long', x1: 0, y1: 0, x2: 4000, y2: 0 }]
+    const [solidModel] = buildWallVoxelModels(walls)
+    const models = buildWallVoxelModels(
+      walls,
+      [{ id: 'door-narrow', kind: 'door', wallId: 'wall-long', width: 8, position: 0.5053958333 }],
+    )
+    expect(models.length).toBeGreaterThan(1)
+    expect(solidModel).toBeDefined()
+    const vertices = marching_cubes(solidModel.data, ...solidModel.dimensions, solidModel.isoLevel)
+    const solidVertices = marching_cubes(solidModel.data, ...solidModel.dimensions, solidModel.isoLevel)
+    expect(vertices.length).toBeGreaterThan(0)
+    expect(solidVertices.length).toBeGreaterThan(0)
+
+    const doorCenter = (0.5053958333 - 0.5) * 10
+    const material = new MeshBasicMaterial({ side: 2 })
+    const meshes = models.map((model) => {
+      const pieceVertices = marching_cubes(model.data, ...model.dimensions, model.isoLevel)
+      const geometry = buildWasmWallGeometry(pieceVertices, model)
+      expect(geometry).not.toBeNull()
+      return new Mesh(geometry!, material)
+    })
+    const ray = new Raycaster(new Vector3(doorCenter, 1.2, 1), new Vector3(0, 0, -1))
+    expect(meshes.flatMap((mesh) => ray.intersectObject(mesh, false))).toHaveLength(0)
+    meshes.forEach((mesh) => mesh.geometry.dispose())
+    material.dispose()
   })
 
 })

@@ -64,6 +64,7 @@ function sessionHarness({
   const states: Array<Record<string, unknown>> = []
   const onProjectSaved = vi.fn()
   const onProjectLoaded = vi.fn()
+  const onProjectConflictResolved = vi.fn()
   const defaults: ProjectSessionDependencies = {
     getProject: vi.fn().mockResolvedValue(project),
     createProject: vi.fn().mockResolvedValue({ project, capability }),
@@ -79,9 +80,10 @@ function sessionHarness({
     initialAccess,
     onProjectSaved,
     onProjectLoaded,
+    onProjectConflictResolved,
     onState: (next) => states.push(next),
   }, { ...defaults, ...dependencies })
-  return { controller, states, onProjectSaved, onProjectLoaded, dependencies: { ...defaults, ...dependencies } }
+  return { controller, states, onProjectSaved, onProjectLoaded, onProjectConflictResolved, dependencies: { ...defaults, ...dependencies } }
 }
 
 describe('ProjectSession controller', () => {
@@ -217,20 +219,76 @@ describe('ProjectSession controller', () => {
     )
   })
 
-  it('publishes a safe revision-conflict state that can be recovered by loading the latest project', async () => {
+  it('preserves the latest local intent and resolves a conflict with explicit local, remote, or merged versions', async () => {
+    const localDocument = {
+      ...document,
+      result: { ...document.result, walls: [{ id: 'wall-a', x1: 91, y1: 0, x2: 40, y2: 0 }] },
+    }
+    const remoteDocument = {
+      ...document,
+      result: {
+        ...document.result,
+        walls: [
+          { id: 'wall-a', x1: 90, y1: 0, x2: 40, y2: 0 },
+          { id: 'wall-remote', x1: 40, y1: 0, x2: 40, y2: 30 },
+        ],
+      },
+    }
+    const remote = { ...project, revision: 3, document: remoteDocument }
+    const savedLocal = { ...project, revision: 4, document: localDocument }
+    const updateProject = vi.fn()
+      .mockRejectedValueOnce(new ProjectAPIError('revision_conflict', '项目已在其他页面更新，请选择冲突版本'))
+      .mockResolvedValueOnce(savedLocal)
     const conflict = sessionHarness({
       currentProject: project,
       sourceFile: null,
+      currentDocument: () => localDocument,
       dependencies: {
-        updateProject: vi.fn().mockRejectedValue(new ProjectAPIError('revision_conflict', '项目已在其他页面更新，请加载最新版本后再保存')),
+        getProject: vi.fn().mockResolvedValue(remote),
+        updateProject,
       },
     })
-    await conflict.controller.saveProject()
-    expect(conflict.states.at(-2)).toMatchObject({ projectMessage: '项目已在其他页面更新，请加载最新版本后再保存', projectMessageTone: 'error' })
+    await conflict.controller.queueAutoSave({ stage: 'snapshot', canonicalRevision: 'local-91' })
+    expect(conflict.states.at(-2)).toMatchObject({ projectMessage: '项目已在其他页面更新，请选择本地版本、远端版本或生成合并版本', projectSaveState: 'conflict' })
     expect(JSON.stringify(conflict.states)).not.toContain(project.id)
 
-    await conflict.controller.loadProject(access)
-    expect(conflict.onProjectLoaded).toHaveBeenCalledWith(project, expect.any(Blob))
+    await conflict.controller.resolveProjectConflict('local')
+    expect(conflict.dependencies.getProject).toHaveBeenCalledWith(project.id, capability, expect.any(AbortSignal))
+    expect(updateProject).toHaveBeenLastCalledWith(project.id, capability, 'Home', localDocument, remote.revision, expect.any(AbortSignal))
+    expect(conflict.onProjectSaved).toHaveBeenCalledWith(savedLocal, { stage: 'snapshot', canonicalRevision: 'local-91' })
+
+    const remoteChoice = sessionHarness({
+      currentProject: project,
+      sourceFile: null,
+      currentDocument: () => localDocument,
+      dependencies: {
+        getProject: vi.fn().mockResolvedValue(remote),
+        updateProject: vi.fn().mockRejectedValueOnce(new ProjectAPIError('revision_conflict', 'conflict')),
+      },
+    })
+    await remoteChoice.controller.queueAutoSave({ stage: 'snapshot', canonicalRevision: 'local-91' })
+    await remoteChoice.controller.resolveProjectConflict('remote')
+    expect(remoteChoice.onProjectLoaded).toHaveBeenCalledWith(remote, expect.any(Blob))
+
+    const merged = { ...remote, revision: 4 }
+    const mergeUpdate = vi.fn()
+      .mockRejectedValueOnce(new ProjectAPIError('revision_conflict', 'conflict'))
+      .mockResolvedValueOnce(merged)
+    const mergeChoice = sessionHarness({
+      currentProject: project,
+      sourceFile: null,
+      currentDocument: () => localDocument,
+      dependencies: { getProject: vi.fn().mockResolvedValue(remote), updateProject: mergeUpdate },
+    })
+    await mergeChoice.controller.queueAutoSave({ stage: 'snapshot', canonicalRevision: 'local-91' })
+    await mergeChoice.controller.resolveProjectConflict('merge')
+    const mergedDocument = mergeUpdate.mock.calls[1][3] as ParseResponse
+    expect(mergedDocument.result.walls).toEqual([
+      localDocument.result.walls[0],
+      remoteDocument.result.walls[1],
+    ])
+    expect(mergeUpdate.mock.calls[1][4]).toBe(remote.revision)
+    expect(mergeChoice.onProjectConflictResolved).toHaveBeenCalledWith(merged, 'merge')
   })
 
 

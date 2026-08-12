@@ -2,6 +2,7 @@ import type { WallSegment } from './floorplanEditor'
 import type { ParsedOpening } from './floorplanUi'
 import {
   buildWallShellModel,
+  buildWallShellPieces,
   WALL_SHELL_HEIGHT,
   WALL_SHELL_THICKNESS,
   windowOpeningVerticalSpan,
@@ -164,28 +165,23 @@ export function buildWallVoxelModels(
 ): WallVoxelModel[] {
   const shell = buildWallShellModel(walls, doors, windows)
   if (shell.validationError || shell.walls.length === 0) return []
-  const openingsByWall = new Map<string, typeof shell.openings>()
-  for (const opening of shell.openings) {
-    if (!opening.wallId) return []
-    openingsByWall.set(opening.wallId, [...(openingsByWall.get(opening.wallId) ?? []), opening])
-  }
-
-  return shell.walls.map((wall) => {
-    const wallOpenings = openingsByWall.get(wall.id) ?? []
-    const narrowestOpening = wallOpenings.length > 0
-      ? Math.min(...wallOpenings.map((opening) => opening.width))
-      : Number.POSITIVE_INFINITY
-    const targetXSpacing = Math.max(0.01, Math.min(0.16, narrowestOpening / 5))
+  // Build exact solid spans from the same opening intervals used by the
+  // selection overlay. A narrow opening is therefore represented by absence
+  // of geometry, not by hoping that a subtractive sample lands inside it.
+  // Each bounded piece keeps its canonical wallId; a wall with openings may
+  // intentionally produce several independent WASM inputs.
+  return buildWallShellPieces(shell).map((piece) => {
+    const targetXSpacing = 0.16
     const paddingX = Math.max(WALL_SHELL_THICKNESS, targetXSpacing * 1.5)
     const paddingY = Math.max(WALL_SHELL_THICKNESS, 0.24)
     const paddingZ = WALL_SHELL_THICKNESS
     const bounds = [
-      -wall.length / 2 - paddingX,
-      wall.length / 2 + paddingX,
-      -paddingY,
-      WALL_SHELL_HEIGHT + paddingY,
-      -WALL_SHELL_THICKNESS / 2 - paddingZ,
-      WALL_SHELL_THICKNESS / 2 + paddingZ,
+      -piece.length / 2 - paddingX,
+      piece.length / 2 + paddingX,
+      piece.y - piece.height / 2 - paddingY,
+      piece.y + piece.height / 2 + paddingY,
+      -piece.thickness / 2 - paddingZ,
+      piece.thickness / 2 + paddingZ,
     ] as const
     const nx = adaptiveAxisSamples(bounds[1] - bounds[0], targetXSpacing, WALL_VOXEL_GRID_SIZE, 97)
     const ny = 33
@@ -202,44 +198,27 @@ export function buildWallVoxelModels(
           const x = bounds[0] + xIndex * spacing[0]
           const y = bounds[2] + yIndex * spacing[1]
           const z = bounds[4] + zIndex * spacing[2]
-          let field = -signedBoxDistance(
+          const field = -signedBoxDistance(
             x,
-            y - WALL_SHELL_HEIGHT / 2,
+            y - piece.y,
             z,
-            wall.length / 2,
-            WALL_SHELL_HEIGHT / 2,
-            WALL_SHELL_THICKNESS / 2,
+            piece.length / 2,
+            piece.height / 2,
+            piece.thickness / 2,
           )
-          for (const opening of wallOpenings) {
-            const centerX =
-              (opening.x - wall.x) * Math.cos(wall.rotationY) -
-              (opening.z - wall.z) * Math.sin(wall.rotationY)
-            const windowSpan = windowOpeningVerticalSpan(WALL_SHELL_HEIGHT)
-            const openingHeight = opening.kind === 'door' ? WALL_SHELL_HEIGHT : windowSpan.top - windowSpan.bottom
-            const centerY = opening.kind === 'door' ? openingHeight / 2 : windowSpan.bottom + openingHeight / 2
-            const cut = -signedBoxDistance(
-              x - centerX,
-              y - centerY,
-              z,
-              opening.width / 2,
-              openingHeight / 2,
-              WALL_SHELL_THICKNESS,
-            )
-            field = Math.min(field, -cut)
-          }
           data[xIndex + yIndex * nx + zIndex * nx * ny] = field
         }
       }
     }
     return {
-      wallId: wall.id,
+      wallId: piece.wallId,
       dimensions: [nx, ny, nz] as const,
       data,
       isoLevel: WALL_VOXEL_ISO_LEVEL,
       origin: [bounds[0], bounds[2], bounds[4]] as const,
       spacing,
-      rotationY: wall.rotationY,
-      worldCenter: [wall.x, wall.z] as const,
+      rotationY: piece.rotationY,
+      worldCenter: [piece.x, piece.z] as const,
     }
   })
 }

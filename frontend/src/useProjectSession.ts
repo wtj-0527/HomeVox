@@ -10,6 +10,7 @@ type ProjectSessionOptions = {
 
   onProjectSaved: (project: ProjectDetail, intent: import('./projectSaveCompletion').ProjectSaveIntent) => void
   onProjectLoaded: (project: ProjectDetail, sourceImage: Blob) => void
+  onProjectConflictResolved: (project: ProjectDetail, choice: import('./projectSession').ProjectConflictChoice) => void
 }
 
 type ProjectSessionState = Pick<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy' | 'projectSaveState'>
@@ -34,12 +35,14 @@ export function useProjectSession(options: ProjectSessionOptions): UseProjectSes
   const sourceFileRef = useRef(options.sourceFile)
   const savedRef = useRef(options.onProjectSaved)
   const loadedRef = useRef(options.onProjectLoaded)
+  const conflictResolvedRef = useRef(options.onProjectConflictResolved)
   const stateRef = useRef(state)
   documentRef.current = options.document
   geometryErrorRef.current = options.geometryValidationError
   sourceFileRef.current = options.sourceFile
   savedRef.current = options.onProjectSaved
   loadedRef.current = options.onProjectLoaded
+  conflictResolvedRef.current = options.onProjectConflictResolved
   stateRef.current = state
 
   const controllerRef = useRef<ReturnType<typeof createProjectSession> | null>(null)
@@ -53,6 +56,7 @@ export function useProjectSession(options: ProjectSessionOptions): UseProjectSes
 		initialAccess: null,
       onProjectSaved: (project, intent) => savedRef.current(project, intent),
       onProjectLoaded: (project, sourceImage) => loadedRef.current(project, sourceImage),
+      onProjectConflictResolved: (project, choice) => conflictResolvedRef.current(project, choice),
       onState: (next) => {
         setState((current) => ({ ...current, ...next }))
       },
@@ -80,6 +84,7 @@ export function useProjectSession(options: ProjectSessionOptions): UseProjectSes
     saveProject: controller.saveProject,
     queueAutoSave: controller.queueAutoSave,
     retryProjectSave: controller.retryProjectSave,
+    resolveProjectConflict: controller.resolveProjectConflict,
     loadProject: controller.loadProject,
 		loadInitialProject: controller.loadInitialProject,
     reloadProject: controller.reloadProject,

@@ -292,14 +292,17 @@ export default function App() {
     unmountRenderer,
     acknowledgeFrame,
   } = threeDGeneration
-  const currentThreeDGeneration = isCurrentThreeDGeneration(wasmState === 'active' && wasmGeometries.length === canonicalWalls.length)
+  const wasmWallIDs = useMemo(() => new Set(wasmGeometries.map(({ wallId }) => wallId)), [wasmGeometries])
+  const hasEveryCanonicalWallGeometry = canonicalWalls.length > 0 &&
+    canonicalWalls.every((wall) => Boolean(wall.id && wasmWallIDs.has(wall.id)))
+  const currentThreeDGeneration = isCurrentThreeDGeneration(wasmState === 'active' && hasEveryCanonicalWallGeometry)
   // Confirmation mounts the renderer that completes the revision handshake.
   // It may show only a current canonical/WASM pair; entering Step 5 additionally
   // requires the renderer token through currentThreeDGeneration.
   const canRenderThreeDPreview = hasCanonicalGeometry &&
     webGLAvailable &&
     wasmState === 'active' &&
-    wasmGeometries.length === canonicalWalls.length &&
+    hasEveryCanonicalWallGeometry &&
     canonicalRevision !== null &&
     canonicalRevision === geometryRevision
   const canOpenLinkedWorkspace = hasCanonicalGeometry && webGLAvailable && currentThreeDGeneration
@@ -348,6 +351,15 @@ export default function App() {
       if (completesFinalSave(activeStep, canonicalRevision, intent)) applyProductTransition({ type: 'complete', step: 6 }, productFlowContext)
     },
     onProjectLoaded: applyLoadedProject,
+    onProjectConflictResolved: (project, choice) => {
+      if (choice !== 'merge') return
+      setParseResponse(project.document)
+      setLinkedReviewRevision(null)
+      applyProductTransition(
+        { type: 'open', step: 3 },
+        { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false },
+      )
+    },
   })
   const {
     projectName,
@@ -361,6 +373,7 @@ export default function App() {
     saveProject,
     queueAutoSave,
     retryProjectSave,
+    resolveProjectConflict,
 		loadInitialProject,
     reloadProject,
     copyProjectResumeLink,
@@ -409,7 +422,7 @@ export default function App() {
     hasModel: canExportModel,
     webGLAvailable,
     wasmActive: wasmState === 'active',
-    hasWasmGeometry: wasmGeometries.length === wallShellModel.walls.length && wasmGeometries.length > 0,
+    hasWasmGeometry: hasEveryCanonicalWallGeometry,
     rendererMounted: threeRenderer !== null,
     rendererGeneration: threeRenderer?.generation ?? null,
     geometryGeneration: geometryRevision,
@@ -456,7 +469,10 @@ export default function App() {
         normalCount,
         finite,
         fingerprint,
-        meshVertexCountByWall: Object.fromEntries(geometryAttributes.map(({ wallId, positions }) => [wallId, positions?.count ?? 0])),
+        meshVertexCountByWall: geometryAttributes.reduce<Record<string, number>>((counts, { wallId, positions }) => {
+          counts[wallId] = (counts[wallId] ?? 0) + (positions?.count ?? 0)
+          return counts
+        }, {}),
       },
       threeD: {
         canonicalRevision,
@@ -538,7 +554,9 @@ export default function App() {
       setWasmGeometries(next)
     }
 
-    if (wallVoxelModels.length === 0 || wallVoxelModels.length !== wallShellModel.walls.length || !revision) {
+    const modelWallIDs = new Set(wallVoxelModels.flatMap((model) => model.wallId ? [model.wallId] : []))
+    const modelsCoverEveryWall = wallShellModel.walls.every((wall) => modelWallIDs.has(wall.id))
+    if (wallVoxelModels.length === 0 || !modelsCoverEveryWall || !revision) {
       replaceGeometries([])
       setWasmMetrics(null)
       setWasmFallback(geometryValidationError ? 'invalid-input' : 'empty-model')
@@ -600,7 +618,7 @@ export default function App() {
     return () => {
       disposed = true
     }
-  }, [canonicalRevision, geometryValidationError, invalidateGeometry, resolveGeometry, wallShellModel.walls.length, wallVoxelModels])
+  }, [canonicalRevision, geometryValidationError, invalidateGeometry, resolveGeometry, wallShellModel.walls, wallVoxelModels])
 
   // The fragment-selected project is consumed once by the persistence controller;
   // later editor changes must never reload it over local edits.
@@ -1256,7 +1274,7 @@ export default function App() {
     saveState: projectSaveState,
     onSave: () => { void saveProject({ stage: 'snapshot', canonicalRevision }) },
     onRetry: () => { void retryProjectSave() },
-    onReload: () => { void reloadProject() },
+    onResolveConflict: (choice: import('./projectSession').ProjectConflictChoice) => { void resolveProjectConflict(choice) },
 		onCopyResumeLink: () => { void copyProjectResumeLink(window.location.href, (value) => navigator.clipboard.writeText(value)) },
   }
   const threeDPreviewProps: ThreeDPreviewPanelProps = {
@@ -1307,7 +1325,7 @@ export default function App() {
         {activeStep === 3 && <TwoDWorkspace editor={editorProps} inspector={inspectorProps} snapshot={snapshot} canAdvance={canAdvance} onAdvance={goNext} />}
         {activeStep === 4 && <ThreeDConfirmation preview={threeDPreviewProps} previewAvailable={canRenderThreeDPreview} canOpenLinkedWorkspace={canOpenLinkedWorkspace} wasmState={wasmState} onBack={() => applyProductTransition({ type: 'open', step: 3 })} onComplete={() => completeAndAdvance(4, 5)} />}
         {activeStep === 5 && <LinkedWorkspace editor={editorProps} preview={threeDPreviewProps} inspector={inspectorProps} snapshot={snapshot} previewAvailable={canRenderThreeDPreview} canAdvance={canAdvance} onAdvance={goNext} onBack={() => applyProductTransition({ type: 'open', step: 3 })} />}
-        {activeStep === 6 && <ProjectSaveView projectName={projectName} currentProject={currentProject} projectMessage={projectMessage} projectMessageTone={projectMessageTone} projectBusy={projectBusy} canSave={hasCanonicalGeometry && hasCurrentLinkedReview} onProjectNameChange={setProjectName} onSave={() => { if (hasCurrentLinkedReview) void saveProject({ stage: 'final', canonicalRevision }) }} onCopyResumeLink={() => { void copyProjectResumeLink(window.location.href, (value) => navigator.clipboard.writeText(value)) }} />}
+        {activeStep === 6 && <ProjectSaveView projectName={projectName} currentProject={currentProject} projectMessage={projectMessage} projectMessageTone={projectMessageTone} projectBusy={projectBusy} projectSaveState={projectSaveState} canSave={hasCanonicalGeometry && hasCurrentLinkedReview} onProjectNameChange={setProjectName} onSave={() => { if (hasCurrentLinkedReview) void saveProject({ stage: 'final', canonicalRevision }) }} onRetry={() => { void retryProjectSave() }} onResolveConflict={(choice) => { void resolveProjectConflict(choice) }} onCopyResumeLink={() => { void copyProjectResumeLink(window.location.href, (value) => navigator.clipboard.writeText(value)) }} />}
     </ProductShell>
   )
 }
