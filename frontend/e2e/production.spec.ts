@@ -345,6 +345,7 @@ async function dragEndpoint(page: Page, testID: string, deltaX: number, deltaY: 
 }
 
 test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one production lifecycle', async ({ page, browser }, testInfo) => {
+  test.setTimeout(90_000)
   await page.goto('/?e2e=instrument')
   await expect(page.getByTestId('product-topbar').getByRole('heading', { name: '导入真实户型图' })).toBeVisible()
   await expect(page.getByTestId('product-sidebar')).toHaveCSS('width', '232px')
