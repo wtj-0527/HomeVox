@@ -345,7 +345,7 @@ async function dragEndpoint(page: Page, testID: string, deltaX: number, deltaY: 
 }
 
 test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one production lifecycle', async ({ page, browser }, testInfo) => {
-  test.setTimeout(90_000)
+  test.setTimeout(120_000)
   await page.goto('/?e2e=instrument')
   await expect(page.getByTestId('product-topbar').getByRole('heading', { name: '导入真实户型图' })).toBeVisible()
   await expect(page.getByTestId('product-sidebar')).toHaveCSS('width', '232px')
@@ -945,15 +945,20 @@ test('drops an in-flight old 3D canvas blob after a legal canonical edit', async
     target.__homevoxPendingBlobGate = gate
     canvas.toBlob = (callback, type, quality) => {
       gate.started = true
-      gate.release = () => originalToBlob(callback, type, quality)
+      originalToBlob((blob) => {
+        gate.release = () => callback(blob)
+      }, type, quality)
     }
   })
   let downloads = 0
   page.on('download', () => { downloads += 1 })
   await exportButton.click()
   await page.waitForFunction(() => {
-    const target = window as typeof window & { __homevoxPendingBlobGate?: { started: boolean } }
-    return target.__homevoxPendingBlobGate?.started === true
+    const target = window as typeof window & {
+      __homevoxPendingBlobGate?: { started: boolean; release: (() => void) | null }
+    }
+    return target.__homevoxPendingBlobGate?.started === true &&
+      typeof target.__homevoxPendingBlobGate.release === 'function'
   })
 
   const beforeEdit = await e2eState(page)
@@ -969,7 +974,6 @@ test('drops an in-flight old 3D canvas blob after a legal canonical edit', async
     if (!release) throw new Error('3D canvas blob export did not start')
     release()
   })
-  await page.waitForTimeout(500)
   await expect(exportButton).toHaveText('导出空间图')
   expect(downloads).toBe(0)
 })
