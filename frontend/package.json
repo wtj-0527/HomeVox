@@ -9,6 +9,7 @@
     "prebuild": "npm run build:wasm",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "pretest": "npm run build:wasm",
     "preview": "vite preview",
     "test": "vitest run",
     "test:e2e": "../scripts/run-production-browser-e2e.sh"
