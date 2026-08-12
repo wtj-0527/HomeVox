@@ -4,7 +4,7 @@ import type { InspectorPanelProps } from './InspectorPanel'
 import { InspectorPanel } from './InspectorPanel'
 import type { ThreeDPreviewPanelProps } from './ThreeDPreviewPanel'
 import { ThreeDPreviewPanel } from './ThreeDPreviewPanel'
-import type { ProjectConflictChoice } from './projectSession'
+import type { ProjectConflictSelection, ProjectConflictState } from './projectSession'
 
 export type TwoDWorkspaceProps = {
   editor: FloorplanEditorPanelProps
@@ -16,9 +16,11 @@ export type TwoDWorkspaceProps = {
     message: string
     messageTone: 'success' | 'error'
     saveState: 'idle' | 'saving' | 'saved' | 'failed' | 'conflict'
+    conflict: ProjectConflictState | null
     onSave: () => void
     onRetry: () => void
-    onResolveConflict: (choice: ProjectConflictChoice) => void
+    onChooseConflict: (id: string, choice: ProjectConflictSelection) => void
+    onResolveConflict: () => void
     onCopyResumeLink: () => void
   }
   canAdvance: boolean
@@ -45,11 +47,7 @@ export function WorkspaceToolbar({ inspector, snapshot, linked = false, onAdvanc
       {snapshot.exists && saveStateLabel && <span data-testid="autosave-state" role="status" className={`rounded-lg px-2 py-1 text-xs font-semibold ${saveStateClass}`}>{saveStateLabel}</span>}
       {snapshot.message && (snapshot.saveState === 'failed' || snapshot.saveState === 'conflict') && <span role="alert" className={`max-w-44 truncate text-xs font-semibold ${snapshot.saveState === 'conflict' ? 'text-amber-800' : 'text-red-700'}`}>{snapshot.message}</span>}
       {snapshot.exists && snapshot.saveState === 'failed' && <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={snapshot.onRetry}>重试</button>}
-      {snapshot.exists && snapshot.saveState === 'conflict' && <>
-        <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={() => snapshot.onResolveConflict('local')}>使用本地版本</button>
-        <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={() => snapshot.onResolveConflict('remote')}>使用远端版本</button>
-        <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={() => snapshot.onResolveConflict('merge')}>生成合并版本</button>
-      </>}
+      {snapshot.exists && snapshot.saveState === 'conflict' && <ConflictControls conflict={snapshot.conflict} busy={snapshot.busy} onChoose={snapshot.onChooseConflict} onResolve={snapshot.onResolveConflict} compact />}
       {snapshot.exists && <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={snapshot.onCopyResumeLink}>复制编辑链接</button>}
       {!snapshot.exists && <button data-testid="save-recognition-snapshot" type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy || snapshot.canSave === false} onClick={snapshot.onSave}>{snapshot.busy ? '保存中…' : '创建识别快照'}</button>}
       <button type="button" className="toolbar-button whitespace-nowrap" disabled={!inspector.canUndo} onClick={inspector.onUndo}>撤销</button>
@@ -58,6 +56,32 @@ export function WorkspaceToolbar({ inspector, snapshot, linked = false, onAdvanc
         ? <button data-testid="complete-product-step" type="button" className="toolbar-primary" disabled={!canAdvance} onClick={onAdvance}>保存项目</button>
         : <button data-testid="complete-product-step" type="button" className="toolbar-primary" disabled={!canAdvance} onClick={onAdvance}>完成校正后生成 3D</button>}
     </div>
+  </div>
+}
+
+export function ConflictControls({
+  conflict,
+  busy,
+  onChoose,
+  onResolve,
+  compact = false,
+}: {
+  conflict: ProjectConflictState | null
+  busy: boolean
+  onChoose: (id: string, choice: ProjectConflictSelection) => void
+  onResolve: () => void
+  compact?: boolean
+}) {
+  if (!conflict) return null
+  return <div data-testid="project-conflict-controls" className={compact ? 'flex max-w-[520px] items-center gap-2' : 'grid gap-3'}>
+    {conflict.items.length > 0 && <div className={compact ? 'flex max-w-[360px] gap-2 overflow-x-auto' : 'grid gap-2'}>
+      {conflict.items.map((item) => <fieldset key={item.id} className="min-w-48 rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs text-amber-950">
+        <legend className="px-1 font-semibold">{item.objectId} · {item.field}</legend>
+        <label className="mr-3 inline-grid gap-1"><span><input type="radio" name={item.id} checked={item.choice === 'local'} onChange={() => onChoose(item.id, 'local')} /> 本地</span><code>{JSON.stringify(item.localValue)}</code></label>
+        <label className="inline-grid gap-1"><span><input type="radio" name={item.id} checked={item.choice === 'remote'} onChange={() => onChoose(item.id, 'remote')} /> 远端</span><code>{JSON.stringify(item.remoteValue)}</code></label>
+      </fieldset>)}
+    </div>}
+    <button type="button" className="toolbar-button whitespace-nowrap" disabled={busy || !conflict.ready} onClick={onResolve}>生成合并版本</button>
   </div>
 }
 

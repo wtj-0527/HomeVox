@@ -27,23 +27,29 @@ const inspector: InspectorPanelProps = {
 
 describe('2D recognition snapshot controls', () => {
   it('offers creation before 3D and explicit updates after the snapshot exists', () => {
-    const create = renderToStaticMarkup(createElement(WorkspaceToolbar, { inspector, canAdvance: true, onAdvance: vi.fn(), snapshot: { exists: false, busy: false, message: '', messageTone: 'success', saveState: 'idle', onSave: vi.fn(), onRetry: vi.fn(), onResolveConflict: vi.fn(), onCopyResumeLink: vi.fn() } }))
+    const create = renderToStaticMarkup(createElement(WorkspaceToolbar, { inspector, canAdvance: true, onAdvance: vi.fn(), snapshot: { exists: false, busy: false, message: '', messageTone: 'success', saveState: 'idle', conflict: null, onSave: vi.fn(), onRetry: vi.fn(), onChooseConflict: vi.fn(), onResolveConflict: vi.fn(), onCopyResumeLink: vi.fn() } }))
     expect(create).toContain('创建识别快照')
     expect(create).not.toContain('复制编辑链接')
 
-    const update = renderToStaticMarkup(createElement(WorkspaceToolbar, { inspector, canAdvance: true, onAdvance: vi.fn(), snapshot: { exists: true, busy: false, message: '已保存', messageTone: 'success', saveState: 'saved', onSave: vi.fn(), onRetry: vi.fn(), onResolveConflict: vi.fn(), onCopyResumeLink: vi.fn() } }))
+    const update = renderToStaticMarkup(createElement(WorkspaceToolbar, { inspector, canAdvance: true, onAdvance: vi.fn(), snapshot: { exists: true, busy: false, message: '已保存', messageTone: 'success', saveState: 'saved', conflict: null, onSave: vi.fn(), onRetry: vi.fn(), onChooseConflict: vi.fn(), onResolveConflict: vi.fn(), onCopyResumeLink: vi.fn() } }))
     expect(update).not.toContain('保存当前修改')
     expect(update).toContain('已保存')
     expect(update).toContain('复制编辑链接')
   })
 
-  it('renders revision conflict uniformly in amber with explicit local, remote, and merge recovery', () => {
-    const markup = renderToStaticMarkup(createElement(WorkspaceToolbar, { inspector, canAdvance: true, onAdvance: vi.fn(), snapshot: { exists: true, busy: false, message: '项目已在其他页面更新，请选择冲突版本', messageTone: 'error', saveState: 'conflict', onSave: vi.fn(), onRetry: vi.fn(), onResolveConflict: vi.fn(), onCopyResumeLink: vi.fn() } }))
+  it('renders revision conflict uniformly in amber with per-field choices and disabled merge until complete', () => {
+    const markup = renderToStaticMarkup(createElement(WorkspaceToolbar, { inspector, canAdvance: true, onAdvance: vi.fn(), snapshot: {
+      exists: true, busy: false, message: '项目已在其他页面更新，请逐项处理冲突', messageTone: 'error', saveState: 'conflict',
+      conflict: { ready: false, items: [{ id: 'walls:wall-a:x1', collection: 'walls', objectId: 'wall-a', field: 'x1', localValue: 91, remoteValue: 90, choice: null }] },
+      onSave: vi.fn(), onRetry: vi.fn(), onChooseConflict: vi.fn(), onResolveConflict: vi.fn(), onCopyResumeLink: vi.fn(),
+    } }))
     expect(markup).toContain('text-amber-800')
     expect(markup).not.toContain('text-red-700')
-    expect(markup).toContain('使用本地版本')
-    expect(markup).toContain('使用远端版本')
+    expect(markup).toContain('wall-a · x1')
+    expect(markup).toContain('本地')
+    expect(markup).toContain('远端')
     expect(markup).toContain('生成合并版本')
+    expect(markup).toContain('disabled')
     expect(markup).not.toContain('00000000-')
   })
 
@@ -59,10 +65,12 @@ describe('2D recognition snapshot controls', () => {
       projectMessageTone: projectSaveState === 'saving' ? 'success' : 'error',
       projectBusy: projectSaveState === 'saving' ? 'save' : null,
       projectSaveState,
+      projectConflict: null,
       canSave: true,
       onProjectNameChange: vi.fn(),
       onSave: vi.fn(),
       onRetry: vi.fn(),
+      onChooseConflict: vi.fn(),
       onResolveConflict: vi.fn(),
       onCopyResumeLink: vi.fn(),
     }))
@@ -113,7 +121,7 @@ describe('product save disclosure', () => {
         document: { filename: 'plan.png', contentType: 'image/png', size: 3, result: { rooms: [], walls: [], doors: [], windows: [], scale: { unit: 'px', pixel_to_unit: null }, metadata: { source: 'fixture', confidence: 0.5, image_width: 100, image_height: 80 } } },
       },
       projectMessage: '', projectMessageTone: 'success', projectBusy: null, projectSaveState: 'idle', canSave: true,
-      onProjectNameChange: vi.fn(), onSave: vi.fn(), onRetry: vi.fn(), onResolveConflict: vi.fn(), onCopyResumeLink: vi.fn(),
+      projectConflict: null, onProjectNameChange: vi.fn(), onSave: vi.fn(), onRetry: vi.fn(), onChooseConflict: vi.fn(), onResolveConflict: vi.fn(), onCopyResumeLink: vi.fn(),
     }))
     expect(markup).toContain('复制继续编辑链接')
     expect(markup).not.toContain('已保存项目')

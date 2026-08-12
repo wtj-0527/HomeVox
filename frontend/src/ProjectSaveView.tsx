@@ -1,6 +1,7 @@
 import type { ProjectDetail } from './projects'
 import type { ProjectSaveState } from './projectSession'
-import type { ProjectConflictChoice } from './projectSession'
+import type { ProjectConflictSelection, ProjectConflictState } from './projectSession'
+import { ConflictControls } from './ProductViews'
 
 export type ProjectSaveViewProps = {
   projectName: string
@@ -9,11 +10,13 @@ export type ProjectSaveViewProps = {
   projectMessageTone: 'success' | 'error'
   projectBusy: 'save' | 'load' | null
   projectSaveState: ProjectSaveState
+  projectConflict: ProjectConflictState | null
   canSave: boolean
   onProjectNameChange: (name: string) => void
   onSave: () => void
   onRetry: () => void
-  onResolveConflict: (choice: ProjectConflictChoice) => void
+  onChooseConflict: (id: string, choice: ProjectConflictSelection) => void
+  onResolveConflict: () => void
   onCopyResumeLink: () => void
 }
 
@@ -23,10 +26,12 @@ export function ProjectSaveView({
   projectMessage,
   projectBusy,
   projectSaveState,
+  projectConflict,
   canSave,
   onProjectNameChange,
   onSave,
   onRetry,
+  onChooseConflict,
   onResolveConflict,
   onCopyResumeLink,
 }: ProjectSaveViewProps) {
@@ -48,11 +53,7 @@ export function ProjectSaveView({
         <input aria-label="项目名称" className="w-full rounded-[10px] border border-slate-300 bg-white px-3 py-3 text-slate-900" value={projectName} maxLength={120} placeholder="我的家 · 户型空间" onChange={(event) => onProjectNameChange(event.target.value)} />
         <button className={`w-full rounded-[10px] px-3 py-3 font-semibold text-white disabled:opacity-50 ${visual.button}`} type="button" disabled={!canSave || projectBusy !== null} onClick={onSave}>{projectBusy === 'save' ? '正在提交' : currentProject ? '保存项目' : '创建项目'}</button>
         {currentProject && projectSaveState === 'failed' && <button type="button" className="w-full rounded-[10px] border border-red-300 bg-white px-3 py-3 font-semibold text-red-700" disabled={projectBusy !== null} onClick={onRetry}>重试</button>}
-        {currentProject && projectSaveState === 'conflict' && <div className="grid grid-cols-3 gap-2">
-          <button type="button" className="rounded-[10px] border border-amber-300 bg-white px-2 py-3 text-sm font-semibold text-amber-800" disabled={projectBusy !== null} onClick={() => onResolveConflict('local')}>使用本地版本</button>
-          <button type="button" className="rounded-[10px] border border-amber-300 bg-white px-2 py-3 text-sm font-semibold text-amber-800" disabled={projectBusy !== null} onClick={() => onResolveConflict('remote')}>使用远端版本</button>
-          <button type="button" className="rounded-[10px] border border-amber-300 bg-white px-2 py-3 text-sm font-semibold text-amber-800" disabled={projectBusy !== null} onClick={() => onResolveConflict('merge')}>生成合并版本</button>
-        </div>}
+        {currentProject && projectSaveState === 'conflict' && <ConflictControls conflict={projectConflict} busy={projectBusy !== null} onChoose={onChooseConflict} onResolve={onResolveConflict} />}
         {currentProject && <button className="w-full rounded-[10px] border border-violet-300 bg-white px-3 py-3 font-semibold text-violet-700 disabled:opacity-50" type="button" disabled={projectBusy !== null} onClick={onCopyResumeLink}>复制继续编辑链接</button>}
       </div>
     </section>

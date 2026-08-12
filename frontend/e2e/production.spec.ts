@@ -458,29 +458,39 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
 	expect(new URL(replacementPage.url()).hash).toBe('')
 	expect(staleReloadRequests).toBe(0)
 	await replacementContext.close()
-	await page.route(`**/api/projects/${createdSnapshot.id}`, (route) => route.request().method() === 'PUT'
-		? (expect(route.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true), route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'revision_conflict', message: 'project has changed' } }) }))
-		: route.continue())
+  const beforeRemoteUpdate = await page.request.get(`/api/projects/${createdSnapshot.id}`, {
+    headers: { 'X-HomeVox-Project-Capability': createdSnapshot.capability },
+  })
+  expect(beforeRemoteUpdate.status()).toBe(200)
+  const remoteProject = await beforeRemoteUpdate.json() as { name: string; revision: number; document: ParseFixture }
+  const remoteDocument = structuredClone(remoteProject.document)
+  remoteDocument.result.walls[0].x1 = 92
+  const remoteUpdate = await page.request.put(`/api/projects/${createdSnapshot.id}`, {
+    headers: { 'X-HomeVox-Project-Capability': createdSnapshot.capability },
+    data: { name: remoteProject.name, document: remoteDocument, expectedRevision: remoteProject.revision },
+  })
+  expect(remoteUpdate.status()).toBe(200)
+  const remotelyUpdated = await remoteUpdate.json() as { revision: number }
+  expect(remotelyUpdated.revision).toBe(2)
   await page.getByTestId('wall-hit-wall-1').click({ position: { x: 80, y: 1 }, force: true })
   await page.getByLabel('起点 X').fill('91')
   await page.getByRole('button', { name: '应用坐标' }).click()
   const conflictAlert = page.getByRole('alert')
-  await expect(conflictAlert).toContainText('项目已在其他页面更新，请选择本地版本、远端版本或生成合并版本')
-  await expect(conflictAlert).not.toContainText(createdSnapshot.id)
-  await expect(conflictAlert).not.toContainText(/revision|HTTP 409/i)
-  await page.unroute(`**/api/projects/${createdSnapshot.id}`)
-  await expect(page.getByRole('button', { name: '使用本地版本' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '使用远端版本' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '生成合并版本' })).toBeVisible()
-  const conflictFetch = page.waitForResponse((response) => response.url().endsWith(`/api/projects/${createdSnapshot.id}`) && response.request().method() === 'GET')
+  await expect(conflictAlert).toContainText('项目已在其他页面更新，请逐项处理冲突')
+  await expect(page.getByTestId('wall-hit-wall-1')).toHaveAttribute('x1', '90')
+  const conflictControls = page.getByTestId('project-conflict-controls')
+  await expect(conflictControls).toContainText('wall-1 · x1')
+  await expect(conflictControls.getByRole('radio', { name: /本地/ })).toBeVisible()
+  await expect(conflictControls.getByRole('radio', { name: /远端/ })).toBeVisible()
+  await expect(conflictControls.getByRole('button', { name: '生成合并版本' })).toBeDisabled()
+  await conflictControls.getByRole('radio', { name: /本地/ }).check()
+  await expect(conflictControls.getByRole('button', { name: '生成合并版本' })).toBeEnabled()
   const conflictSave = page.waitForResponse((response) => response.url().endsWith(`/api/projects/${createdSnapshot.id}`) && response.request().method() === 'PUT')
-  await page.getByRole('button', { name: '生成合并版本' }).click()
-  const conflictFetchResponse = await conflictFetch
+  await conflictControls.getByRole('button', { name: '生成合并版本' }).click()
   const conflictSaveResponse = await conflictSave
-  expect(conflictFetchResponse.status()).toBe(200)
   expect(conflictSaveResponse.status()).toBe(200)
-  expect(conflictFetchResponse.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true)
   expect(conflictSaveResponse.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true)
+  expect((conflictSaveResponse.request().postDataJSON() as { expectedRevision: number }).expectedRevision).toBe(remotelyUpdated.revision)
   await expect(page.getByTestId('wall-hit-wall-1')).toHaveAttribute('x1', '91')
   await expect(page.getByTestId('autosave-state')).toContainText('已保存')
   captures.push(await screenshot(page, testInfo, 'issue-19-2d-correction.png'))

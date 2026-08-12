@@ -351,8 +351,12 @@ export default function App() {
       if (completesFinalSave(activeStep, canonicalRevision, intent)) applyProductTransition({ type: 'complete', step: 6 }, productFlowContext)
     },
     onProjectLoaded: applyLoadedProject,
-    onProjectConflictResolved: (project, choice) => {
-      if (choice !== 'merge') return
+    onProjectConflictStarted: (confirmed) => {
+      setParseResponse(confirmed.document)
+      setLinkedReviewRevision(null)
+      applyProductTransition({ type: 'open', step: 3 }, { hasDocument: true, hasCanonicalGeometry: true, hasThreeDGeometry: false })
+    },
+    onProjectConflictResolved: (project) => {
       setParseResponse(project.document)
       setLinkedReviewRevision(null)
       applyProductTransition(
@@ -368,11 +372,13 @@ export default function App() {
     projectMessageTone,
     projectBusy,
     projectSaveState,
+    projectConflict,
     setProjectName,
     clearCurrentProject,
     saveProject,
     queueAutoSave,
     retryProjectSave,
+    chooseProjectConflict,
     resolveProjectConflict,
 		loadInitialProject,
     reloadProject,
@@ -390,6 +396,12 @@ export default function App() {
       queuedAutoSaveRevisionRef.current = null
       return
     }
+    // Conflict resolution owns the retained local intent. Re-rendering the
+    // confirmed baseline must not be mistaken for a fresh edit/autosave.
+    if (projectSaveState === 'conflict') {
+      queuedAutoSaveRevisionRef.current = canonicalRevision
+      return
+    }
     const identity = `${currentProject.id}:${currentProject.revision}`
     if (persistedProjectIdentityRef.current !== identity) {
       persistedProjectIdentityRef.current = identity
@@ -399,7 +411,7 @@ export default function App() {
     if (!canonicalRevision || geometryValidationError || queuedAutoSaveRevisionRef.current === canonicalRevision) return
     queuedAutoSaveRevisionRef.current = canonicalRevision
     void queueAutoSave({ stage: 'snapshot', canonicalRevision })
-  }, [canonicalRevision, currentProject, geometryValidationError, queueAutoSave])
+  }, [canonicalRevision, currentProject, geometryValidationError, projectSaveState, queueAutoSave])
 
   const viewport = chooseViewport(result, effectiveImageSize)
   const editorScale = canvasScale(editorSize, viewport)
@@ -1272,9 +1284,11 @@ export default function App() {
     message: projectMessage,
     messageTone: projectMessageTone,
     saveState: projectSaveState,
+    conflict: projectConflict,
     onSave: () => { void saveProject({ stage: 'snapshot', canonicalRevision }) },
     onRetry: () => { void retryProjectSave() },
-    onResolveConflict: (choice: import('./projectSession').ProjectConflictChoice) => { void resolveProjectConflict(choice) },
+    onChooseConflict: chooseProjectConflict,
+    onResolveConflict: () => { void resolveProjectConflict() },
 		onCopyResumeLink: () => { void copyProjectResumeLink(window.location.href, (value) => navigator.clipboard.writeText(value)) },
   }
   const threeDPreviewProps: ThreeDPreviewPanelProps = {
@@ -1325,7 +1339,7 @@ export default function App() {
         {activeStep === 3 && <TwoDWorkspace editor={editorProps} inspector={inspectorProps} snapshot={snapshot} canAdvance={canAdvance} onAdvance={goNext} />}
         {activeStep === 4 && <ThreeDConfirmation preview={threeDPreviewProps} previewAvailable={canRenderThreeDPreview} canOpenLinkedWorkspace={canOpenLinkedWorkspace} wasmState={wasmState} onBack={() => applyProductTransition({ type: 'open', step: 3 })} onComplete={() => completeAndAdvance(4, 5)} />}
         {activeStep === 5 && <LinkedWorkspace editor={editorProps} preview={threeDPreviewProps} inspector={inspectorProps} snapshot={snapshot} previewAvailable={canRenderThreeDPreview} canAdvance={canAdvance} onAdvance={goNext} onBack={() => applyProductTransition({ type: 'open', step: 3 })} />}
-        {activeStep === 6 && <ProjectSaveView projectName={projectName} currentProject={currentProject} projectMessage={projectMessage} projectMessageTone={projectMessageTone} projectBusy={projectBusy} projectSaveState={projectSaveState} canSave={hasCanonicalGeometry && hasCurrentLinkedReview} onProjectNameChange={setProjectName} onSave={() => { if (hasCurrentLinkedReview) void saveProject({ stage: 'final', canonicalRevision }) }} onRetry={() => { void retryProjectSave() }} onResolveConflict={(choice) => { void resolveProjectConflict(choice) }} onCopyResumeLink={() => { void copyProjectResumeLink(window.location.href, (value) => navigator.clipboard.writeText(value)) }} />}
+        {activeStep === 6 && <ProjectSaveView projectName={projectName} currentProject={currentProject} projectMessage={projectMessage} projectMessageTone={projectMessageTone} projectBusy={projectBusy} projectSaveState={projectSaveState} projectConflict={projectConflict} canSave={hasCanonicalGeometry && hasCurrentLinkedReview} onProjectNameChange={setProjectName} onSave={() => { if (hasCurrentLinkedReview) void saveProject({ stage: 'final', canonicalRevision }) }} onRetry={() => { void retryProjectSave() }} onChooseConflict={chooseProjectConflict} onResolveConflict={() => { void resolveProjectConflict() }} onCopyResumeLink={() => { void copyProjectResumeLink(window.location.href, (value) => navigator.clipboard.writeText(value)) }} />}
     </ProductShell>
   )
 }

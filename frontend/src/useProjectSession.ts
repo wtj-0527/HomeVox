@@ -10,10 +10,11 @@ type ProjectSessionOptions = {
 
   onProjectSaved: (project: ProjectDetail, intent: import('./projectSaveCompletion').ProjectSaveIntent) => void
   onProjectLoaded: (project: ProjectDetail, sourceImage: Blob) => void
-  onProjectConflictResolved: (project: ProjectDetail, choice: import('./projectSession').ProjectConflictChoice) => void
+  onProjectConflictStarted: (confirmed: ProjectDetail) => void
+  onProjectConflictResolved: (project: ProjectDetail) => void
 }
 
-type ProjectSessionState = Pick<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy' | 'projectSaveState'>
+type ProjectSessionState = Pick<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy' | 'projectSaveState' | 'projectConflict'>
 
 const initialState: ProjectSessionState = {
   projectName: '',
@@ -22,6 +23,7 @@ const initialState: ProjectSessionState = {
   projectMessageTone: 'success',
   projectBusy: null,
   projectSaveState: 'idle',
+  projectConflict: null,
 }
 
 export type UseProjectSession = ProjectSession
@@ -36,6 +38,7 @@ export function useProjectSession(options: ProjectSessionOptions): UseProjectSes
   const savedRef = useRef(options.onProjectSaved)
   const loadedRef = useRef(options.onProjectLoaded)
   const conflictResolvedRef = useRef(options.onProjectConflictResolved)
+  const conflictStartedRef = useRef(options.onProjectConflictStarted)
   const stateRef = useRef(state)
   documentRef.current = options.document
   geometryErrorRef.current = options.geometryValidationError
@@ -43,6 +46,7 @@ export function useProjectSession(options: ProjectSessionOptions): UseProjectSes
   savedRef.current = options.onProjectSaved
   loadedRef.current = options.onProjectLoaded
   conflictResolvedRef.current = options.onProjectConflictResolved
+  conflictStartedRef.current = options.onProjectConflictStarted
   stateRef.current = state
 
   const controllerRef = useRef<ReturnType<typeof createProjectSession> | null>(null)
@@ -56,7 +60,8 @@ export function useProjectSession(options: ProjectSessionOptions): UseProjectSes
 		initialAccess: null,
       onProjectSaved: (project, intent) => savedRef.current(project, intent),
       onProjectLoaded: (project, sourceImage) => loadedRef.current(project, sourceImage),
-      onProjectConflictResolved: (project, choice) => conflictResolvedRef.current(project, choice),
+      onProjectConflictStarted: (confirmed) => conflictStartedRef.current(confirmed),
+      onProjectConflictResolved: (project) => conflictResolvedRef.current(project),
       onState: (next) => {
         setState((current) => ({ ...current, ...next }))
       },
@@ -84,6 +89,7 @@ export function useProjectSession(options: ProjectSessionOptions): UseProjectSes
     saveProject: controller.saveProject,
     queueAutoSave: controller.queueAutoSave,
     retryProjectSave: controller.retryProjectSave,
+    chooseProjectConflict: controller.chooseProjectConflict,
     resolveProjectConflict: controller.resolveProjectConflict,
     loadProject: controller.loadProject,
 		loadInitialProject: controller.loadInitialProject,
