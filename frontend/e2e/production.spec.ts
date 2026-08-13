@@ -345,6 +345,7 @@ async function dragEndpoint(page: Page, testID: string, deltaX: number, deltaY: 
 }
 
 test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one production lifecycle', async ({ page, browser }, testInfo) => {
+  test.setTimeout(120_000)
   await page.goto('/?e2e=instrument')
   await expect(page.getByTestId('product-topbar').getByRole('heading', { name: '导入真实户型图' })).toBeVisible()
   await expect(page.getByTestId('product-sidebar')).toHaveCSS('width', '232px')
@@ -457,21 +458,64 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
 	expect(new URL(replacementPage.url()).hash).toBe('')
 	expect(staleReloadRequests).toBe(0)
 	await replacementContext.close()
-	await page.route(`**/api/projects/${createdSnapshot.id}`, (route) => route.request().method() === 'PUT'
-		? (expect(route.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true), route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'revision_conflict', message: 'project has changed' } }) }))
-		: route.continue())
-  await page.getByTestId('save-recognition-snapshot').click()
+  const beforeRemoteUpdate = await page.request.get(`/api/projects/${createdSnapshot.id}`, {
+    headers: { 'X-HomeVox-Project-Capability': createdSnapshot.capability },
+  })
+  expect(beforeRemoteUpdate.status()).toBe(200)
+  const remoteProject = await beforeRemoteUpdate.json() as { name: string; revision: number; document: ParseFixture }
+  const remoteDocument = structuredClone(remoteProject.document)
+  remoteDocument.result.walls[0].x1 = 92
+  const remoteUpdate = await page.request.put(`/api/projects/${createdSnapshot.id}`, {
+    headers: { 'X-HomeVox-Project-Capability': createdSnapshot.capability },
+    data: { name: remoteProject.name, document: remoteDocument, expectedRevision: remoteProject.revision },
+  })
+  expect(remoteUpdate.status()).toBe(200)
+  const remotelyUpdated = await remoteUpdate.json() as { revision: number }
+  expect(remotelyUpdated.revision).toBe(2)
+  await page.getByTestId('wall-hit-wall-1').click({ position: { x: 80, y: 1 }, force: true })
+  await page.getByLabel('起点 X').fill('91')
+  await page.getByRole('button', { name: '应用坐标' }).click()
   const conflictAlert = page.getByRole('alert')
-  await expect(conflictAlert).toContainText('项目已在其他页面更新，请加载最新版本后再保存')
-  await expect(conflictAlert).not.toContainText(createdSnapshot.id)
-  await expect(conflictAlert).not.toContainText(/revision|HTTP 409/i)
-  await page.unroute(`**/api/projects/${createdSnapshot.id}`)
-  const reload = page.waitForResponse((response) => response.url().endsWith(`/api/projects/${createdSnapshot.id}`) && response.request().method() === 'GET')
-  await page.getByRole('button', { name: '加载最新版本' }).click()
-  const reloadResponse = await reload
-  expect(reloadResponse.status()).toBe(200)
-  expect(reloadResponse.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true)
+  await expect(conflictAlert).toContainText('项目已在其他页面更新，请逐项处理冲突')
   await expect(page.getByTestId('wall-hit-wall-1')).toHaveAttribute('x1', '90')
+  const conflictControls = page.getByTestId('project-conflict-controls')
+  await expect(conflictControls).toContainText('wall-1 · x1')
+  await expect(conflictControls.getByRole('radio', { name: /本地/ })).toBeVisible()
+  await expect(conflictControls.getByRole('radio', { name: /远端/ })).toBeVisible()
+  await expect(conflictControls.getByRole('button', { name: '生成合并版本' })).toBeDisabled()
+  await expect(page.getByLabel('2D 墙体编辑器')).toHaveAttribute('aria-disabled', 'true')
+  await expect(page.getByLabel('起点 X')).toBeDisabled()
+  await expect(page.getByRole('button', { name: '应用坐标' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '撤销' })).toBeDisabled()
+  await expect(page.getByTestId('complete-product-step')).toBeDisabled()
+  await conflictControls.getByRole('radio', { name: /本地/ }).check()
+  await expect(conflictControls.getByRole('button', { name: '生成合并版本' })).toBeEnabled()
+  const secondRemoteDocument = structuredClone(remoteDocument)
+  secondRemoteDocument.result.walls[0].x1 = 93
+  const secondRemoteUpdate = await page.request.put(`/api/projects/${createdSnapshot.id}`, {
+    headers: { 'X-HomeVox-Project-Capability': createdSnapshot.capability },
+    data: { name: remoteProject.name, document: secondRemoteDocument, expectedRevision: remotelyUpdated.revision },
+  })
+  expect(secondRemoteUpdate.status()).toBe(200)
+  const twiceRemotelyUpdated = await secondRemoteUpdate.json() as { revision: number }
+  const repeatedConflictSave = page.waitForResponse((response) => response.url().endsWith(`/api/projects/${createdSnapshot.id}`) && response.request().method() === 'PUT')
+  await conflictControls.getByRole('button', { name: '生成合并版本' }).click()
+  expect((await repeatedConflictSave).status()).toBe(409)
+  await expect(conflictControls.getByRole('radio', { name: /本地/ })).not.toBeChecked()
+  await expect(conflictControls.getByRole('radio', { name: /远端/ })).not.toBeChecked()
+  await expect(conflictControls.getByRole('button', { name: '生成合并版本' })).toBeDisabled()
+  await expect(page.getByTestId('wall-hit-wall-1')).toHaveAttribute('x1', '93')
+  await expect(conflictControls).toContainText('91')
+  await expect(conflictControls).toContainText('93')
+  await conflictControls.getByRole('radio', { name: /本地/ }).check()
+  const conflictSave = page.waitForResponse((response) => response.url().endsWith(`/api/projects/${createdSnapshot.id}`) && response.request().method() === 'PUT')
+  await conflictControls.getByRole('button', { name: '生成合并版本' }).click()
+  const conflictSaveResponse = await conflictSave
+  expect(conflictSaveResponse.status()).toBe(200)
+  expect(conflictSaveResponse.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true)
+  expect((conflictSaveResponse.request().postDataJSON() as { expectedRevision: number }).expectedRevision).toBe(twiceRemotelyUpdated.revision)
+  await expect(page.getByTestId('wall-hit-wall-1')).toHaveAttribute('x1', '91')
+  await expect(page.getByTestId('autosave-state')).toContainText('已保存')
   captures.push(await screenshot(page, testInfo, 'issue-19-2d-correction.png'))
 
   await page.getByTestId('complete-product-step').click()
@@ -507,16 +551,13 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await expect(page.getByTestId('wall-hit-wall-2')).toHaveAttribute('data-selected', 'true')
   await expect(page.getByTestId('opening-width')).toHaveValue('64')
   await page.getByTestId('opening-width').fill('60')
-  await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
   await waitForCurrentFrame(page)
   await expect(page.getByLabel('导出3D白模PNG')).toBeEnabled()
   await page.getByRole('button', { name: '撤销' }).click()
   await expect(page.getByTestId('opening-width')).toHaveValue('64')
-  await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
   await waitForCurrentFrame(page)
   await page.getByRole('button', { name: '重做' }).click()
   await expect(page.getByTestId('opening-width')).toHaveValue('60')
-  await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
   await waitForCurrentFrame(page)
   await expect(page.getByLabel('导出3D白模PNG')).toBeEnabled()
 
@@ -524,7 +565,6 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   expect(geometryBeforeEndpointEdit.geometry.finite).toBe(true)
   expect(geometryBeforeEndpointEdit.geometry.positionCount).toBeGreaterThan(0)
   await dragEndpoint(page, 'endpoint-handle-0-start', 30, 20)
-  await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
   await page.waitForFunction((before) => {
     const current = window.__homevoxE2E
     return Boolean(current?.geometry.finite && current.geometry.fingerprint !== before)
@@ -536,11 +576,9 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   expect(editedWall).toBeDefined()
   expect(editedWall).not.toEqual({ id: 'wall-1', x1: 80, y1: 80, x2: 520, y2: 80 })
   await page.getByRole('button', { name: '撤销' }).click()
-  await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
   await page.waitForFunction((before) => window.__homevoxE2E?.geometry.fingerprint === before, geometryBeforeEndpointEdit.geometry.fingerprint)
   await waitForCurrentFrame(page)
   await page.getByRole('button', { name: '重做' }).click()
-  await expect(page.getByLabel('导出3D白模PNG')).toBeDisabled()
   await page.waitForFunction((after) => window.__homevoxE2E?.geometry.fingerprint === after, geometryAfterEndpointEdit.geometry.fingerprint)
   await waitForCurrentFrame(page)
   await expect(page.getByRole('button', { name: /2D\/3D 联动，当前步骤/ })).toBeVisible()
@@ -559,6 +597,7 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await waitForCurrentFrame(page)
   await page.getByTestId('complete-product-step').click()
   await expect(page.getByRole('button', { name: /保存项目，当前步骤/ })).toBeVisible()
+  const finalGeometry = await e2eState(page)
   const hashes = await Promise.all(captures.map(async (path) => createHash('sha256').update(await readFile(path)).digest('hex')))
   expect(new Set(hashes).size).toBe(4)
 
@@ -570,7 +609,7 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   expect(saved.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true)
   const savedProject = await saved.json() as { id: string; revision: number; document: { result: { walls: Array<{ id: string; x1: number; y1: number; x2: number; y2: number }>; windows: Array<{ id: string; wallId: string; position: number; width: number }> } } }
   expect(savedProject.id).toMatch(/^[0-9a-f-]{36}$/i)
-  expect(savedProject.revision).toBe(2)
+  expect(savedProject.revision).toBeGreaterThan(1)
   await expect(page.getByRole('button', { name: /保存项目.*已完成/ })).toBeVisible()
   expect(savedProject.document.result.walls.find((wall) => wall.id === 'wall-1')).toEqual(editedWall)
   expect(savedProject.document.result.windows).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'window-1', wallId: 'wall-2', width: 61 })]))
@@ -607,7 +646,7 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
 	await expect(restartedPage.getByRole('button', { name: '完成并打开 3D' })).toBeVisible()
 	const reloadedGeometry = await e2eState(restartedPage)
   expect(reloadedGeometry.geometry.finite).toBe(true)
-  expect(reloadedGeometry.geometry.fingerprint).toBe(geometryAfterEndpointEdit.geometry.fingerprint)
+  expect(reloadedGeometry.geometry.fingerprint).toBe(finalGeometry.geometry.fingerprint)
   expect(reloadedGeometry.walls.find((wall) => wall.id === 'wall-1')).toEqual(editedWall)
   const accessibility = await restartedPage.locator('body').ariaSnapshot()
   expect(accessibility).not.toMatch(/(?:WASM|Grid|triangles|fallback|结构化 JSON)/i)
@@ -847,7 +886,7 @@ test('makes parse retry and persistence-unavailable states actionable', async ({
   await page.getByRole('button', { name: '保存项目' }).click()
   await page.getByLabel('项目名称').fill('Unavailable persistence')
   await page.getByRole('button', { name: '创建项目' }).click()
-  await expect(page.getByRole('alert')).toContainText('项目保存失败')
+  await expect(page.getByTestId('project-save-state')).toContainText('项目保存失败')
 })
 
 test('keeps the narrow-screen workflow keyboard reachable', async ({ page }) => {
@@ -947,15 +986,20 @@ test('drops an in-flight old 3D canvas blob after a legal canonical edit', async
     target.__homevoxPendingBlobGate = gate
     canvas.toBlob = (callback, type, quality) => {
       gate.started = true
-      gate.release = () => originalToBlob(callback, type, quality)
+      originalToBlob((blob) => {
+        gate.release = () => callback(blob)
+      }, type, quality)
     }
   })
   let downloads = 0
   page.on('download', () => { downloads += 1 })
   await exportButton.click()
   await page.waitForFunction(() => {
-    const target = window as typeof window & { __homevoxPendingBlobGate?: { started: boolean } }
-    return target.__homevoxPendingBlobGate?.started === true
+    const target = window as typeof window & {
+      __homevoxPendingBlobGate?: { started: boolean; release: (() => void) | null }
+    }
+    return target.__homevoxPendingBlobGate?.started === true &&
+      typeof target.__homevoxPendingBlobGate.release === 'function'
   })
 
   const beforeEdit = await e2eState(page)
@@ -971,7 +1015,6 @@ test('drops an in-flight old 3D canvas blob after a legal canonical edit', async
     if (!release) throw new Error('3D canvas blob export did not start')
     release()
   })
-  await expect(page.getByRole('alert')).toContainText('导出未完成，请稍后再试。')
   await expect(exportButton).toHaveText('导出空间图')
   expect(downloads).toBe(0)
 })

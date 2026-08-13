@@ -1,9 +1,8 @@
 import { Suspense, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { Canvas, useThree, type RootState } from '@react-three/fiber'
 import { Grid, Html, OrbitControls } from '@react-three/drei'
-import type { BufferGeometry } from 'three'
+import { mergeWasmWallGeometries, type WasmWallGeometry } from './wasmGeometry'
 import { buildWallShellPieces, frameWallShellModel, WINDOW_OPENING_HEIGHT, WINDOW_SILL_HEIGHT, type WallShellModel } from './wallShell'
-import { wasmWallMeshPresentation } from './wasmThreeDScene'
 import { analyzeCurrentThreeDFrame } from './threeDFrameAnalysis'
 
 export type ThreeDRenderer = { state: RootState; generation: string }
@@ -91,7 +90,7 @@ function CameraFramer({ model }: { model: WallShellModel }) {
 export type ThreeDPreviewProps = {
   canonicalRevision: string | null
   model: WallShellModel
-  wasmGeometry: BufferGeometry | null
+  wasmGeometries: readonly WasmWallGeometry[]
   wasmActive: boolean
   webGLAvailable: boolean
   selectedWallID: string | null
@@ -105,17 +104,21 @@ export type ThreeDPreviewProps = {
 
 function CanonicalScene({
   model,
-  wasmGeometry,
+  wasmGeometries,
   wasmActive,
   selectedWallID,
   selectedOpeningID,
   onSelectWall,
   onSelectOpening,
 }: Omit<ThreeDPreviewProps, 'canonicalRevision' | 'webGLAvailable' | 'onRendererMount' | 'onRendererUnmount' | 'onFrameRendered'>) {
-  const wasmWallMesh = wasmWallMeshPresentation(wasmActive, wasmGeometry, model, onSelectWall)
+  const mergedWasmWalls = useMemo(
+    () => wasmActive ? mergeWasmWallGeometries(wasmGeometries) : null,
+    [wasmActive, wasmGeometries],
+  )
+  useEffect(() => () => mergedWasmWalls?.geometry.dispose(), [mergedWasmWalls])
   const selectedWallPieces = useMemo(
-    () => wasmActive && wasmGeometry && selectedWallID ? buildWallShellPieces(model).filter((piece) => piece.wallId === selectedWallID) : [],
-    [model, selectedWallID, wasmActive, wasmGeometry],
+    () => wasmActive && wasmGeometries.length > 0 && selectedWallID ? buildWallShellPieces(model).filter((piece) => piece.wallId === selectedWallID) : [],
+    [model, selectedWallID, wasmActive, wasmGeometries],
   )
   return (
     <>
@@ -130,7 +133,7 @@ function CanonicalScene({
       <Grid args={[18, 18]} cellSize={1} cellThickness={0.45} cellColor="#425779" sectionSize={5} sectionThickness={0.8} sectionColor="#90a4c6" fadeDistance={24} infiniteGrid />
 
       {/* Selection affordance only: success-path walls remain the visible WASM mesh. */}
-      {wasmWallMesh && selectedWallPieces.map((piece) => (
+      {mergedWasmWalls && selectedWallPieces.map((piece) => (
         <mesh
           key={`wasm-wall-selection-${piece.id}`}
           position={[piece.x, piece.y, piece.z]}
@@ -142,15 +145,23 @@ function CanonicalScene({
           <meshBasicMaterial color="#c4b5fd" toneMapped={false} transparent opacity={0.62} depthWrite={false} />
         </mesh>
       ))}
-      {wasmWallMesh && (
+      {mergedWasmWalls && (
         <mesh
-          geometry={wasmWallMesh.geometry}
-          visible={wasmWallMesh.visible}
-          castShadow={wasmWallMesh.castShadow}
-          receiveShadow={wasmWallMesh.receiveShadow}
+          geometry={mergedWasmWalls.geometry}
+          visible
+          castShadow
+          receiveShadow
           data-testid="wasm-wall-mesh"
-          onPointerDown={(event) => { event.stopPropagation(); wasmWallMesh.onSelectAt(event.point.x, event.point.z) }}
-          onClick={(event) => { event.stopPropagation(); wasmWallMesh.onSelectAt(event.point.x, event.point.z) }}
+          onPointerDown={(event) => {
+            event.stopPropagation()
+            const wallID = mergedWasmWalls.wallIDForFace(event.faceIndex)
+            if (wallID) onSelectWall(wallID)
+          }}
+          onClick={(event) => {
+            event.stopPropagation()
+            const wallID = mergedWasmWalls.wallIDForFace(event.faceIndex)
+            if (wallID) onSelectWall(wallID)
+          }}
         >
           <meshStandardMaterial
             color="#e8eff9"

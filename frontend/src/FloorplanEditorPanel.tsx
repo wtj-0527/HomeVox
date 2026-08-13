@@ -26,6 +26,7 @@ export type FloorplanEditorPanelProps = {
   labelOffset: number
   labelSize: number
   embedded?: boolean
+  editingDisabled?: boolean
   onShowSourceImageChange: (show: boolean) => void
   onCanvasPointerMove: (event: PointerEvent<SVGSVGElement>) => void
   onCanvasPointerUp: (event: PointerEvent<SVGSVGElement>) => void
@@ -40,15 +41,15 @@ export function FloorplanEditorPanel({
   editorRef, viewport, walls, openings, showSourceImage, previewURL, geometryValidationError,
   selectedWallID, selectedWallLabel, selectedOpeningID, hoveredEndpoint, draggedEndpoint,
   hitRadius, handleRadius, activeHandleRadius, wallHitStroke, wallStroke, activeWallStroke,
-  openingRadius, openingStroke, labelOffset, labelSize, embedded = false,
+  openingRadius, openingStroke, labelOffset, labelSize, embedded = false, editingDisabled = false,
   onShowSourceImageChange, onCanvasPointerMove, onCanvasPointerUp, onCanvasPointerCancel,
   onEndpointPointerDown, onWallPointerDown, onOpeningPointerDown,
 }: FloorplanEditorPanelProps) {
   return (
-    <section className={`${embedded ? '' : 'workspace-card'} canvas-card min-w-0`} aria-label="2D 墙体编辑器">
+    <section className={`${embedded ? '' : 'workspace-card'} canvas-card min-w-0`} aria-label="2D 墙体编辑器" aria-disabled={editingDisabled}>
       {geometryValidationError && <p className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900" role="alert">这个户型有一处需要调整，请先在平面图中修正后再继续。</p>}
       <div className="floorplan-surface min-h-0 flex-1 overflow-hidden rounded-xl border border-slate-200 bg-[#fafbfd]">
-        <svg ref={editorRef} className="h-full w-full touch-none" viewBox={`${viewport.minX} ${viewport.minY} ${viewport.width} ${viewport.height}`} role="img" aria-label="户型图墙体端点编辑区" onPointerMove={onCanvasPointerMove} onPointerUp={onCanvasPointerUp} onPointerCancel={onCanvasPointerCancel} onPointerLeave={onCanvasPointerCancel} preserveAspectRatio="xMidYMid meet">
+        <svg ref={editorRef} className={`h-full w-full touch-none ${editingDisabled ? 'pointer-events-none opacity-75' : ''}`} viewBox={`${viewport.minX} ${viewport.minY} ${viewport.width} ${viewport.height}`} role="img" aria-label="户型图墙体端点编辑区" onPointerMove={editingDisabled ? undefined : onCanvasPointerMove} onPointerUp={editingDisabled ? undefined : onCanvasPointerUp} onPointerCancel={editingDisabled ? undefined : onCanvasPointerCancel} onPointerLeave={editingDisabled ? undefined : onCanvasPointerCancel} preserveAspectRatio="xMidYMid meet">
           <rect x={viewport.minX} y={viewport.minY} width={viewport.width} height={viewport.height} fill="#fafbfd" />
           {showSourceImage && previewURL && <image href={previewURL} x={viewport.minX} y={viewport.minY} width={viewport.width} height={viewport.height} preserveAspectRatio="xMidYMid meet" opacity="0.42" pointerEvents="none" />}
           <g aria-label="墙体可视层" pointerEvents="none">
@@ -84,8 +85,8 @@ export function FloorplanEditorPanel({
         </svg>
       </div>
       <div className="floorplan-source-controls">
-        <label className="flex cursor-pointer items-center gap-2 text-slate-700"><input type="checkbox" checked={showSourceImage} onChange={(event) => onShowSourceImageChange(event.target.checked)} />显示原始图纸</label>
-        <span>{draggedEndpoint ? '正在调整' : selectedWallLabel ? '已选择墙体' : hoveredEndpoint ? '可调整端点' : '选择要调整的位置'}</span>
+        <label className="flex cursor-pointer items-center gap-2 text-slate-700"><input type="checkbox" checked={showSourceImage} disabled={editingDisabled} onChange={(event) => onShowSourceImageChange(event.target.checked)} />显示原始图纸</label>
+        <span>{editingDisabled ? '请先完成版本冲突处理' : draggedEndpoint ? '正在调整' : selectedWallLabel ? '已选择墙体' : hoveredEndpoint ? '可调整端点' : '选择要调整的位置'}</span>
       </div>
     </section>
   )

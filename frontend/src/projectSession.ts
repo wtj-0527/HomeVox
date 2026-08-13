@@ -2,6 +2,14 @@ import type { ParseResponse } from './floorplanUi'
 import { buildProjectResumeURL, clearProjectAccessFragment, consumeInitialProjectAccess, type ProjectAccess } from './projectAccess'
 import type { ProjectSaveIntent } from './projectSaveCompletion'
 import {
+  buildProjectConflict,
+  chooseProjectConflict,
+  resolveProjectConflictDocument,
+  type ProjectConflict,
+  type ProjectConflictSelection,
+} from './projectConflict'
+export type { ProjectConflictSelection } from './projectConflict'
+import {
   createProject,
   fetchProjectSourceImage,
   getProject,
@@ -13,6 +21,11 @@ import {
 
 export type ProjectBusy = 'save' | 'load' | null
 export type ProjectMessageTone = 'success' | 'error'
+export type ProjectSaveState = 'idle' | 'saving' | 'saved' | 'failed' | 'conflict'
+export type ProjectConflictState = {
+  items: ProjectConflict['items']
+  ready: boolean
+}
 
 export function projectSaveIssue({
   document,
@@ -73,9 +86,15 @@ export type ProjectSession = {
   projectMessage: string
   projectMessageTone: ProjectMessageTone
   projectBusy: ProjectBusy
+  projectSaveState: ProjectSaveState
+  projectConflict: ProjectConflictState | null
   setProjectName: (name: string) => void
   clearCurrentProject: () => void
   saveProject: (intent?: ProjectSaveIntent) => Promise<void>
+  queueAutoSave: (intent: ProjectSaveIntent) => Promise<void>
+  retryProjectSave: () => Promise<void>
+  chooseProjectConflict: (id: string, choice: ProjectConflictSelection) => void
+  resolveProjectConflict: () => Promise<void>
   loadProject: (access: ProjectAccess) => Promise<void>
 	loadInitialProject: () => Promise<void>
   reloadProject: () => Promise<void>
@@ -96,6 +115,8 @@ export function createProjectSession({
   initialAccess,
   onProjectSaved,
   onProjectLoaded,
+  onProjectConflictStarted,
+  onProjectConflictResolved,
   onState,
 }: {
   document: () => ParseResponse | null
@@ -106,13 +127,27 @@ export function createProjectSession({
   initialAccess: ProjectAccess | null
   onProjectSaved: (project: ProjectDetail, intent: ProjectSaveIntent) => void
   onProjectLoaded: (project: ProjectDetail, sourceImage: Blob) => void
-  onState: (next: Partial<Pick<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy'>>) => void
-}, dependencies: ProjectSessionDependencies = defaultProjectSessionDependencies): Omit<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy' | 'setProjectName' | 'clearCurrentProject'> {
+  onProjectConflictStarted: (confirmed: ProjectDetail) => void
+  onProjectConflictResolved: (project: ProjectDetail) => void
+  onState: (next: Partial<Pick<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy' | 'projectSaveState' | 'projectConflict'>>) => void
+}, dependencies: ProjectSessionDependencies = defaultProjectSessionDependencies): Omit<ProjectSession, 'projectName' | 'currentProject' | 'projectMessage' | 'projectMessageTone' | 'projectBusy' | 'projectSaveState' | 'projectConflict' | 'setProjectName' | 'clearCurrentProject'> {
   let request: Request | null = null
   let sequence = 0
   let disposed = false
   let access = initialAccess
   let initialLoadComplete = false
+  let knownProject = currentProject()
+  type AutoSaveRequest = { document: ParseResponse; name: string; intent: ProjectSaveIntent }
+  let pendingAutoSave: AutoSaveRequest | null = null
+  let failedAutoSave: AutoSaveRequest | null = null
+  let autoSavePromise: Promise<void> | null = null
+  let conflict: ProjectConflict | null = null
+  let conflictBase: ProjectDetail | null = null
+
+  const conflictState = (): ProjectConflictState | null => conflict ? {
+    items: conflict.items,
+    ready: conflict.items.every((item) => item.choice !== null),
+  } : null
 
   const beginRequest = (): Request | null => {
     if (disposed) return null
@@ -134,7 +169,11 @@ export function createProjectSession({
       const sourceImage = await dependencies.fetchSourceImage(loaded.sourceImageURL, nextAccess.capability, active.controller.signal)
       if (!isCurrent(active)) return false
       access = nextAccess
-      onState({ currentProject: loaded, projectName: loaded.name, projectMessage: '项目已加载', projectMessageTone: 'success' })
+      knownProject = loaded
+      failedAutoSave = null
+      conflict = null
+      conflictBase = null
+      onState({ currentProject: loaded, projectName: loaded.name, projectMessage: '项目已加载', projectMessageTone: 'success', projectSaveState: 'saved', projectConflict: null })
       onProjectLoaded(loaded, sourceImage)
       if (typeof window !== 'undefined') clearProjectAccessFragment(window.location, (path) => window.history.replaceState(null, '', path))
       return true
@@ -146,8 +185,85 @@ export function createProjectSession({
     }
   }
 
+  const runAutoSaveQueue = async (): Promise<void> => {
+    while (!disposed && pendingAutoSave) {
+      const queued = pendingAutoSave
+      pendingAutoSave = null
+      const existing = knownProject ?? currentProject()
+      if (!existing || !access || access.id !== existing.id) {
+        failedAutoSave = queued
+        onState({
+          projectMessage: '当前项目缺少有效访问凭据，请通过继续编辑链接重新打开',
+          projectMessageTone: 'error',
+          projectSaveState: 'failed',
+        })
+        return
+      }
+      const active = beginRequest()
+      if (!active) return
+      onState({ projectBusy: 'save', projectMessage: '保存中…', projectMessageTone: 'success', projectSaveState: 'saving' })
+      try {
+        const saved = await dependencies.updateProject(
+          existing.id,
+          access.capability,
+          queued.name,
+          queued.document,
+          existing.revision,
+          active.controller.signal,
+        )
+        if (!isCurrent(active)) return
+        knownProject = saved
+        failedAutoSave = null
+        onState({
+          currentProject: saved,
+          projectName: saved.name,
+          projectMessage: '已保存',
+          projectMessageTone: 'success',
+          projectSaveState: 'saved',
+        })
+        onProjectSaved(saved, queued.intent)
+      } catch (error) {
+        if (active.controller.signal.aborted || !isCurrent(active)) return
+        failedAutoSave = pendingAutoSave ?? queued
+        pendingAutoSave = null
+        const isConflict = error instanceof ProjectAPIError && error.code === 'revision_conflict'
+        if (isConflict) {
+          const remote = await dependencies.getProject(existing.id, access.capability, active.controller.signal)
+          if (!isCurrent(active)) return
+          conflictBase = existing
+          knownProject = remote
+          conflict = buildProjectConflict(existing.document, failedAutoSave.document, remote.document)
+          onProjectConflictStarted(existing)
+          onState({
+            currentProject: remote,
+            projectMessage: conflict.items.length ? '项目已在其他页面更新，请逐项处理冲突' : '检测到远端更新，可生成自动合并版本',
+            projectMessageTone: 'error',
+            projectSaveState: 'conflict',
+            projectConflict: conflictState(),
+          })
+        } else {
+          onState({ projectMessage: `保存失败：${error instanceof Error ? error.message : '未知错误'}`, projectMessageTone: 'error', projectSaveState: 'failed' })
+        }
+        return
+      } finally {
+        if (isCurrent(active)) onState({ projectBusy: null })
+      }
+    }
+  }
+
+  const startAutoSaveQueue = (): Promise<void> => {
+    if (!autoSavePromise) {
+      autoSavePromise = runAutoSaveQueue().finally(() => {
+        autoSavePromise = null
+        if (pendingAutoSave && !disposed) startAutoSaveQueue()
+      })
+    }
+    return autoSavePromise
+  }
+
   return {
     async saveProject(intent: ProjectSaveIntent = { stage: 'snapshot', canonicalRevision: null }) {
+      if (autoSavePromise) await autoSavePromise
       const issue = projectSaveIssue({
         document: document(),
         geometryValidationError: geometryValidationError(),
@@ -160,7 +276,7 @@ export function createProjectSession({
         return
       }
       const durableDocument = document()
-      const existing = currentProject()
+      const existing = knownProject ?? currentProject()
       if (existing && (!access || access.id !== existing.id)) {
         onState({ projectMessage: '当前项目缺少有效访问凭据，请通过继续编辑链接重新打开', projectMessageTone: 'error' })
         return
@@ -183,20 +299,118 @@ export function createProjectSession({
         // Retain it before observing UI cancellation; cancellation only stops UI updates.
         if (createdAccess) access = createdAccess
         if (!isCurrent(active)) return
+        knownProject = saved
+        failedAutoSave = null
+        conflict = null
+        conflictBase = null
         onState({
           currentProject: saved,
           projectName: saved.name,
           projectMessage: existing ? '项目已保存' : '项目已创建',
           projectMessageTone: 'success',
+          projectSaveState: 'saved',
+          projectConflict: null,
         })
         onProjectSaved(saved, intent)
       } catch (error) {
-        if (!active.controller.signal.aborted && isCurrent(active)) onState({
-          projectMessage: error instanceof ProjectAPIError && error.code === 'revision_conflict'
-            ? error.message
-            : `项目保存失败：${error instanceof Error ? error.message : '未知错误'}`,
-          projectMessageTone: 'error',
+        if (!active.controller.signal.aborted && isCurrent(active)) {
+          const isConflict = error instanceof ProjectAPIError && error.code === 'revision_conflict'
+          if (isConflict && durableDocument) {
+            failedAutoSave = { document: durableDocument, name, intent }
+            const remote = await dependencies.getProject(existing!.id, access!.capability, active.controller.signal)
+            if (!isCurrent(active)) return
+            conflictBase = existing!
+            knownProject = remote
+            conflict = buildProjectConflict(existing!.document, durableDocument, remote.document)
+            onProjectConflictStarted(existing!)
+            onState({ currentProject: remote, projectMessage: conflict.items.length ? '项目已在其他页面更新，请逐项处理冲突' : '检测到远端更新，可生成自动合并版本', projectMessageTone: 'error', projectSaveState: 'conflict', projectConflict: conflictState() })
+          } else {
+            onState({ projectMessage: `项目保存失败：${error instanceof Error ? error.message : '未知错误'}`, projectMessageTone: 'error', projectSaveState: 'failed' })
+          }
+        }
+      } finally {
+        if (isCurrent(active)) onState({ projectBusy: null })
+      }
+    },
+    queueAutoSave(intent) {
+      const nextDocument = document()
+      if (!nextDocument || geometryValidationError()) return Promise.resolve()
+      pendingAutoSave = { document: nextDocument, name: projectName(), intent }
+      failedAutoSave = null
+      return startAutoSaveQueue()
+    },
+    retryProjectSave() {
+      if (!failedAutoSave) return Promise.resolve()
+      pendingAutoSave = failedAutoSave
+      failedAutoSave = null
+      return startAutoSaveQueue()
+    },
+    chooseProjectConflict(id, choice) {
+      if (!conflict) return
+      conflict = chooseProjectConflict(conflict, id, choice)
+      onState({ projectConflict: conflictState() })
+    },
+    async resolveProjectConflict() {
+      const local = failedAutoSave
+      const existing = knownProject ?? currentProject()
+      const nextDocument = conflict ? resolveProjectConflictDocument(conflict) : null
+      if (!local || !existing || !access || access.id !== existing.id || !conflictBase || !nextDocument) {
+        onState({ projectMessage: '冲突上下文已失效，请通过继续编辑链接重新打开', projectMessageTone: 'error', projectSaveState: 'failed' })
+        return
+      }
+      const active = beginRequest()
+      if (!active) return
+      onState({
+        projectBusy: 'save',
+        projectMessage: '合并版本保存中…',
+        projectMessageTone: 'success',
+        projectSaveState: 'saving',
+      })
+      try {
+        const saved = await dependencies.updateProject(
+          existing.id,
+          access.capability,
+          local.name,
+          nextDocument,
+          existing.revision,
+          active.controller.signal,
+        )
+        if (!isCurrent(active)) return
+        knownProject = saved
+        failedAutoSave = null
+        conflict = null
+        conflictBase = null
+        onState({
+          currentProject: saved,
+          projectName: saved.name,
+          projectMessage: '合并版本已保存',
+          projectMessageTone: 'success',
+          projectSaveState: 'saved',
+          projectConflict: null,
         })
+        onProjectConflictResolved(saved)
+        onProjectSaved(saved, local.intent)
+      } catch (error) {
+        if (active.controller.signal.aborted || !isCurrent(active)) return
+        const isConflict = error instanceof ProjectAPIError && error.code === 'revision_conflict'
+        if (isConflict) {
+          const choices = new Map(conflict?.items.flatMap((item) => item.choice ? [[item.id, {
+            localValue: item.localValue,
+            remoteValue: item.remoteValue,
+            choice: item.choice,
+          }] as const] : []) ?? [])
+          const remote = await dependencies.getProject(existing.id, access.capability, active.controller.signal)
+          if (!isCurrent(active)) return
+          const priorRemote = existing
+          knownProject = remote
+          conflictBase = priorRemote
+          failedAutoSave = { ...local, document: nextDocument }
+          conflict = buildProjectConflict(priorRemote.document, nextDocument, remote.document, choices)
+          onState({ currentProject: remote, projectMessage: '项目再次发生更新，已保留本地意图与已有选择，请确认冲突项', projectMessageTone: 'error', projectSaveState: 'conflict', projectConflict: conflictState() })
+          onProjectConflictStarted(remote)
+        } else {
+          onState({ projectMessage: `冲突处理失败：${error instanceof Error ? error.message : '未知错误'}`, projectMessageTone: 'error', projectSaveState: 'failed' })
+        }
       } finally {
         if (isCurrent(active)) onState({ projectBusy: null })
       }
@@ -230,10 +444,15 @@ export function createProjectSession({
     },
     clearAccess() {
       access = null
+      knownProject = null
+      pendingAutoSave = null
+      failedAutoSave = null
+      conflict = null
+      conflictBase = null
 		request?.controller.abort()
 		sequence += 1
 		request = null
-		onState({ projectBusy: null })
+		onState({ projectBusy: null, projectSaveState: 'idle', projectConflict: null })
     },
     activate() {
       disposed = false
