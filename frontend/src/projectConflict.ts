@@ -17,6 +17,8 @@ export type ProjectConflict = {
   items: ProjectConflictItem[]
 }
 
+export type ProjectConflictPriorChoice = Pick<ProjectConflictItem, 'localValue' | 'remoteValue' | 'choice'>
+
 type RecordValue = Record<string, unknown>
 type StableItem = RecordValue & { id?: string }
 
@@ -109,7 +111,7 @@ export function buildProjectConflict(
   confirmed: ParseResponse,
   local: ParseResponse,
   remote: ParseResponse,
-  previousChoices: ReadonlyMap<string, ProjectConflictSelection> = new Map(),
+  previousChoices: ReadonlyMap<string, ProjectConflictPriorChoice> = new Map(),
 ): ProjectConflict {
   const merged = clone(remote)
   const conflict: ProjectConflict = { merged, items: [] }
@@ -129,7 +131,14 @@ export function buildProjectConflict(
   merged.result.walls = mergeStableCollection(conflict, 'walls', confirmed.result.walls as unknown as StableItem[], local.result.walls as unknown as StableItem[], remote.result.walls as unknown as StableItem[]) as unknown as ParseResponse['result']['walls']
   merged.result.doors = mergeStableCollection(conflict, 'doors', confirmed.result.doors as unknown as StableItem[], local.result.doors as unknown as StableItem[], remote.result.doors as unknown as StableItem[]) as unknown as ParseResponse['result']['doors']
   merged.result.windows = mergeStableCollection(conflict, 'windows', confirmed.result.windows as unknown as StableItem[], local.result.windows as unknown as StableItem[], remote.result.windows as unknown as StableItem[]) as unknown as ParseResponse['result']['windows']
-  conflict.items.forEach((item) => { item.choice = previousChoices.get(item.id) ?? null })
+  conflict.items.forEach((item) => {
+    const previous = previousChoices.get(item.id)
+    item.choice = previous &&
+      equal(previous.localValue, item.localValue) &&
+      equal(previous.remoteValue, item.remoteValue)
+      ? previous.choice
+      : null
+  })
   return conflict
 }
 

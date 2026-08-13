@@ -394,7 +394,11 @@ export function createProjectSession({
         if (active.controller.signal.aborted || !isCurrent(active)) return
         const isConflict = error instanceof ProjectAPIError && error.code === 'revision_conflict'
         if (isConflict) {
-          const choices = new Map(conflict?.items.flatMap((item) => item.choice ? [[item.id, item.choice] as const] : []) ?? [])
+          const choices = new Map(conflict?.items.flatMap((item) => item.choice ? [[item.id, {
+            localValue: item.localValue,
+            remoteValue: item.remoteValue,
+            choice: item.choice,
+          }] as const] : []) ?? [])
           const remote = await dependencies.getProject(existing.id, access.capability, active.controller.signal)
           if (!isCurrent(active)) return
           const priorRemote = existing
@@ -403,6 +407,7 @@ export function createProjectSession({
           failedAutoSave = { ...local, document: nextDocument }
           conflict = buildProjectConflict(priorRemote.document, nextDocument, remote.document, choices)
           onState({ currentProject: remote, projectMessage: '项目再次发生更新，已保留本地意图与已有选择，请确认冲突项', projectMessageTone: 'error', projectSaveState: 'conflict', projectConflict: conflictState() })
+          onProjectConflictStarted(remote)
         } else {
           onState({ projectMessage: `冲突处理失败：${error instanceof Error ? error.message : '未知错误'}`, projectMessageTone: 'error', projectSaveState: 'failed' })
         }

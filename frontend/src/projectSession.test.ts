@@ -237,7 +237,7 @@ describe('ProjectSession controller', () => {
     )
   })
 
-  it('preserves the latest local intent, requires per-field choices, and retains them across a second conflict', async () => {
+  it('preserves the latest local intent and clears a prior choice when either candidate changes on a second conflict', async () => {
     const localDocument = {
       ...document,
       result: { ...document.result, walls: [{ id: 'wall-a', x1: 91, y1: 0, x2: 40, y2: 0 }] },
@@ -282,7 +282,8 @@ describe('ProjectSession controller', () => {
     await conflict.controller.resolveProjectConflict()
     expect(updateProject.mock.calls[1][4]).toBe(remote.revision)
     const repeated = conflict.states.at(-2)?.projectConflict as { items: Array<{ id: string; choice: string | null }> }
-    expect(repeated.items.find((item) => item.id === 'walls:wall-a:x1')?.choice).toBe('local')
+    expect(repeated.items.find((item) => item.id === 'walls:wall-a:x1')?.choice).toBeNull()
+    expect(conflict.onProjectConflictStarted).toHaveBeenLastCalledWith(newerRemote)
     repeated.items.filter((item) => item.choice === null).forEach((item) => conflict.controller.chooseProjectConflict(item.id, 'remote'))
     await conflict.controller.resolveProjectConflict()
     expect(updateProject.mock.calls[2][4]).toBe(newerRemote.revision)

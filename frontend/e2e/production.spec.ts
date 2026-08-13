@@ -483,14 +483,37 @@ test('runs upload, parse, canonical 2D/3D, save, restart, and reload as one prod
   await expect(conflictControls.getByRole('radio', { name: /本地/ })).toBeVisible()
   await expect(conflictControls.getByRole('radio', { name: /远端/ })).toBeVisible()
   await expect(conflictControls.getByRole('button', { name: '生成合并版本' })).toBeDisabled()
+  await expect(page.getByLabel('2D 墙体编辑器')).toHaveAttribute('aria-disabled', 'true')
+  await expect(page.getByLabel('起点 X')).toBeDisabled()
+  await expect(page.getByRole('button', { name: '应用坐标' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '撤销' })).toBeDisabled()
+  await expect(page.getByTestId('complete-product-step')).toBeDisabled()
   await conflictControls.getByRole('radio', { name: /本地/ }).check()
   await expect(conflictControls.getByRole('button', { name: '生成合并版本' })).toBeEnabled()
+  const secondRemoteDocument = structuredClone(remoteDocument)
+  secondRemoteDocument.result.walls[0].x1 = 93
+  const secondRemoteUpdate = await page.request.put(`/api/projects/${createdSnapshot.id}`, {
+    headers: { 'X-HomeVox-Project-Capability': createdSnapshot.capability },
+    data: { name: remoteProject.name, document: secondRemoteDocument, expectedRevision: remotelyUpdated.revision },
+  })
+  expect(secondRemoteUpdate.status()).toBe(200)
+  const twiceRemotelyUpdated = await secondRemoteUpdate.json() as { revision: number }
+  const repeatedConflictSave = page.waitForResponse((response) => response.url().endsWith(`/api/projects/${createdSnapshot.id}`) && response.request().method() === 'PUT')
+  await conflictControls.getByRole('button', { name: '生成合并版本' }).click()
+  expect((await repeatedConflictSave).status()).toBe(409)
+  await expect(conflictControls.getByRole('radio', { name: /本地/ })).not.toBeChecked()
+  await expect(conflictControls.getByRole('radio', { name: /远端/ })).not.toBeChecked()
+  await expect(conflictControls.getByRole('button', { name: '生成合并版本' })).toBeDisabled()
+  await expect(page.getByTestId('wall-hit-wall-1')).toHaveAttribute('x1', '93')
+  await expect(conflictControls).toContainText('91')
+  await expect(conflictControls).toContainText('93')
+  await conflictControls.getByRole('radio', { name: /本地/ }).check()
   const conflictSave = page.waitForResponse((response) => response.url().endsWith(`/api/projects/${createdSnapshot.id}`) && response.request().method() === 'PUT')
   await conflictControls.getByRole('button', { name: '生成合并版本' }).click()
   const conflictSaveResponse = await conflictSave
   expect(conflictSaveResponse.status()).toBe(200)
   expect(conflictSaveResponse.request().headers()[capabilityHeader] === createdSnapshot.capability).toBe(true)
-  expect((conflictSaveResponse.request().postDataJSON() as { expectedRevision: number }).expectedRevision).toBe(remotelyUpdated.revision)
+  expect((conflictSaveResponse.request().postDataJSON() as { expectedRevision: number }).expectedRevision).toBe(twiceRemotelyUpdated.revision)
   await expect(page.getByTestId('wall-hit-wall-1')).toHaveAttribute('x1', '91')
   await expect(page.getByTestId('autosave-state')).toContainText('已保存')
   captures.push(await screenshot(page, testInfo, 'issue-19-2d-correction.png'))

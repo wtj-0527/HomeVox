@@ -38,7 +38,7 @@ describe('2D recognition snapshot controls', () => {
   })
 
   it('renders revision conflict uniformly in amber with per-field choices and disabled merge until complete', () => {
-    const markup = renderToStaticMarkup(createElement(WorkspaceToolbar, { inspector, canAdvance: true, onAdvance: vi.fn(), snapshot: {
+    const markup = renderToStaticMarkup(createElement(WorkspaceToolbar, { inspector: { ...inspector, canUndo: true, canRedo: true }, canAdvance: true, onAdvance: vi.fn(), snapshot: {
       exists: true, busy: false, message: '项目已在其他页面更新，请逐项处理冲突', messageTone: 'error', saveState: 'conflict',
       conflict: { ready: false, items: [{ id: 'walls:wall-a:x1', collection: 'walls', objectId: 'wall-a', field: 'x1', localValue: 91, remoteValue: 90, choice: null }] },
       onSave: vi.fn(), onRetry: vi.fn(), onChooseConflict: vi.fn(), onResolveConflict: vi.fn(), onCopyResumeLink: vi.fn(),
@@ -51,6 +51,9 @@ describe('2D recognition snapshot controls', () => {
     expect(markup).toContain('生成合并版本')
     expect(markup).toContain('disabled')
     expect(markup).not.toContain('00000000-')
+    expect(markup).toMatch(/disabled=""[^>]*>撤销/)
+    expect(markup).toMatch(/disabled=""[^>]*>重做/)
+    expect(markup).toMatch(/disabled=""[^>]*>完成校正后生成 3D/)
   })
 
   it.each([

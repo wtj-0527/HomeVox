@@ -28,6 +28,7 @@ export type TwoDWorkspaceProps = {
 }
 
 export function WorkspaceToolbar({ inspector, snapshot, linked = false, onAdvance, canAdvance }: Pick<TwoDWorkspaceProps, 'inspector' | 'snapshot' | 'onAdvance' | 'canAdvance'> & { linked?: boolean }) {
+  const editingDisabled = snapshot.saveState === 'conflict'
   const saveStateLabel = snapshot.saveState === 'saving' ? '保存中…'
     : snapshot.saveState === 'saved' ? '已保存'
       : snapshot.saveState === 'failed' ? '保存失败'
@@ -50,11 +51,11 @@ export function WorkspaceToolbar({ inspector, snapshot, linked = false, onAdvanc
       {snapshot.exists && snapshot.saveState === 'conflict' && <ConflictControls conflict={snapshot.conflict} busy={snapshot.busy} onChoose={snapshot.onChooseConflict} onResolve={snapshot.onResolveConflict} compact />}
       {snapshot.exists && <button type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy} onClick={snapshot.onCopyResumeLink}>复制编辑链接</button>}
       {!snapshot.exists && <button data-testid="save-recognition-snapshot" type="button" className="toolbar-button whitespace-nowrap" disabled={snapshot.busy || snapshot.canSave === false} onClick={snapshot.onSave}>{snapshot.busy ? '保存中…' : '创建识别快照'}</button>}
-      <button type="button" className="toolbar-button whitespace-nowrap" disabled={!inspector.canUndo} onClick={inspector.onUndo}>撤销</button>
-      <button type="button" className="toolbar-button whitespace-nowrap" disabled={!inspector.canRedo} onClick={inspector.onRedo}>重做</button>
+      <button type="button" className="toolbar-button whitespace-nowrap" disabled={editingDisabled || !inspector.canUndo} onClick={inspector.onUndo}>撤销</button>
+      <button type="button" className="toolbar-button whitespace-nowrap" disabled={editingDisabled || !inspector.canRedo} onClick={inspector.onRedo}>重做</button>
       {linked
-        ? <button data-testid="complete-product-step" type="button" className="toolbar-primary" disabled={!canAdvance} onClick={onAdvance}>保存项目</button>
-        : <button data-testid="complete-product-step" type="button" className="toolbar-primary" disabled={!canAdvance} onClick={onAdvance}>完成校正后生成 3D</button>}
+        ? <button data-testid="complete-product-step" type="button" className="toolbar-primary" disabled={editingDisabled || !canAdvance} onClick={onAdvance}>保存项目</button>
+        : <button data-testid="complete-product-step" type="button" className="toolbar-primary" disabled={editingDisabled || !canAdvance} onClick={onAdvance}>完成校正后生成 3D</button>}
     </div>
   </div>
 }
@@ -86,7 +87,8 @@ export function ConflictControls({
 }
 
 export function TwoDWorkspace({ editor, inspector, snapshot, canAdvance, onAdvance }: TwoDWorkspaceProps) {
-  return <section className="two-d-product-workspace"><div className="workspace-card two-d-editor-frame"><WorkspaceToolbar inspector={inspector} snapshot={snapshot} canAdvance={canAdvance} onAdvance={onAdvance} /><FloorplanEditorPanel {...editor} embedded /></div><InspectorPanel {...inspector} /></section>
+  const editingDisabled = snapshot.saveState === 'conflict'
+  return <section className="two-d-product-workspace"><div className="workspace-card two-d-editor-frame"><WorkspaceToolbar inspector={inspector} snapshot={snapshot} canAdvance={canAdvance} onAdvance={onAdvance} /><FloorplanEditorPanel {...editor} embedded editingDisabled={editingDisabled} /></div><InspectorPanel {...inspector} editingDisabled={editingDisabled} /></section>
 }
 
 type ThreeDUnavailableProps = {
@@ -145,5 +147,6 @@ export type LinkedWorkspaceProps = TwoDWorkspaceProps & {
 }
 
 export function LinkedWorkspace({ editor, preview, inspector, snapshot, previewAvailable, canAdvance, onAdvance }: LinkedWorkspaceProps) {
-  return <section className="workspace-card linked-product-workspace"><WorkspaceToolbar inspector={inspector} snapshot={snapshot} linked canAdvance={canAdvance} onAdvance={onAdvance} /><div className="workspace-grid product-workspace product-workspace-linked"><FloorplanEditorPanel {...editor} embedded />{previewAvailable ? <ThreeDPreviewPanel {...preview} /> : <div className="p-6 text-sm text-slate-600" role="status">正在更新空间预览；你可以继续校正 2D。</div>}<InspectorPanel {...inspector} /></div></section>
+  const editingDisabled = snapshot.saveState === 'conflict'
+  return <section className="workspace-card linked-product-workspace"><WorkspaceToolbar inspector={inspector} snapshot={snapshot} linked canAdvance={canAdvance} onAdvance={onAdvance} /><div className="workspace-grid product-workspace product-workspace-linked"><FloorplanEditorPanel {...editor} embedded editingDisabled={editingDisabled} />{previewAvailable ? <ThreeDPreviewPanel {...preview} /> : <div className="p-6 text-sm text-slate-600" role="status">正在更新空间预览；你可以继续校正 2D。</div>}<InspectorPanel {...inspector} editingDisabled={editingDisabled} /></div></section>
 }
